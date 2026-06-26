@@ -1,16 +1,33 @@
 # Tunix
 
-Tunix is a very small x86_64 Unix-like operating system.
+Tunix is a small and simple Unix-like operating system experiment for x86_64.
+
+## Features
+
+- Custom bootloader and kernel code
+- Basic userspace tools
+- BusyBox, Bash, and TinyCC support
 
 ## Build
 
-Clone or initialize the repository submodules, then build the image:
-
 ```sh
-git submodule update --init --recursive
-make -j"$(nproc)"
+make all
 ```
 
-TinyCC is built automatically from `ports/src/tinycc` and installed into the
-Tunix image together with its musl headers, static libraries, startup objects,
-and runtime files.
+## Run
+
+```sh
+make run
+```
+
+To run headless:
+
+```sh
+make headless
+```
+
+## Clean
+
+```sh
+make clean
+```
