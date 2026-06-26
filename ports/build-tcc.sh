@@ -9,6 +9,7 @@ OUT=${OUT:-$ROOT/ports/out}
 SYSROOT="$OUT/sysroot"
 MUSL_BUILD="$OUT/musl-build"
 TCC_BUILD="$OUT/tcc-build"
+TCC_ROOT="$OUT/tcc-root"
 MUSL_CC="$SYSROOT/usr/bin/musl-gcc"
 TOOLCHAIN_STAMP="$SYSROOT/.tunix-musl-toolchain-v4"
 HOST_CC=${CC:-gcc}
@@ -51,8 +52,8 @@ if [[ ! -x "$MUSL_CC" || ! -f "$TOOLCHAIN_STAMP" ]]; then
     : > "$TOOLCHAIN_STAMP"
 fi
 
-rm -rf "$TCC_BUILD"
-mkdir -p "$TCC_BUILD"
+rm -rf "$TCC_BUILD" "$TCC_ROOT"
+mkdir -p "$TCC_BUILD" "$TCC_ROOT/usr/include" "$TCC_ROOT/usr/lib"
 
 configure_args=(
     --source-path="$TCC_SOURCE"
@@ -87,12 +88,31 @@ fi
     cd "$TCC_BUILD"
     env CC="$MUSL_CC" AR="$HOST_AR" RANLIB="$HOST_RANLIB" \
         "$TCC_SOURCE/configure" "${configure_args[@]}"
-    make -j"$JOBS" tcc
+    make -j"$JOBS" tcc libtcc1.a
 )
 
-mkdir -p "$OUT"
-cp "$TCC_BUILD/tcc" "$OUT/tcc"
+cp -a "$SYSROOT/usr/include/." "$TCC_ROOT/usr/include/"
+cp -a "$SYSROOT/usr/lib/." "$TCC_ROOT/usr/lib/"
+
+make -C "$TCC_BUILD" install \
+    bindir="$TCC_ROOT/usr/bin" \
+    libdir="$TCC_ROOT/usr/lib" \
+    tccdir="$TCC_ROOT/usr/lib/tcc" \
+    includedir="$TCC_ROOT/usr/include" \
+    mandir="$TCC_ROOT/usr/share/man" \
+    infodir="$TCC_ROOT/usr/share/info" \
+    docdir="$TCC_ROOT/usr/share/doc/tcc"
+
+ln -sfn tcc "$TCC_ROOT/usr/bin/cc"
+
+[[ -x "$TCC_ROOT/usr/bin/tcc" ]] || fail "staged compiler is missing"
+[[ -f "$TCC_ROOT/usr/lib/tcc/libtcc1.a" ]] || fail "TinyCC runtime is missing"
+[[ -f "$TCC_ROOT/usr/lib/libc.a" ]] || fail "musl libc.a is missing"
+[[ -f "$TCC_ROOT/usr/lib/crt1.o" ]] || fail "musl crt1.o is missing"
+[[ -f "$TCC_ROOT/usr/include/stdio.h" ]] || fail "musl headers are missing"
+
+cp "$TCC_ROOT/usr/bin/tcc" "$OUT/tcc"
 chmod 0755 "$OUT/tcc"
 
-file "$OUT/tcc" 2>/dev/null || true
 echo "TinyCC compiler built at $OUT/tcc"
+echo "Tunix compiler root assembled at $TCC_ROOT"
