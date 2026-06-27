@@ -11,3 +11,9 @@
 	path = ports/src/tinycc
 	url = https://github.com/TinyCC/tinycc.git
 	branch = mob
+[submodule "ports/src/ncurses"]
+	path = ports/src/ncurses
+	url = https://github.com/ThomasDickey/ncurses-snapshots.git
+[submodule "ports/src/nano"]
+	path = ports/src/nano
+	url = https://git.savannah.gnu.org/git/nano.git
