@@ -21,6 +21,7 @@ TCC_ROOT := $(PORT_OUT)/tcc-root
 TCC_STAMP := $(PORT_OUT)/.tcc-ready
 NCURSES_ROOT := $(PORT_OUT)/ncurses-root
 NCURSES_STAMP := $(PORT_OUT)/.ncurses-ready
+NANO := $(PORT_OUT)/nano
 
 COMMON_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -fno-builtin -fno-asynchronous-unwind-tables -fno-unwind-tables \
@@ -80,6 +81,10 @@ $(NCURSES_STAMP): $(BASH) ports/build-ncurses.sh ports/terminfo/tunix.ti | $(BUI
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" ./ports/build-ncurses.sh
 	@touch $@
+
+$(NANO): $(NCURSES_STAMP) ports/build-nano.sh | $(BUILD)/.tools
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" ./ports/build-nano.sh
 
 $(TCC_STAMP): ports/build-tcc.sh | $(BUILD)/.tools
 	@mkdir -p $(PORT_OUT)
