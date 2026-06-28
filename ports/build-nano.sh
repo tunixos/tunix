@@ -8,6 +8,8 @@ OUT=${OUT:-$ROOT/ports/out}
 SYSROOT="$OUT/sysroot"
 MUSL_CC="$SYSROOT/usr/bin/musl-gcc"
 NCURSES_ROOT="$OUT/ncurses-root"
+COMPAT_INCLUDE="$ROOT/ports/compat/include"
+VT_COMPAT_HEADER="$COMPAT_INCLUDE/linux/vt.h"
 SOURCE_WORK="$OUT/nano-source"
 BUILD="$OUT/nano-build"
 NANO_BINARY="$OUT/nano"
@@ -23,6 +25,7 @@ fail() {
 [[ -x "$MUSL_CC" ]] || fail "missing Tunix musl toolchain"
 [[ -f "$NCURSES_ROOT/usr/lib/libncursesw.a" ]] || fail "ncursesw was not built"
 [[ -d "$NCURSES_ROOT/usr/share/terminfo" ]] || fail "Tunix terminfo database was not built"
+[[ -f "$VT_COMPAT_HEADER" ]] || fail "missing Tunix linux/vt.h compatibility header"
 command -v "$HOST_AR" >/dev/null 2>&1 || fail "ar was not found"
 command -v "$HOST_RANLIB" >/dev/null 2>&1 || fail "ranlib was not found"
 
@@ -32,6 +35,18 @@ trap 'rm -f "$probe" "$probe.o"' EXIT
 printf 'int tunix_probe;\n' > "$probe"
 if "$MUSL_CC" -fno-link-libatomic -x c -c "$probe" -o "$probe.o" >/dev/null 2>&1; then
     NO_AUTO_ATOMIC="-fno-link-libatomic"
+fi
+
+cat > "$probe" <<'EOF'
+#include <sys/vt.h>
+int tunix_vt_header_probe(void)
+{
+    struct vt_stat state = {0};
+    return state.v_active + (VT_GETSTATE == 0x5603 ? 0 : 1);
+}
+EOF
+if ! "$MUSL_CC" -I"$COMPAT_INCLUDE" -x c -c "$probe" -o "$probe.o" >/dev/null 2>&1; then
+    fail "sys/vt.h compatibility probe failed"
 fi
 
 rm -rf "$SOURCE_WORK" "$BUILD"
@@ -82,7 +97,7 @@ fi
         PKG_CONFIG_PATH="$NCURSES_ROOT/usr/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$NCURSES_ROOT/usr/lib/pkgconfig" \
         CFLAGS="-Os -fno-stack-protector -fno-pie $NO_AUTO_ATOMIC" \
-        CPPFLAGS="-D_GNU_SOURCE -I$NCURSES_ROOT/usr/include -I$NCURSES_ROOT/usr/include/ncursesw" \
+        CPPFLAGS="-D_GNU_SOURCE -I$COMPAT_INCLUDE -I$NCURSES_ROOT/usr/include -I$NCURSES_ROOT/usr/include/ncursesw" \
         LDFLAGS="-static -no-pie -L$NCURSES_ROOT/usr/lib $NO_AUTO_ATOMIC" \
         LIBS="$NCURSES_LIBS" \
         "$SOURCE_WORK/configure" "${configure_args[@]}"

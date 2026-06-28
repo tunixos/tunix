@@ -54,7 +54,7 @@ INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 WALLPAPER_SOURCE ?= assets/tunix-mountain-lake.jpg
 WALLPAPER_OUTPUT := initrd/usr/share/tunix/wallpaper.twl
 
-.PHONY: all run headless wallpaper clean
+.PHONY: all run headless wallpaper editor-check editor-qemu-check clean
 all: $(IMAGE)
 
 wallpaper: $(WALLPAPER_OUTPUT)
@@ -174,18 +174,23 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp $(ROOTFS)/home
 	cp -R initrd/. $(ROOTFS)/
 	cp $(INIT) $(ROOTFS)/sbin/init
 	cp $(BASH) $(ROOTFS)/bin/bash
 	cp $(BUSYBOX) $(ROOTFS)/bin/busybox
+	cp $(NANO) $(ROOTFS)/bin/nano
 	cp $(SYSTEM_TOOLS) $(ROOTFS)/bin/
 	cp -R $(TCC_ROOT)/. $(ROOTFS)/
+	mkdir -p $(ROOTFS)/usr/share
+	cp -R $(NCURSES_ROOT)/usr/share/terminfo $(ROOTFS)/usr/share/
+	mkdir -p $(ROOTFS)/usr/share/nano
+	cp ports/src/nano/syntax/*.nanorc $(ROOTFS)/usr/share/nano/
 	@test -x $(ROOTFS)/usr/bin/tcc || { echo "TinyCC was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
-	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/busybox \
+	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/busybox $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
 		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top \
 		$(ROOTFS)/usr/bin/tcc
@@ -204,6 +209,12 @@ run: $(IMAGE)
 headless: $(IMAGE)
 	$(QEMU) -machine pc -m 128M -drive format=raw,file=$(IMAGE) \
 		-nographic -monitor none -serial stdio -no-reboot -no-shutdown
+
+editor-check:
+	ITERATIONS=20 ./scripts/test-editor-ports.sh
+
+editor-qemu-check: $(IMAGE)
+	$(PYTHON) scripts/nano-qemu-smoke.py $(IMAGE) --qemu $(QEMU) --iterations 20
 
 clean:
 	rm -rf $(BUILD) $(PORT_OUT)

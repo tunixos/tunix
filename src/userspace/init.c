@@ -1,5 +1,17 @@
 #include "tunix_libc.h"
 
+static char *const shell_environment[] = {
+    "HOME=/home",
+    "PATH=/bin:/usr/bin",
+    "SHELL=/bin/bash",
+    "TERM=tunix-256color",
+    "TERMINFO=/usr/share/terminfo",
+    "LANG=C.UTF-8",
+    "USER=root",
+    "LOGNAME=root",
+    0
+};
+
 static int spawn(char *const argv[]) {
     long child = t_fork();
     if (child < 0) return -1;
@@ -7,7 +19,7 @@ static int spawn(char *const argv[]) {
         t_setpgid(0, 0);
         int pgid = (int)t_getpgrp();
         t_ioctl(0, T_TIOCSPGRP, &pgid);
-        t_execve(argv[0], argv, t_environ);
+        t_execve(argv[0], argv, shell_environment);
         t_puterr("init: cannot execute /bin/bash\n");
         t_exit(127);
     }
