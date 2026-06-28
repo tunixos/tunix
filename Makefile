@@ -46,7 +46,8 @@ KERNEL_OBJS := \
 USER_RUNTIME := $(BUILD)/user/crt0.o $(BUILD)/user/libc.o $(BUILD)/user/sigreturn.o
 INIT := $(BUILD)/user/init
 PROCUTIL := $(BUILD)/user/procutil.o
-SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top
+LOADKEYS := $(BUILD)/user/loadkeys
+SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS)
 BUSYBOX_APPLETS := awk basename cat chmod clear cp cut date dd dirname du echo egrep env expr false \
 	fgrep find grep head id ls md5sum mkdir mv printenv printf pwd readlink realpath rm \
 	rmdir sed seq sha256sum sort stat tail tee test touch tr true uname uniq wc which xargs yes hwclock
@@ -166,8 +167,14 @@ $(BUILD)/user/procutil.o: src/userspace/procutil.c src/userspace/procutil.h src/
 $(BUILD)/user/%.o: src/userspace/%.c src/userspace/procutil.h src/libc/include/tunix_libc.h | $(BUILD)/user
 	$(CC) $(USER_CFLAGS) -Isrc/userspace -c $< -o $@
 
+$(BUILD)/user/loadkeys.o $(BUILD)/user/loadkeys_parser.o: src/userspace/loadkeys_parser.h src/include/tunix/keymap.h
+
 $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top: $(BUILD)/user/%: $(BUILD)/user/%.o $(PROCUTIL) $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(PROCUTIL) $(BUILD)/user/$*.o
+	$(STRIP) --strip-all $@
+
+$(LOADKEYS): $(BUILD)/user/loadkeys.o $(BUILD)/user/loadkeys_parser.o $(USER_RUNTIME) src/userspace/linker.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/loadkeys.o $(BUILD)/user/loadkeys_parser.o
 	$(STRIP) --strip-all $@
 
 $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
@@ -192,7 +199,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/busybox $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
-		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top \
+		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys \
 		$(ROOTFS)/usr/bin/tcc
 	ln -s bash $(ROOTFS)/bin/sh
 	@for app in $(BUSYBOX_APPLETS); do ln -s busybox $(ROOTFS)/bin/$$app; done
