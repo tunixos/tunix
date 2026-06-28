@@ -38,6 +38,9 @@ static int ansi_have_current;
 static int ansi_private;
 static int saved_row;
 static int saved_col;
+static uint32_t utf8_codepoint;
+static uint32_t utf8_minimum;
+static unsigned utf8_remaining;
 
 static const char default_keymap[128] = {
     [0x02]='1',[0x03]='2',[0x04]='3',[0x05]='4',[0x06]='5',[0x07]='6',[0x08]='7',[0x09]='8',[0x0A]='9',[0x0B]='0',
@@ -239,13 +242,67 @@ static void ansi_begin_csi(void) {
     ansi_private = 0;
 }
 
+static void utf8_reset(void) {
+    utf8_codepoint = 0;
+    utf8_minimum = 0;
+    utf8_remaining = 0;
+}
+
+static void utf8_replacement(void) {
+    utf8_reset();
+    terminal_put_codepoint(UINT32_C(0xFFFD));
+}
+
+static void terminal_feed_text_byte(uint8_t byte) {
+    if (utf8_remaining) {
+        if ((byte & 0xC0U) != 0x80U) {
+            utf8_replacement();
+            terminal_feed_text_byte(byte);
+            return;
+        }
+        utf8_codepoint = (utf8_codepoint << 6) | (uint32_t)(byte & 0x3FU);
+        utf8_remaining--;
+        if (!utf8_remaining) {
+            uint32_t codepoint = utf8_codepoint;
+            uint32_t minimum = utf8_minimum;
+            utf8_reset();
+            if (codepoint < minimum || codepoint > UINT32_C(0x10FFFF) ||
+                (codepoint >= UINT32_C(0xD800) && codepoint <= UINT32_C(0xDFFF)))
+                terminal_put_codepoint(UINT32_C(0xFFFD));
+            else
+                terminal_put_codepoint(codepoint);
+        }
+        return;
+    }
+
+    if (byte < 0x80U) {
+        terminal_put_codepoint(byte);
+    } else if (byte >= 0xC2U && byte <= 0xDFU) {
+        utf8_codepoint = byte & 0x1FU;
+        utf8_minimum = 0x80U;
+        utf8_remaining = 1;
+    } else if (byte >= 0xE0U && byte <= 0xEFU) {
+        utf8_codepoint = byte & 0x0FU;
+        utf8_minimum = 0x800U;
+        utf8_remaining = 2;
+    } else if (byte >= 0xF0U && byte <= 0xF4U) {
+        utf8_codepoint = byte & 0x07U;
+        utf8_minimum = UINT32_C(0x10000);
+        utf8_remaining = 3;
+    } else {
+        terminal_put_codepoint(UINT32_C(0xFFFD));
+    }
+}
+
 static void terminal_feed(char c) {
     if (ansi_state == 0) {
-        if ((unsigned char)c == 0x1BU) {
+        uint8_t byte = (uint8_t)c;
+        if (byte == 0x1BU) {
+            if (utf8_remaining) utf8_replacement();
             ansi_state = 1;
             return;
         }
-        terminal_put_char(c);
+        terminal_feed_text_byte(byte);
         return;
     }
     if (ansi_state == 1) {
@@ -268,6 +325,7 @@ static void terminal_feed(char c) {
             return;
         }
         if (c == 'c') {
+            utf8_reset();
             terminal_set_alternate_screen(0);
             terminal_set_cursor_visible(1);
             terminal_set_sgr(0);
@@ -560,6 +618,7 @@ int64_t tty_read(size_t size, void *buffer) {
 }
 
 void tty_init(void) {
+    utf8_reset();
     memset(&console_termios, 0, sizeof(console_termios));
     console_termios.iflag = 0x00000500U;
     console_termios.oflag = 0x00000005U;

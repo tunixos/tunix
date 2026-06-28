@@ -33,29 +33,8 @@ a20_ok:
     call do_vbe
     jc halt
 
-    mov ah, 0x42
-    mov dl, [boot_drive]
-    mov si, kernel_dap_first
-    int 0x13
+    call read_boot_payload
     jc halt
-    xor ax, ax
-    mov ds, ax
-
-    mov ah, 0x42
-    mov dl, [boot_drive]
-    mov si, kernel_dap_second
-    int 0x13
-    jc halt
-    xor ax, ax
-    mov ds, ax
-
-    mov ah, 0x42
-    mov dl, [boot_drive]
-    mov si, kernel_dap_third
-    int 0x13
-    jc halt
-    xor ax, ax
-    mov ds, ax
 
     cli
     lgdt [gdt32_descriptor]
@@ -63,6 +42,71 @@ a20_ok:
     or eax, 1
     mov cr0, eax
     jmp dword 0x08:pm32_entry
+
+read_boot_payload:
+    mov word [boot_read_remaining], BOOT_PAYLOAD_SECTORS
+    mov word [boot_read_dap + 4], 0
+    mov word [boot_read_dap + 6], BOOT_PAYLOAD_SEGMENT
+    mov dword [boot_read_dap + 8], BOOT_PAYLOAD_LBA
+    mov dword [boot_read_dap + 12], 0
+
+.read_next:
+    cmp word [boot_read_remaining], 0
+    je .done
+
+    mov ax, [boot_read_remaining]
+    cmp word [boot_read_dap + 4], 0
+    jne .at_boundary
+    cmp ax, 127
+    jbe .set_count
+    mov ax, 127
+    jmp .set_count
+
+.at_boundary:
+    mov ax, 1
+
+.set_count:
+    mov [boot_read_count], ax
+    mov [boot_read_dap + 2], ax
+    mov byte [boot_read_retries], 3
+
+.retry:
+    xor ax, ax
+    mov ds, ax
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    mov si, boot_read_dap
+    int 0x13
+    jnc .read_ok
+
+    xor ax, ax
+    mov ds, ax
+    mov ah, 0x00
+    mov dl, [boot_drive]
+    int 0x13
+    dec byte [boot_read_retries]
+    jnz .retry
+    stc
+    ret
+
+.read_ok:
+    xor ax, ax
+    mov ds, ax
+    movzx eax, word [boot_read_count]
+    add dword [boot_read_dap + 8], eax
+    adc dword [boot_read_dap + 12], 0
+
+    mov ax, [boot_read_count]
+    sub [boot_read_remaining], ax
+    shl ax, 9
+    add [boot_read_dap + 4], ax
+    jnc .read_next
+    add word [boot_read_dap + 6], 0x1000
+    jmp .read_next
+
+.done:
+    clc
+    ret
 
 check_a20:
     pushf
@@ -527,6 +571,11 @@ halt:
     hlt
     jmp halt
 
+BOOT_PAYLOAD_LBA equ 64
+KERNEL_RESERVED_SECTORS equ 512
+BOOT_PAYLOAD_SECTORS equ KERNEL_RESERVED_SECTORS + 1
+BOOT_PAYLOAD_SEGMENT equ 0x2000
+
 BOOT_FB_INFO_ADDRESS equ 0x5000
 BIOS_FONT_ADDRESS equ 0x6000
 BOOT_FB_MAGIC equ 0x30424654
@@ -543,31 +592,16 @@ mode_list_offset  dw 0
 mode_list_segment dw 0
 
 align 4
-kernel_dap_first:
+boot_read_dap:
     db 0x10
     db 0
-    dw 127
-    dw 0x0000
-    dw 0x2000
-    dq 64
-
-align 4
-kernel_dap_second:
-    db 0x10
-    db 0
-    dw 1
-    dw 0xFE00
-    dw 0x2000
-    dq 191
-
-align 4
-kernel_dap_third:
-    db 0x10
-    db 0
-    dw 65
-    dw 0x0000
-    dw 0x3000
-    dq 192
+    dw 0
+    dw 0
+    dw BOOT_PAYLOAD_SEGMENT
+    dq BOOT_PAYLOAD_LBA
+boot_read_remaining dw 0
+boot_read_count     dw 0
+boot_read_retries   db 0
 
 align 4
 vbe_info_block:

@@ -22,11 +22,13 @@ TCC_STAMP := $(PORT_OUT)/.tcc-ready
 NCURSES_ROOT := $(PORT_OUT)/ncurses-root
 NCURSES_STAMP := $(PORT_OUT)/.ncurses-ready
 NANO := $(PORT_OUT)/nano
+TERMINAL_FONT_SOURCE ?= assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf
+TERMINAL_FONT_DATA := $(BUILD)/generated/terminal_font_data.inc
 
 COMMON_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -fno-builtin -fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-mno-red-zone -m64 -Os -ffunction-sections -fdata-sections
-KERNEL_CFLAGS := $(COMMON_CFLAGS) -mcmodel=kernel -Isrc/kernel/include -Isrc/include
+KERNEL_CFLAGS := $(COMMON_CFLAGS) -mcmodel=kernel -Isrc/kernel/include -Isrc/include -I$(BUILD)/generated
 KERNEL_LDFLAGS := -nostdlib -no-pie -Wl,-T,src/kernel/arch/x86_64/linker.ld \
 	-Wl,--gc-sections -Wl,--build-id=none -Wl,-z,max-page-size=0x1000
 USER_CFLAGS := $(COMMON_CFLAGS) -mcmodel=small -Isrc/libc/include -Isrc/include
@@ -55,13 +57,19 @@ INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 WALLPAPER_SOURCE ?= assets/tunix-mountain-lake.jpg
 WALLPAPER_OUTPUT := initrd/usr/share/tunix/wallpaper.twl
 
-.PHONY: all run headless wallpaper editor-check editor-qemu-check loadkeys-check loadkeys-qemu-check clean
+.PHONY: all run headless wallpaper terminal-font editor-check editor-qemu-check loadkeys-check loadkeys-qemu-check clean
 all: $(IMAGE)
 
 wallpaper: $(WALLPAPER_OUTPUT)
 
+terminal-font: $(TERMINAL_FONT_DATA)
+
 $(WALLPAPER_OUTPUT): $(WALLPAPER_SOURCE) scripts/convert-wallpaper.py
 	$(PYTHON) scripts/convert-wallpaper.py $(WALLPAPER_SOURCE) $(WALLPAPER_OUTPUT) --width 960 --height 540
+
+$(TERMINAL_FONT_DATA): $(TERMINAL_FONT_SOURCE) scripts/generate-terminal-font.py | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(PYTHON) scripts/generate-terminal-font.py $(TERMINAL_FONT_SOURCE) $@ --width 8 --height 18 --size 13
 
 $(BUILD)/.tools:
 	@mkdir -p $(BUILD)
@@ -124,7 +132,9 @@ $(BUILD)/unix_socket.o: src/kernel/include/unix_socket.h src/kernel/include/pipe
 $(BUILD)/pty.o: src/kernel/include/pty.h src/kernel/include/tty.h src/kernel/include/file.h
 $(BUILD)/file.o: src/kernel/include/file.h src/kernel/include/vfs.h src/kernel/include/pty.h
 $(BUILD)/syscall.o: src/kernel/include/vfs.h src/kernel/include/tty.h src/kernel/include/pty.h src/kernel/include/process.h src/kernel/include/random.h src/kernel/include/time.h
-$(BUILD)/tty.o: src/kernel/include/input.h src/kernel/include/tty.h src/include/tunix/keymap.h
+$(BUILD)/terminal_font.o: $(TERMINAL_FONT_DATA) src/kernel/include/terminal_font.h
+$(BUILD)/terminal.o: src/kernel/include/terminal_font.h src/kernel/include/terminal.h
+$(BUILD)/tty.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/include/terminal.h src/include/tunix/keymap.h
 $(BUILD)/process.o: src/kernel/include/process.h src/kernel/include/signal.h
 $(BUILD)/random.o: src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/spinlock.h
 $(BUILD)/time.o: src/kernel/include/time.h src/kernel/include/io.h

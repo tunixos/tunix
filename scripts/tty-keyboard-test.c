@@ -6,6 +6,9 @@
  * input queue without exposing test-only kernel APIs. */
 #include "../src/kernel/tty.c"
 
+static uint32_t rendered_codepoints[32];
+static size_t rendered_count;
+
 static void fail(const char *name, int expected, int actual) {
     fprintf(stderr, "%s: expected 0x%02x, got 0x%02x\n", name, expected, actual);
     exit(1);
@@ -77,6 +80,42 @@ static void test_meta_and_navigation(void) {
     expect_empty("Navigation queue");
 }
 
+static void expect_codepoint(const char *name, size_t index, uint32_t expected) {
+    uint32_t actual = index < rendered_count ? rendered_codepoints[index] : UINT32_MAX;
+    if (actual != expected) {
+        fprintf(stderr, "%s: expected U+%04x, got U+%04x\n",
+                name, expected, actual);
+        exit(1);
+    }
+}
+
+static void test_utf8_terminal_output(void) {
+    static const char text[] = {
+        (char)0xC4, (char)0x9F, /* ğ */
+        (char)0xC5, (char)0x9F, /* ş */
+        (char)0xC4, (char)0xB0, /* İ */
+        (char)0xC4, (char)0xB1, /* ı */
+        (char)0xC3, (char)0xBC, /* ü */
+        (char)0xC3, (char)0xB6, /* ö */
+        (char)0xC3, (char)0xA7  /* ç */
+    };
+
+    tty_init();
+    rendered_count = 0;
+    if (tty_write(sizeof(text), text) != (int64_t)sizeof(text)) exit(1);
+    if (rendered_count != 7U) {
+        fprintf(stderr, "UTF-8 output: expected 7 codepoints, got %zu\n", rendered_count);
+        exit(1);
+    }
+    expect_codepoint("UTF-8 ğ", 0, UINT32_C(0x011F));
+    expect_codepoint("UTF-8 ş", 1, UINT32_C(0x015F));
+    expect_codepoint("UTF-8 İ", 2, UINT32_C(0x0130));
+    expect_codepoint("UTF-8 ı", 3, UINT32_C(0x0131));
+    expect_codepoint("UTF-8 ü", 4, UINT32_C(0x00FC));
+    expect_codepoint("UTF-8 ö", 5, UINT32_C(0x00F6));
+    expect_codepoint("UTF-8 ç", 6, UINT32_C(0x00E7));
+}
+
 static void test_raw_termios_is_preserved(void) {
     struct tunix_termios settings;
     struct tunix_termios actual;
@@ -96,6 +135,7 @@ static void test_raw_termios_is_preserved(void) {
 int main(void) {
     test_nano_shortcuts();
     test_meta_and_navigation();
+    test_utf8_terminal_output();
     test_raw_termios_is_preserved();
     puts("tty keyboard/raw-mode regression: PASS");
     return 0;
@@ -111,6 +151,10 @@ int process_send_signal(int64_t pid, int signal_number) {
 }
 void terminal_clear(void) {}
 void terminal_put_char(char c) { (void)c; }
+void terminal_put_codepoint(uint32_t codepoint) {
+    if (rendered_count < sizeof(rendered_codepoints) / sizeof(rendered_codepoints[0]))
+        rendered_codepoints[rendered_count++] = codepoint;
+}
 void terminal_set_sgr(unsigned code) { (void)code; }
 void terminal_set_sgr_sequence(const unsigned *codes, unsigned count) {
     (void)codes;

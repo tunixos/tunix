@@ -17,7 +17,7 @@ python3 -m py_compile scripts/nano-smoke.py scripts/nano-qemu-smoke.py
 HOST_CC=${HOST_CC:-cc}
 TTY_TEST=$(mktemp "${TMPDIR:-/tmp}/tunix-tty-test.XXXXXX")
 trap 'rm -f "$TTY_TEST"' EXIT
-"$HOST_CC" -std=c11 -Wall -Wextra -Werror -Isrc/kernel \
+"$HOST_CC" -std=c11 -Wall -Wextra -Werror -Isrc/kernel -Isrc/include \
     scripts/tty-keyboard-test.c -o "$TTY_TEST"
 "$TTY_TEST"
 

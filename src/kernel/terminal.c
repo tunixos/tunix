@@ -24,9 +24,9 @@ struct wallpaper_header {
 } __attribute__((packed));
 
 struct console_cell {
-    uint8_t character;
+    uint32_t codepoint;
     uint8_t flags;
-    uint16_t reserved;
+    uint8_t reserved[3];
     uint32_t foreground;
     uint32_t background;
 };
@@ -287,18 +287,20 @@ static void copy_cell_background(int row, int col) {
     copy_backing_rect(x, y, layout.cell_width, layout.cell_height);
 }
 
-static void draw_glyph_to_framebuffer(uint32_t x, uint32_t y, uint8_t character,
+static void draw_glyph_to_framebuffer(uint32_t x, uint32_t y, uint32_t codepoint,
                                       uint32_t color, int explicit_background,
                                       uint32_t background) {
-    (void)explicit_background;
-    (void)background;
-    const uint8_t *glyph = tunix_terminal_font_bitmap +
-        (size_t)character * TUNIX_TERMINAL_FONT_BYTES_PER_GLYPH;
+    const uint8_t *glyph = tunix_terminal_font_glyph(codepoint);
     for (uint32_t row = 0; row < TUNIX_TERMINAL_FONT_HEIGHT; row++) {
-        uint8_t bits = glyph[row];
         for (uint32_t column = 0; column < TUNIX_TERMINAL_FONT_WIDTH; column++) {
-            if (bits & (uint8_t)(0x80U >> column))
-                framebuffer_put_rgb(x + column, y + row, color);
+            uint8_t alpha = glyph[row * TUNIX_TERMINAL_FONT_WIDTH + column];
+            if (!alpha) continue;
+            uint32_t pixel_x = x + column;
+            uint32_t pixel_y = y + row;
+            uint32_t base = explicit_background
+                ? background
+                : wallpaper_backing[(size_t)pixel_y * layout.screen_width + pixel_x];
+            framebuffer_put_rgb(pixel_x, pixel_y, blend_rgb(base, color, alpha));
         }
     }
 }
@@ -313,8 +315,8 @@ static void draw_cell_overlay(int row, int col, int cursor) {
                 framebuffer_put_rgb(x + px, y + py, cell->background);
         }
     }
-    if (cell->character >= 32U)
-        draw_glyph_to_framebuffer(x, y, cell->character, cell->foreground,
+    if (cell->codepoint >= 32U && cell->codepoint != 127U)
+        draw_glyph_to_framebuffer(x, y, cell->codepoint, cell->foreground,
                                   (cell->flags & CELL_BG_EXPLICIT) != 0,
                                   cell->background);
     if (cursor) {
@@ -339,7 +341,7 @@ static void render_console(void) {
     for (int row = 0; row < layout.rows; row++) {
         for (int col = 0; col < layout.columns; col++) {
             struct console_cell *cell = cell_at(row, col);
-            if (cell->character || (cell->flags & CELL_BG_EXPLICIT))
+            if (cell->codepoint || (cell->flags & CELL_BG_EXPLICIT))
                 draw_cell_overlay(row, col, 0);
         }
     }
@@ -414,27 +416,30 @@ void terminal_clear(void) {
     render_console();
 }
 
-void terminal_put_char(char c) {
+void terminal_put_codepoint(uint32_t codepoint) {
     if (!terminal_ready) return;
+    if (codepoint > UINT32_C(0x10FFFF) ||
+        (codepoint >= UINT32_C(0xD800) && codepoint <= UINT32_C(0xDFFF)))
+        codepoint = UINT32_C(0xFFFD);
 
     render_cell(console_row, console_col, 0);
-    if (c == '\n') {
+    if (codepoint == '\n') {
         console_col = 0;
         console_row++;
-    } else if (c == '\r') {
+    } else if (codepoint == '\r') {
         console_col = 0;
-    } else if (c == '\b' || c == 127) {
+    } else if (codepoint == '\b' || codepoint == 127U) {
         if (console_col > 0) console_col--;
         else if (console_row > 0) {
             console_row--;
             console_col = layout.columns - 1;
         }
         render_cell(console_row, console_col, 0);
-    } else if (c == '\t') {
+    } else if (codepoint == '\t') {
         int spaces = 8 - (console_col & 7);
-        while (spaces-- > 0) terminal_put_char(' ');
+        while (spaces-- > 0) terminal_put_codepoint(' ');
         return;
-    } else if ((unsigned char)c >= 32U) {
+    } else if (codepoint >= 32U) {
         struct console_cell *cell = cell_at(console_row, console_col);
         uint32_t foreground = current_foreground;
         uint32_t background = current_background;
@@ -445,7 +450,7 @@ void terminal_put_char(char c) {
             background = temporary;
             explicit_background = 1;
         }
-        cell->character = (uint8_t)c;
+        cell->codepoint = codepoint;
         cell->foreground = current_bold ? shade_rgb(foreground, 116U, 100U) : foreground;
         cell->background = background;
         cell->flags = explicit_background ? CELL_BG_EXPLICIT : 0U;
@@ -458,6 +463,10 @@ void terminal_put_char(char c) {
     }
     terminal_scroll_if_needed();
     if (cursor_visible) render_cell(console_row, console_col, 1);
+}
+
+void terminal_put_char(char c) {
+    terminal_put_codepoint((uint8_t)c);
 }
 
 void terminal_print(const char *text) {

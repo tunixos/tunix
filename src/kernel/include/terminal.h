@@ -7,6 +7,7 @@ int terminal_init(const char *wallpaper_path);
 void terminal_clear(void);
 void terminal_print(const char *text);
 void terminal_put_char(char c);
+void terminal_put_codepoint(uint32_t codepoint);
 void terminal_set_sgr(unsigned code);
 void terminal_set_sgr_sequence(const unsigned *codes, unsigned count);
 void terminal_cursor_move(int row_delta, int col_delta);
