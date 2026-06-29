@@ -9,6 +9,7 @@
 #include "include/heap.h"
 #include "include/input.h"
 #include "include/idt.h"
+#include "include/net/net.h"
 #include "include/pmm.h"
 #include "include/pic.h"
 #include "include/process.h"
@@ -77,6 +78,7 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
         (const struct boot_framebuffer_info *)vmm_phys_to_virt(framebuffer_info_address);
     if (framebuffer_init(framebuffer_info) != 0) panic("framebuffer initialization failed");
     heap_init();
+    net_init();
 #if TUNIX_DEBUG_LOGS
     kprintf("TUNIX: GDT/TSS IDT PMM VMM heap ready\n");
 #endif
