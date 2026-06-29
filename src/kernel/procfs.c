@@ -7,6 +7,8 @@
 #include "include/time.h"
 #include "include/vfs.h"
 #include "include/vmm.h"
+#include "include/net/inet_socket.h"
+#include "include/net/net.h"
 
 #define PROC_BUFFER_SIZE 4096
 
@@ -198,6 +200,71 @@ static int64_t proc_loadavg_read(struct vfs_node *node, uint64_t offset,
     return text_read(&text, offset, size, output);
 }
 
+static int64_t proc_net_dev_read(struct vfs_node *node, uint64_t offset,
+                                  size_t size, void *output) {
+    (void)node;
+    struct text_buffer text = {{0}, 0};
+    text_string(&text, "Inter-|   Receive                                                |  Transmit\n");
+    text_string(&text, " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n");
+    text_string(&text, "  eth0: 0 "); text_unsigned(&text, net_rx_packets());
+    text_string(&text, " 0 "); text_unsigned(&text, net_rx_dropped());
+    text_string(&text, " 0 0 0 0 0 0 "); text_unsigned(&text, net_tx_packets());
+    text_string(&text, " 0 0 0 0 0 0 0\n");
+    return text_read(&text, offset, size, output);
+}
+
+static void text_hex32(struct text_buffer *text, uint32_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    for (int shift = 28; shift >= 0; shift -= 4)
+        text_char(text, digits[(value >> shift) & 15U]);
+}
+
+static int64_t proc_net_route_read(struct vfs_node *node, uint64_t offset,
+                                    size_t size, void *output) {
+    (void)node;
+    const struct net_config *cfg = net_get_config();
+    struct text_buffer text = {{0}, 0};
+    text_string(&text, "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n");
+    text_string(&text, "eth0\t00000000\t"); text_hex32(&text, cfg->gateway);
+    text_string(&text, "\t0003\t0\t0\t0\t00000000\t0\t0\t0\n");
+    text_string(&text, "eth0\t"); text_hex32(&text, cfg->address & cfg->netmask);
+    text_string(&text, "\t00000000\t0001\t0\t0\t0\t"); text_hex32(&text, cfg->netmask);
+    text_string(&text, "\t0\t0\t0\n");
+    return text_read(&text, offset, size, output);
+}
+
+static int64_t proc_net_arp_read(struct vfs_node *node, uint64_t offset,
+                                  size_t size, void *output) {
+    (void)node;
+    struct text_buffer text = {{0}, 0};
+    text_string(&text, "IP address       HW type     Flags       HW address            Mask     Device\n");
+    return text_read(&text, offset, size, output);
+}
+
+static int64_t proc_net_udp_read(struct vfs_node *node, uint64_t offset,
+                                  size_t size, void *output) {
+    (void)node;
+    struct text_buffer text = {{0}, 0};
+    inet_socket_proc_udp(text.data, sizeof(text.data), &text.length);
+    return text_read(&text, offset, size, output);
+}
+
+static int64_t proc_net_raw_read(struct vfs_node *node, uint64_t offset,
+                                  size_t size, void *output) {
+    (void)node;
+    struct text_buffer text = {{0}, 0};
+    inet_socket_proc_raw(text.data, sizeof(text.data), &text.length);
+    return text_read(&text, offset, size, output);
+}
+
+static int64_t proc_net_tcp_read(struct vfs_node *node, uint64_t offset,
+                                  size_t size, void *output) {
+    (void)node;
+    struct text_buffer text = {{0}, 0};
+    text_string(&text, "  sl  local_address rem_address   st\n");
+    return text_read(&text, offset, size, output);
+}
+
 static uint64_t node_pid(struct vfs_node *node) {
     return (uint64_t)(uintptr_t)node->data;
 }
@@ -314,6 +381,20 @@ void procfs_init(void) {
     virtual_file(root, "mounts", proc_mounts_read, 0);
     virtual_file(root, "stat", proc_stat_read, 0);
     virtual_file(root, "loadavg", proc_loadavg_read, 0);
+
+    struct vfs_node *net = vfs_mkdir_p("/proc/net");
+    if (net) {
+        net->mode = 0555;
+        virtual_file(net, "dev", proc_net_dev_read, 0);
+        virtual_file(net, "route", proc_net_route_read, 0);
+        virtual_file(net, "arp", proc_net_arp_read, 0);
+        virtual_file(net, "udp", proc_net_udp_read, 0);
+        virtual_file(net, "raw", proc_net_raw_read, 0);
+        virtual_file(net, "tcp", proc_net_tcp_read, 0);
+        virtual_file(net, "udp6", proc_net_tcp_read, 0);
+        virtual_file(net, "raw6", proc_net_tcp_read, 0);
+        virtual_file(net, "tcp6", proc_net_tcp_read, 0);
+    }
 }
 
 void procfs_register_process(struct process *process) {

@@ -17,6 +17,7 @@
 #include "include/terminal.h"
 #include "include/vmm.h"
 #include "include/unix_socket.h"
+#include "include/net/inet_socket.h"
 
 extern void kprintf(const char *fmt, ...);
 
@@ -63,10 +64,18 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 120, "syscall frame r
 #define SYS_SOCKET 41
 #define SYS_CONNECT 42
 #define SYS_ACCEPT 43
+#define SYS_SENDTO 44
+#define SYS_RECVFROM 45
+#define SYS_SENDMSG 46
+#define SYS_RECVMSG 47
 #define SYS_SHUTDOWN 48
 #define SYS_BIND 49
 #define SYS_LISTEN 50
+#define SYS_GETSOCKNAME 51
+#define SYS_GETPEERNAME 52
 #define SYS_SOCKETPAIR 53
+#define SYS_SETSOCKOPT 54
+#define SYS_GETSOCKOPT 55
 #define SYS_CLONE 56
 #define SYS_FORK 57
 #define SYS_VFORK 58
@@ -260,6 +269,14 @@ struct linux_clone_args {
 #define ENAMETOOLONG 36
 #define ERANGE 34
 #define ETIMEDOUT 110
+#define EMSGSIZE 90
+#define EPROTONOSUPPORT 93
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define EADDRNOTAVAIL 99
+#define ENETDOWN 100
+#define ENOTCONN 107
+#define EDESTADDRREQ 89
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
@@ -316,6 +333,20 @@ struct linux_iovec {
     uint64_t base;
     uint64_t length;
 };
+
+struct linux_msghdr {
+    uint64_t name;
+    uint32_t name_length;
+    uint32_t __pad0;
+    uint64_t iov;
+    uint64_t iov_length;
+    uint64_t control;
+    uint64_t control_length;
+    int32_t flags;
+    uint32_t __pad1;
+};
+
+_Static_assert(sizeof(struct linux_msghdr) == 56, "Linux x86_64 msghdr ABI mismatch");
 
 struct linux_utsname {
     char sysname[65];
@@ -422,6 +453,7 @@ static int file_read_ready(struct file *file) {
         return file->pipe && (file->pipe->count > 0 || file->pipe->writers == 0);
     if (file->kind == FILE_KIND_PIPE_WRITE) return 0;
     if (file->kind == FILE_KIND_SOCKET) return unix_socket_read_ready(file->socket);
+    if (file->kind == FILE_KIND_INET_SOCKET) return inet_socket_read_ready(file->inet_socket);
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_read_ready(file->pty, file->kind == FILE_KIND_PTY_MASTER);
     if (file->kind != FILE_KIND_VFS || !file->node) return -1;
@@ -438,6 +470,7 @@ static int file_write_ready(struct file *file) {
     }
     if (file->kind == FILE_KIND_PIPE_READ) return 0;
     if (file->kind == FILE_KIND_SOCKET) return unix_socket_write_ready(file->socket);
+    if (file->kind == FILE_KIND_INET_SOCKET) return inet_socket_write_ready(file->inet_socket);
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_write_ready(file->pty, file->kind == FILE_KIND_PTY_MASTER);
     if (file->kind != FILE_KIND_VFS || !file->node) return -1;
@@ -777,23 +810,35 @@ static struct unix_socket *socket_from_fd(int fd) {
     return file->kind == FILE_KIND_SOCKET ? file->socket : NULL;
 }
 
+static struct inet_socket *inet_socket_from_fd(int fd) {
+    struct process *process = process_current();
+    if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return NULL;
+    struct file *file = process->fds[fd];
+    return file->kind == FILE_KIND_INET_SOCKET ? file->inet_socket : NULL;
+}
+
 static int64_t sys_socket(int domain, int type, int protocol) {
     int base_type = type & 0xF;
-    if (domain != TUNIX_AF_UNIX || base_type != TUNIX_SOCK_STREAM || protocol != 0)
-        return -EOPNOTSUPP;
-    struct unix_socket *socket = unix_socket_create();
-    if (!socket) return -ENOMEM;
-    struct file *file = file_create_socket(socket);
-    if (!file) {
-        unix_socket_unref(socket);
-        return -ENOMEM;
+    if (domain == TUNIX_AF_UNIX) {
+        if (base_type != TUNIX_SOCK_STREAM || protocol != 0) return -EOPNOTSUPP;
+        struct unix_socket *socket = unix_socket_create();
+        if (!socket) return -ENOMEM;
+        struct file *file = file_create_socket(socket);
+        if (!file) { unix_socket_unref(socket); return -ENOMEM; }
+        int fd = process_install_file(process_current(), file, 0);
+        if (fd < 0) { file_unref(file); return -EMFILE; }
+        return fd;
     }
-    int fd = process_install_file(process_current(), file, 0);
-    if (fd < 0) {
-        file_unref(file);
-        return -EMFILE;
+    if (domain == TUNIX_AF_INET || domain == TUNIX_AF_PACKET) {
+        struct inet_socket *socket = inet_socket_create(domain, type, protocol);
+        if (!socket) return base_type == TUNIX_SOCK_STREAM ? -EOPNOTSUPP : -EPROTONOSUPPORT;
+        struct file *file = file_create_inet_socket(socket);
+        if (!file) { inet_socket_unref(socket); return -ENOMEM; }
+        int fd = process_install_file(process_current(), file, 0);
+        if (fd < 0) { file_unref(file); return -EMFILE; }
+        return fd;
     }
-    return fd;
+    return -EAFNOSUPPORT;
 }
 
 static int64_t sys_socketpair(int domain, int type, int protocol,
@@ -838,11 +883,17 @@ static int copy_sockaddr_un(uint64_t user_address, uint64_t length,
 }
 
 static int64_t sys_bind(int fd, uint64_t user_address, uint64_t length) {
-    struct unix_socket *socket = socket_from_fd(fd);
-    if (!socket) return -EBADF;
-    struct tunix_sockaddr_un address;
-    int status = copy_sockaddr_un(user_address, length, &address);
-    return status < 0 ? status : unix_socket_bind(socket, &address, (size_t)length);
+    struct unix_socket *unix_value = socket_from_fd(fd);
+    if (unix_value) {
+        struct tunix_sockaddr_un address;
+        int status = copy_sockaddr_un(user_address, length, &address);
+        return status < 0 ? status : unix_socket_bind(unix_value, &address, (size_t)length);
+    }
+    struct inet_socket *inet_value = inet_socket_from_fd(fd);
+    if (!inet_value || !user_address || length < 2 || length > 32) return -EBADF;
+    uint8_t address[32];
+    if (copy_from_user(address, user_address, (size_t)length) != 0) return -EFAULT;
+    return inet_socket_bind(inet_value, address, (size_t)length);
 }
 
 static int64_t sys_listen(int fd, int backlog) {
@@ -851,11 +902,17 @@ static int64_t sys_listen(int fd, int backlog) {
 }
 
 static int64_t sys_connect(int fd, uint64_t user_address, uint64_t length) {
-    struct unix_socket *socket = socket_from_fd(fd);
-    if (!socket) return -EBADF;
-    struct tunix_sockaddr_un address;
-    int status = copy_sockaddr_un(user_address, length, &address);
-    return status < 0 ? status : unix_socket_connect(socket, &address, (size_t)length);
+    struct unix_socket *unix_value = socket_from_fd(fd);
+    if (unix_value) {
+        struct tunix_sockaddr_un address;
+        int status = copy_sockaddr_un(user_address, length, &address);
+        return status < 0 ? status : unix_socket_connect(unix_value, &address, (size_t)length);
+    }
+    struct inet_socket *inet_value = inet_socket_from_fd(fd);
+    if (!inet_value || !user_address || length < 2 || length > 32) return -EBADF;
+    uint8_t address[32];
+    if (copy_from_user(address, user_address, (size_t)length) != 0) return -EFAULT;
+    return inet_socket_connect(inet_value, address, (size_t)length);
 }
 
 static int64_t sys_accept(int fd, uint64_t user_address, uint64_t user_length, int flags) {
@@ -879,6 +936,178 @@ static int64_t sys_accept(int fd, uint64_t user_address, uint64_t user_length, i
     return new_fd;
 }
 
+static int64_t sys_sendto(int fd, uint64_t user_data, size_t length, int flags,
+                          uint64_t user_address, uint64_t address_length) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket) return -EBADF;
+    if (length > 2048U) return -EMSGSIZE;
+    uint8_t data[2048];
+    uint8_t address[32];
+    if (length && copy_from_user(data, user_data, length) != 0) return -EFAULT;
+    const void *address_pointer = NULL;
+    if (user_address) {
+        if (address_length < 2 || address_length > sizeof(address)) return -EINVAL;
+        if (copy_from_user(address, user_address, (size_t)address_length) != 0) return -EFAULT;
+        address_pointer = address;
+    }
+    return inet_socket_sendto(socket, data, length, flags, address_pointer, (size_t)address_length);
+}
+
+static int64_t sys_recvfrom(int fd, uint64_t user_data, size_t length, int flags,
+                            uint64_t user_address, uint64_t user_address_length) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket) return -EBADF;
+    if (length > 2048U) length = 2048U;
+    uint8_t data[2048];
+    uint8_t address[32];
+    size_t address_length = sizeof(address);
+    if (user_address_length) {
+        uint32_t supplied;
+        if (copy_from_user(&supplied, user_address_length, sizeof(supplied)) != 0) return -EFAULT;
+        address_length = supplied < sizeof(address) ? supplied : sizeof(address);
+    }
+    int64_t result = inet_socket_recvfrom(socket, data, length, flags,
+                                           user_address ? address : NULL,
+                                           user_address ? &address_length : NULL);
+    if (result < 0) return result;
+    if (result && copy_to_user(user_data, data, (size_t)result) != 0) return -EFAULT;
+    if (user_address) {
+        if (copy_to_user(user_address, address, address_length) != 0) return -EFAULT;
+        if (user_address_length) {
+            uint32_t output_length = (uint32_t)address_length;
+            if (copy_to_user(user_address_length, &output_length, sizeof(output_length)) != 0) return -EFAULT;
+        }
+    }
+    return result;
+}
+
+static int copy_message_iovecs(const struct linux_msghdr *message, uint8_t *buffer,
+                               size_t capacity, size_t *total, int from_user) {
+    if (!message || !buffer || !total || message->iov_length > 16U) return -EINVAL;
+    size_t completed = 0;
+    for (uint64_t index = 0; index < message->iov_length; index++) {
+        struct linux_iovec iov;
+        if (copy_from_user(&iov, message->iov + index * sizeof(iov), sizeof(iov)) != 0)
+            return -EFAULT;
+        if (iov.length > capacity - completed) return -EMSGSIZE;
+        if (iov.length) {
+            int status = from_user
+                ? copy_from_user(buffer + completed, iov.base, (size_t)iov.length)
+                : copy_to_user(iov.base, buffer + completed, (size_t)iov.length);
+            if (status != 0) return -EFAULT;
+        }
+        completed += (size_t)iov.length;
+    }
+    *total = completed;
+    return 0;
+}
+
+static int64_t sys_sendmsg(int fd, uint64_t user_message, int flags) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket || !user_message) return -EBADF;
+    struct linux_msghdr message;
+    if (copy_from_user(&message, user_message, sizeof(message)) != 0) return -EFAULT;
+    uint8_t data[2048];
+    size_t length = 0;
+    int status = copy_message_iovecs(&message, data, sizeof(data), &length, 1);
+    if (status < 0) return status;
+    uint8_t address[32];
+    const void *address_pointer = NULL;
+    if (message.name) {
+        if (message.name_length < 2U || message.name_length > sizeof(address)) return -EINVAL;
+        if (copy_from_user(address, message.name, message.name_length) != 0) return -EFAULT;
+        address_pointer = address;
+    }
+    return inet_socket_sendto(socket, data, length, flags, address_pointer,
+                              message.name ? message.name_length : 0U);
+}
+
+static int64_t sys_recvmsg(int fd, uint64_t user_message, int flags) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket || !user_message) return -EBADF;
+    struct linux_msghdr message;
+    if (copy_from_user(&message, user_message, sizeof(message)) != 0) return -EFAULT;
+    if (message.iov_length > 16U) return -EINVAL;
+
+    size_t capacity = 0;
+    for (uint64_t index = 0; index < message.iov_length; index++) {
+        struct linux_iovec iov;
+        if (copy_from_user(&iov, message.iov + index * sizeof(iov), sizeof(iov)) != 0)
+            return -EFAULT;
+        if (iov.length > 2048U - capacity) return -EMSGSIZE;
+        capacity += (size_t)iov.length;
+    }
+
+    uint8_t data[2048];
+    uint8_t address[32];
+    size_t address_length = message.name_length < sizeof(address)
+        ? message.name_length : sizeof(address);
+    int64_t result = inet_socket_recvfrom(socket, data, capacity, flags,
+                                           message.name ? address : NULL,
+                                           message.name ? &address_length : NULL);
+    if (result < 0) return result;
+
+    size_t remaining = (size_t)result;
+    size_t offset = 0;
+    for (uint64_t index = 0; index < message.iov_length && remaining; index++) {
+        struct linux_iovec iov;
+        if (copy_from_user(&iov, message.iov + index * sizeof(iov), sizeof(iov)) != 0)
+            return -EFAULT;
+        size_t amount = iov.length < remaining ? (size_t)iov.length : remaining;
+        if (amount && copy_to_user(iov.base, data + offset, amount) != 0) return -EFAULT;
+        offset += amount;
+        remaining -= amount;
+    }
+
+    if (message.name) {
+        if (copy_to_user(message.name, address, address_length) != 0) return -EFAULT;
+        message.name_length = (uint32_t)address_length;
+    }
+    message.control_length = 0;
+    message.flags = 0;
+    if (copy_to_user(user_message, &message, sizeof(message)) != 0) return -EFAULT;
+    return result;
+}
+
+static int64_t sys_socket_name(int fd, uint64_t user_address, uint64_t user_length, int peer) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket || !user_address || !user_length) return -EBADF;
+    uint32_t supplied;
+    if (copy_from_user(&supplied, user_length, sizeof(supplied)) != 0) return -EFAULT;
+    uint8_t address[32];
+    size_t length = supplied < sizeof(address) ? supplied : sizeof(address);
+    int status = peer ? inet_socket_getpeername(socket, address, &length)
+                      : inet_socket_getsockname(socket, address, &length);
+    if (status < 0) return status;
+    if (copy_to_user(user_address, address, length) != 0) return -EFAULT;
+    uint32_t output_length = (uint32_t)length;
+    return copy_to_user(user_length, &output_length, sizeof(output_length)) == 0 ? 0 : -EFAULT;
+}
+
+static int64_t sys_setsockopt(int fd, int level, int option, uint64_t user_value, size_t length) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket) return -EBADF;
+    if (length > 256U) return -EINVAL;
+    uint8_t value[256];
+    if (length && copy_from_user(value, user_value, length) != 0) return -EFAULT;
+    return inet_socket_setsockopt(socket, level, option, value, length);
+}
+
+static int64_t sys_getsockopt(int fd, int level, int option, uint64_t user_value,
+                              uint64_t user_length) {
+    struct inet_socket *socket = inet_socket_from_fd(fd);
+    if (!socket || !user_length) return -EBADF;
+    uint32_t supplied;
+    if (copy_from_user(&supplied, user_length, sizeof(supplied)) != 0) return -EFAULT;
+    uint8_t value[256];
+    size_t length = supplied < sizeof(value) ? supplied : sizeof(value);
+    int status = inet_socket_getsockopt(socket, level, option, value, &length);
+    if (status < 0) return status;
+    if (copy_to_user(user_value, value, length) != 0) return -EFAULT;
+    uint32_t output_length = (uint32_t)length;
+    return copy_to_user(user_length, &output_length, sizeof(output_length)) == 0 ? 0 : -EFAULT;
+}
+
 static int64_t sys_ftruncate(int fd, uint64_t length) {
     struct process *process = process_current();
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
@@ -894,6 +1123,14 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_ioctl(file->pty, file->kind == FILE_KIND_PTY_MASTER,
                          request, user_argument);
+    if (file->kind == FILE_KIND_INET_SOCKET) {
+        size_t argument_size = (request == 0x890BU || request == 0x890CU) ? 128U : 40U;
+        uint8_t argument[128];
+        if (!user_argument || copy_from_user(argument, user_argument, argument_size) != 0) return -EFAULT;
+        int status = inet_socket_ioctl(file->inet_socket, request, argument);
+        if (status < 0) return status;
+        return copy_to_user(user_argument, argument, argument_size) == 0 ? 0 : -EFAULT;
+    }
     if (file->kind != FILE_KIND_VFS || !file->node || (file->node->flags & 0xFFU) != VFS_CHARDEVICE) return -ENOTTY;
     if (file->node->ioctl) return file->node->ioctl(file->node, request, user_argument);
 
@@ -1802,10 +2039,18 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_SOCKET: frame->rax = (uint64_t)sys_socket((int)frame->rdi, (int)frame->rsi, (int)frame->rdx); break;
         case SYS_CONNECT: frame->rax = (uint64_t)sys_connect((int)frame->rdi, frame->rsi, frame->rdx); break;
         case SYS_ACCEPT: frame->rax = (uint64_t)sys_accept((int)frame->rdi, frame->rsi, frame->rdx, 0); break;
+        case SYS_SENDTO: frame->rax = (uint64_t)sys_sendto((int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10, frame->r8, frame->r9); break;
+        case SYS_RECVFROM: frame->rax = (uint64_t)sys_recvfrom((int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10, frame->r8, frame->r9); break;
+        case SYS_SENDMSG: frame->rax = (uint64_t)sys_sendmsg((int)frame->rdi, frame->rsi, (int)frame->rdx); break;
+        case SYS_RECVMSG: frame->rax = (uint64_t)sys_recvmsg((int)frame->rdi, frame->rsi, (int)frame->rdx); break;
         case SYS_SHUTDOWN: frame->rax = 0; break;
         case SYS_BIND: frame->rax = (uint64_t)sys_bind((int)frame->rdi, frame->rsi, frame->rdx); break;
         case SYS_LISTEN: frame->rax = (uint64_t)sys_listen((int)frame->rdi, (int)frame->rsi); break;
+        case SYS_GETSOCKNAME: frame->rax = (uint64_t)sys_socket_name((int)frame->rdi, frame->rsi, frame->rdx, 0); break;
+        case SYS_GETPEERNAME: frame->rax = (uint64_t)sys_socket_name((int)frame->rdi, frame->rsi, frame->rdx, 1); break;
         case SYS_SOCKETPAIR: frame->rax = (uint64_t)sys_socketpair((int)frame->rdi, (int)frame->rsi, (int)frame->rdx, frame->r10); break;
+        case SYS_SETSOCKOPT: frame->rax = (uint64_t)sys_setsockopt((int)frame->rdi, (int)frame->rsi, (int)frame->rdx, frame->r10, frame->r8); break;
+        case SYS_GETSOCKOPT: frame->rax = (uint64_t)sys_getsockopt((int)frame->rdi, (int)frame->rsi, (int)frame->rdx, frame->r10, frame->r8); break;
         case SYS_GETPID: frame->rax = process_current_pid(); break;
         case SYS_GETTID: frame->rax = process_current_tid(); break;
         case SYS_CLONE: {
