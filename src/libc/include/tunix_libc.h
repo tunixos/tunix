@@ -148,6 +148,7 @@ int t_ftruncate(int fd, uint64_t length);
 int t_chdir(const char *path);
 char *t_getcwd(char *buffer, size_t size);
 int t_mkdir(const char *path, int mode);
+int t_umask(int mask);
 int t_unlink(const char *path);
 long t_getdents64(int fd, void *buffer, size_t size);
 int t_uname(struct t_utsname *name);

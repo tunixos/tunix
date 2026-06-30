@@ -268,6 +268,44 @@ struct vfs_node *vfs_create_file(const char *path, const void *data,
     return node;
 }
 
+struct vfs_node *vfs_create_file_node(const char *path, uint32_t mode) {
+    char parent_path[256];
+    char name[128];
+    if (split_parent(path, parent_path, name) != 0) return NULL;
+    struct vfs_node *parent = vfs_lookup(parent_path);
+    if (!parent || (parent->flags & 0xFFU) != VFS_DIRECTORY) return NULL;
+    if (vfs_find_child(parent, name)) return NULL;
+
+    struct vfs_node *node = vfs_alloc_node(name, VFS_FILE);
+    if (!node) return NULL;
+    node->mode = mode & 07777U;
+    node->read = memory_read;
+    node->write = memory_write;
+    if (vfs_attach(parent, node) != 0) {
+        kfree(node);
+        return NULL;
+    }
+    return node;
+}
+
+struct vfs_node *vfs_create_directory(const char *path, uint32_t mode) {
+    char parent_path[256];
+    char name[128];
+    if (split_parent(path, parent_path, name) != 0) return NULL;
+    struct vfs_node *parent = vfs_lookup(parent_path);
+    if (!parent || (parent->flags & 0xFFU) != VFS_DIRECTORY) return NULL;
+    if (vfs_find_child(parent, name)) return NULL;
+
+    struct vfs_node *node = vfs_alloc_node(name, VFS_DIRECTORY);
+    if (!node) return NULL;
+    node->mode = mode & 07777U;
+    if (vfs_attach(parent, node) != 0) {
+        kfree(node);
+        return NULL;
+    }
+    return node;
+}
+
 struct vfs_node *vfs_create_symlink(const char *path, const char *target,
                                     uint32_t flags) {
     if (!target || !target[0]) return NULL;

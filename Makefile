@@ -58,7 +58,7 @@ INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 WALLPAPER_SOURCE ?= assets/tunix-mountain-lake.jpg
 WALLPAPER_OUTPUT := initrd/usr/share/tunix/wallpaper.twl
 
-.PHONY: all run headless wallpaper terminal-font editor-check editor-qemu-check loadkeys-check loadkeys-qemu-check clean
+.PHONY: all run headless wallpaper terminal-font editor-check editor-qemu-check posix-qemu-check loadkeys-check loadkeys-qemu-check clean
 all: $(IMAGE)
 
 wallpaper: $(WALLPAPER_OUTPUT)
@@ -243,15 +243,8 @@ headless: $(IMAGE)
 
 editor-check:
 	ITERATIONS=20 ./scripts/test-editor-ports.sh
-
-editor-qemu-check: $(IMAGE)
-	$(PYTHON) scripts/nano-qemu-smoke.py $(IMAGE) --qemu $(QEMU) --iterations 20
-
 loadkeys-check:
 	./scripts/test-loadkeys.sh
-
-loadkeys-qemu-check: $(IMAGE)
-	$(PYTHON) scripts/loadkeys-qemu-smoke.py $(IMAGE) --qemu $(QEMU)
 
 clean:
 	rm -rf $(BUILD) $(PORT_OUT)

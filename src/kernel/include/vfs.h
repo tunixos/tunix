@@ -63,6 +63,8 @@ struct vfs_node *vfs_lookup_nofollow(const char *path);
 struct vfs_node *vfs_mkdir_p(const char *path);
 struct vfs_node *vfs_create_file(const char *path, const void *data,
                                  uint64_t length, uint32_t flags, int copy_data);
+struct vfs_node *vfs_create_file_node(const char *path, uint32_t mode);
+struct vfs_node *vfs_create_directory(const char *path, uint32_t mode);
 struct vfs_node *vfs_create_symlink(const char *path, const char *target,
                                     uint32_t flags);
 int64_t vfs_readlink(struct vfs_node *node, void *buffer, size_t size);

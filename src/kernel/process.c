@@ -249,6 +249,7 @@ struct process *process_create_from_path(const char *path) {
     process->pgid = process->pid;
     process->sid = process->pid;
     process->state = PROCESS_READY;
+    process->umask = 022;
     process->cwd = vfs_root;
     strncpy(process->name, file->name, sizeof(process->name) - 1);
     strncpy(process->exe_path, path, sizeof(process->exe_path) - 1);
@@ -303,12 +304,32 @@ uint64_t process_current_pid(void) { return current ? current->tgid : 0; }
 uint64_t process_current_tid(void) { return current ? current->pid : 0; }
 uint64_t process_current_ppid(void) { return current ? current->ppid : 0; }
 
+uint32_t process_get_umask(void) {
+    return current ? current->umask : 022;
+}
+
+uint32_t process_set_umask(uint32_t mask) {
+    if (!current) return 022;
+    uint32_t old = current->umask;
+    uint32_t value = mask & 0777U;
+    uint64_t group = current->tgid;
+    struct process *item = queue;
+    if (item) {
+        do {
+            if (item->tgid == group && item->state != PROCESS_DEAD) item->umask = value;
+            item = item->next;
+        } while (item != queue);
+    }
+    return old;
+}
+
 static int runnable(const struct process *process) {
     return process && (process->state == PROCESS_READY || process->state == PROCESS_RUNNING);
 }
 
 static void wake_expired_futex_waiters(void) {
     if (!queue) return;
+
     uint64_t now = time_uptime_ns();
     struct process *item = queue;
     do {
@@ -491,6 +512,7 @@ int64_t process_fork_from_syscall(struct syscall_frame *frame) {
     child->state = PROCESS_READY;
     child->cwd = parent->cwd;
     child->controlling_pty = parent->controlling_pty;
+    child->umask = parent->umask;
     strncpy(child->name, parent->name, sizeof(child->name) - 1);
     strncpy(child->exe_path, parent->exe_path, sizeof(child->exe_path) - 1);
     child->cr3 = vmm_clone_address_space(parent->cr3);
@@ -563,6 +585,7 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame,
     child->is_thread = 1;
     child->cwd = parent->cwd;
     child->controlling_pty = parent->controlling_pty;
+    child->umask = parent->umask;
     strncpy(child->name, parent->name, sizeof(child->name) - 1);
     strncpy(child->exe_path, parent->exe_path, sizeof(child->exe_path) - 1);
     child->memory = parent->memory;

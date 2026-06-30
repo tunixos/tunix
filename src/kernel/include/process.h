@@ -42,6 +42,7 @@ struct process {
     int stop_signal;
     int stop_reported;
     int continued_pending;
+    uint32_t umask;
     uint64_t cr3;
     struct process_memory *memory;
     int is_thread;
@@ -119,6 +120,8 @@ int process_sigreturn(struct syscall_frame *frame);
 int64_t process_futex_wait(struct syscall_frame *frame, uint64_t address,
                            uint32_t expected, int64_t timeout_ns);
 int process_futex_wake(uint64_t address, int maximum);
+uint32_t process_get_umask(void);
+uint32_t process_set_umask(uint32_t mask);
 void process_set_fs_base(uint64_t value);
 uint64_t process_get_fs_base(void);
 void process_account_runtime(void);

@@ -714,8 +714,11 @@ static int copy_path_at(int dirfd, uint64_t user_path, char output[256]) {
     return normalize_path(base, input, output);
 }
 
+static uint32_t mode_after_umask(uint64_t mode) {
+    return ((uint32_t)mode & 07777U) & ~process_get_umask();
+}
+
 static int64_t open_at(int dirfd, uint64_t user_path, uint64_t flags, uint64_t mode) {
-    (void)mode;
     uint64_t supported = O_ACCMODE | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC |
                          O_APPEND | O_NONBLOCK | O_DSYNC | O_ASYNC | O_DIRECT |
                          O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NOATIME |
@@ -729,9 +732,11 @@ static int64_t open_at(int dirfd, uint64_t user_path, uint64_t flags, uint64_t m
     if (path_status != 0) return path_status;
 
     struct vfs_node *node = (flags & O_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-    if (!node && (flags & O_CREAT))
-        node = vfs_create_file(path, NULL, 0, 0, 0);
-    else if (!node) return -ENOENT;
+    if (!node && (flags & O_CREAT)) {
+        if (flags & O_DIRECTORY) return -EINVAL;
+        node = vfs_create_file_node(path, mode_after_umask(mode));
+        if (!node) return -ENOENT;
+    } else if (!node) return -ENOENT;
     else if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
 
     uint32_t kind = node->flags & 0xFFU;
@@ -1338,12 +1343,12 @@ static int64_t sys_fchdir(int fd) {
     return 0;
 }
 
-static int64_t sys_mkdir_at(int dirfd, uint64_t user_path) {
+static int64_t sys_mkdir_at(int dirfd, uint64_t user_path, uint64_t mode) {
     char path[256];
     int status = copy_path_at(dirfd, user_path, path);
     if (status != 0) return status;
     if (vfs_lookup(path)) return -EEXIST;
-    return vfs_mkdir_p(path) ? 0 : -EIO;
+    return vfs_create_directory(path, mode_after_umask(mode)) ? 0 : -ENOENT;
 }
 
 static int64_t sys_readlink_at(int dirfd, uint64_t user_path, uint64_t user_buffer, size_t size) {
@@ -2177,13 +2182,13 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_CHDIR: frame->rax = (uint64_t)sys_chdir(frame->rdi); break;
         case SYS_FCHDIR: frame->rax = (uint64_t)sys_fchdir((int)frame->rdi); break;
         case SYS_RENAME: frame->rax = (uint64_t)sys_rename_at(AT_FDCWD, frame->rdi, AT_FDCWD, frame->rsi, 0); break;
-        case SYS_MKDIR: frame->rax = (uint64_t)sys_mkdir_at(AT_FDCWD, frame->rdi); break;
+        case SYS_MKDIR: frame->rax = (uint64_t)sys_mkdir_at(AT_FDCWD, frame->rdi, frame->rsi); break;
         case SYS_RMDIR: frame->rax = (uint64_t)sys_unlink_at(AT_FDCWD, frame->rdi, AT_REMOVEDIR); break;
         case SYS_UNLINK: frame->rax = (uint64_t)sys_unlink_at(AT_FDCWD, frame->rdi, 0); break;
         case SYS_READLINK: frame->rax = (uint64_t)sys_readlink_at(AT_FDCWD, frame->rdi, frame->rsi, (size_t)frame->rdx); break;
         case SYS_CHMOD: frame->rax = (uint64_t)sys_chmod_at(AT_FDCWD, frame->rdi, (uint32_t)frame->rsi, 0); break;
         case SYS_FCHMOD: frame->rax = (uint64_t)sys_fchmod((int)frame->rdi, (uint32_t)frame->rsi); break;
-        case SYS_UMASK: frame->rax = 022; break;
+        case SYS_UMASK: frame->rax = process_set_umask((uint32_t)frame->rdi); break;
         case SYS_GETTIMEOFDAY: frame->rax = (uint64_t)sys_gettimeofday(frame->rdi); break;
         case SYS_GETRLIMIT: frame->rax = (uint64_t)sys_prlimit(frame->rsi); break;
         case SYS_GETRUSAGE: {
@@ -2258,7 +2263,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
             break;
         }
         case SYS_OPENAT: frame->rax = (uint64_t)open_at((int)frame->rdi, frame->rsi, frame->rdx, frame->r10); break;
-        case SYS_MKDIRAT: frame->rax = (uint64_t)sys_mkdir_at((int)frame->rdi, frame->rsi); break;
+        case SYS_MKDIRAT: frame->rax = (uint64_t)sys_mkdir_at((int)frame->rdi, frame->rsi, frame->rdx); break;
         case SYS_NEWFSTATAT:
             if (frame->r10 & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) frame->rax = (uint64_t)-(int64_t)EINVAL;
             else {
