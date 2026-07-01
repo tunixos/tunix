@@ -162,7 +162,7 @@ $(BUILD)/tty.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/i
 $(BUILD)/process.o: src/kernel/include/process.h src/kernel/include/signal.h
 $(BUILD)/random.o: src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/spinlock.h
 $(BUILD)/time.o: src/kernel/include/time.h src/kernel/include/io.h
-$(BUILD)/ata.o: src/kernel/include/ata.h src/kernel/include/io.h
+$(BUILD)/ata.o: src/kernel/include/ata.h src/kernel/include/io.h src/kernel/include/pci.h
 $(BUILD)/kprintf.o: src/kernel/include/klog.h
 
 $(BUILD)/rtl8139.o: src/kernel/net/rtl8139.c | $(BUILD)
