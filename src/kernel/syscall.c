@@ -33,6 +33,8 @@ _Static_assert(offsetof(struct syscall_frame, rax) == 96, "syscall frame rax off
 _Static_assert(offsetof(struct syscall_frame, user_rip) == 104, "syscall frame rip offset mismatch");
 _Static_assert(offsetof(struct syscall_frame, user_rsp) == 120, "syscall frame rsp offset mismatch");
 
+#define USER_BRK_LIMIT 0x00005F0000000000ULL
+
 #define SYS_READ 0
 #define SYS_WRITE 1
 #define SYS_OPEN 2
@@ -189,8 +191,10 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 120, "syscall frame r
 #define PROT_WRITE 0x2
 #define PROT_EXEC 0x4
 #define MAP_SHARED 0x01
+#define MAP_PRIVATE 0x02
 #define MAP_FIXED 0x10
 #define MAP_ANONYMOUS 0x20
+#define MAP_FIXED_NOREPLACE 0x100000
 
 #define F_DUPFD 0
 #define F_GETFD 1
@@ -216,6 +220,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 120, "syscall frame r
 #define CLONE_SETTLS          0x00080000ULL
 #define CLONE_PARENT_SETTID   0x00100000ULL
 #define CLONE_CHILD_CLEARTID  0x00200000ULL
+#define CLONE_DETACHED        0x00400000ULL
 #define CLONE_CHILD_SETTID    0x01000000ULL
 #define CLONE_FORK_METADATA_FLAGS \
     (CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID)
@@ -1536,7 +1541,7 @@ static int64_t sys_brk(uint64_t requested) {
     uint64_t brk_start = memory ? memory->brk_start : process->brk_start;
     uint64_t brk_end = memory ? memory->brk_end : process->brk_end;
     if (requested == 0) return (int64_t)brk_end;
-    if (requested < brk_start || requested >= 0x0000500000000000ULL) return (int64_t)brk_end;
+    if (requested < brk_start || requested >= USER_BRK_LIMIT) return (int64_t)brk_end;
     uint64_t old_page_end = align_up(brk_end, 4096);
     uint64_t new_page_end = align_up(requested, 4096);
     if (new_page_end > old_page_end) {
@@ -1547,21 +1552,66 @@ static int64_t sys_brk(uint64_t requested) {
     return (int64_t)requested;
 }
 
+static int mapping_range_free(struct process *process, uint64_t base, uint64_t length) {
+    if (!process || !length || base >= USER_ADDRESS_LIMIT ||
+        length > USER_ADDRESS_LIMIT - base) return 0;
+    for (uint64_t page = base; page < base + length; page += 4096) {
+        if (vmm_translate(process->cr3, page, NULL, NULL) == 0) return 0;
+    }
+    return 1;
+}
+
+static int find_mapping_range(struct process *process, uint64_t start,
+                              uint64_t length, uint64_t *base_out) {
+    uint64_t base = align_up(start, 4096);
+    while (base < USER_ADDRESS_LIMIT && length <= USER_ADDRESS_LIMIT - base) {
+        if (mapping_range_free(process, base, length)) {
+            *base_out = base;
+            return 0;
+        }
+        if (USER_ADDRESS_LIMIT - base < length + 4096ULL) break;
+        base += 4096;
+    }
+    return -1;
+}
+
 static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, int fd, uint64_t offset) {
     struct process *process = process_current();
     if (!process || !length) return -EINVAL;
+    if ((flags & MAP_SHARED) && (flags & MAP_PRIVATE)) return -EINVAL;
+    if (!(flags & MAP_SHARED) && !(flags & MAP_PRIVATE)) return -EINVAL;
+    if (!(flags & MAP_ANONYMOUS) && (offset & 0xFFFULL)) return -EINVAL;
+    if (length > UINT64_MAX - 4095ULL) return -EINVAL;
     length = align_up(length, 4096);
+
+    int fixed = (flags & MAP_FIXED) != 0;
+    int no_replace = (flags & MAP_FIXED_NOREPLACE) != 0;
+    if (fixed && no_replace) return -EINVAL;
+
     uint64_t base;
-    int automatic_base = 0;
-    if (flags & MAP_FIXED) {
+    int advance_mmap_base = 0;
+    if (fixed || no_replace) {
         if (address & 0xFFFULL) return -EINVAL;
         base = address;
+    } else if (address) {
+        uint64_t hint = align_up(address, 4096);
+        if (mapping_range_free(process, hint, length)) {
+            base = hint;
+        } else {
+            uint64_t start = process->memory ? process->memory->mmap_base : process->mmap_base;
+            if (find_mapping_range(process, start, length, &base) != 0) return -ENOMEM;
+            advance_mmap_base = 1;
+        }
     } else {
-        base = address ? align_up(address, 4096) : align_up(process->memory ? process->memory->mmap_base : process->mmap_base, 4096);
-        automatic_base = address == 0;
+        uint64_t start = process->memory ? process->memory->mmap_base : process->mmap_base;
+        if (find_mapping_range(process, start, length, &base) != 0) return -ENOMEM;
+        advance_mmap_base = 1;
     }
-    if (base < 0x10000ULL || base >= USER_ADDRESS_LIMIT || length > USER_ADDRESS_LIMIT - base)
-        return -EINVAL;
+    if (base < 0x10000ULL || base >= USER_ADDRESS_LIMIT ||
+        length > USER_ADDRESS_LIMIT - base) return -EINVAL;
+
+    if (no_replace && !mapping_range_free(process, base, length)) return -EEXIST;
+    if (fixed) unmap_pages(process, base, base + length);
 
     uint64_t page_flags = (prot & PROT_WRITE) ? PAGE_WRITE : 0;
     if (nx_enabled && !(prot & PROT_EXEC)) page_flags |= PAGE_NX;
@@ -1576,21 +1626,34 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
             int64_t status = file->node->mmap(file->node, process->cr3, base,
                                               length, offset, page_flags);
             if (status < 0) return status;
-            if (automatic_base) { process->mmap_base = base + length + 4096; if (process->memory) process->memory->mmap_base = process->mmap_base; }
+            if (advance_mmap_base) {
+                process->mmap_base = base + length + 4096;
+                if (process->memory) process->memory->mmap_base = process->mmap_base;
+            }
             return (int64_t)base;
         }
     }
 
-    if (map_zero_pages(process, base, base + length, page_flags) != 0) return -ENOMEM;
+    uint64_t allocation_flags = file ? (page_flags | PAGE_WRITE) : page_flags;
+    if (map_zero_pages(process, base, base + length, allocation_flags) != 0) {
+        unmap_pages(process, base, base + length);
+        return -ENOMEM;
+    }
 
     if (file) {
         uint8_t buffer[256];
         uint64_t copied = 0;
         while (copied < length) {
-            size_t chunk = length - copied > sizeof(buffer) ? sizeof(buffer) : (size_t)(length - copied);
+            size_t chunk = length - copied > sizeof(buffer) ? sizeof(buffer) :
+                           (size_t)(length - copied);
             int64_t amount = vfs_read(file->node, offset + copied, chunk, buffer);
-            if (amount <= 0) break;
-            if (vmm_copy_to_space(process->cr3, base + copied, buffer, (size_t)amount) != 0) {
+            if (amount < 0) {
+                unmap_pages(process, base, base + length);
+                return amount;
+            }
+            if (amount == 0) break;
+            if (vmm_copy_to_space(process->cr3, base + copied, buffer,
+                                  (size_t)amount) != 0) {
                 unmap_pages(process, base, base + length);
                 return -EFAULT;
             }
@@ -1598,7 +1661,19 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
             if ((size_t)amount < chunk) break;
         }
     }
-    if (automatic_base) { process->mmap_base = base + length + 4096; if (process->memory) process->memory->mmap_base = process->mmap_base; }
+    if (file && !(prot & PROT_WRITE)) {
+        uint64_t final_flags = PAGE_USER | PAGE_PRESENT | page_flags;
+        for (uint64_t page = base; page < base + length; page += 4096) {
+            if (vmm_protect_page_in(process->cr3, page, final_flags) != 0) {
+                unmap_pages(process, base, base + length);
+                return -ENOMEM;
+            }
+        }
+    }
+    if (advance_mmap_base) {
+        process->mmap_base = base + length + 4096;
+        if (process->memory) process->memory->mmap_base = process->mmap_base;
+    }
     return (int64_t)base;
 }
 
@@ -2079,7 +2154,7 @@ static int64_t sys_clone_fork_compat(struct syscall_frame *frame,
                                      uint64_t tls) {
     uint64_t exit_signal = flags & 0xFFULL;
     uint64_t thread_allowed = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
-                              CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS |
+                              CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_DETACHED |
                               CLONE_FORK_METADATA_FLAGS;
     if (flags & CLONE_THREAD) {
         uint64_t unsupported = flags & ~(0xFFULL | thread_allowed);

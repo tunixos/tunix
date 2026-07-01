@@ -11,7 +11,7 @@ KERNEL_SECTORS = 512
 INITRAMFS_LBA = KERNEL_LBA + KERNEL_SECTORS
 MANIFEST_MAGIC = 0x4D414E49
 MANIFEST_VERSION = 3
-MAX_INITRAMFS_BYTES = 16 * 1024 * 1024
+MAX_INITRAMFS_BYTES = 32 * 1024 * 1024
 
 
 def read(path: str) -> bytes:
@@ -44,7 +44,7 @@ def main() -> None:
     if len(initramfs) > MAX_INITRAMFS_BYTES:
         raise SystemExit(
             f"initramfs is {len(initramfs)} bytes; early boot limit is "
-            f"{MAX_INITRAMFS_BYTES} bytes (16 MiB)"
+            f"{MAX_INITRAMFS_BYTES} bytes ({MAX_INITRAMFS_BYTES // (1024 * 1024)} MiB)"
         )
 
     manifest_format = "<IHHQIQIQQIQII"

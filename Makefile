@@ -27,6 +27,8 @@ LUA_ROOT := $(PORT_OUT)/lua-root
 LUA_STAMP := $(PORT_OUT)/.lua-ready
 IMAGE_CODECS_ROOT := $(PORT_OUT)/image-codecs-root
 IMAGE_CODECS_STAMP := $(PORT_OUT)/.image-codecs-ready
+MUSL_SHARED_ROOT := $(PORT_OUT)/musl-shared-root
+MUSL_SHARED_STAMP := $(PORT_OUT)/.musl-shared-ready
 WALLPAPER_CONVERTER := $(PORT_OUT)/tunix-wallpaper
 TERMINAL_FONT_SOURCE ?= assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf
 TERMINAL_FONT_DATA := $(BUILD)/generated/terminal_font_data.inc
@@ -65,7 +67,7 @@ INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 WALLPAPER_SOURCE ?= assets/tunix-mountain-lake.jpg
 WALLPAPER_OUTPUT := initrd/usr/share/tunix/wallpaper.twl
 
-.PHONY: all run headless wallpaper terminal-font clean
+.PHONY: all run headless wallpaper terminal-font dynamic-runtime-check clean
 all: $(IMAGE)
 
 wallpaper: $(WALLPAPER_OUTPUT)
@@ -76,6 +78,26 @@ $(IMAGE_CODECS_STAMP): $(BASH) ports/build-image-codecs.sh tools/tunix-wallpaper
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" ./ports/build-image-codecs.sh
 	@touch $@
+
+
+$(MUSL_SHARED_STAMP): ports/build-musl-shared.sh \
+	tools/dynamic-runtime/dynamic-hello.c \
+	tools/dynamic-runtime/libtunix-dynamic.c \
+	tools/dynamic-runtime/dlopen-test.c \
+	tools/dynamic-runtime/pthread-test.c
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" ./ports/build-musl-shared.sh
+	@test -x $(MUSL_SHARED_ROOT)/lib/ld-musl-x86_64.so.1 || { echo "shared musl loader was not produced" >&2; exit 1; }
+	@test -x $(MUSL_SHARED_ROOT)/usr/bin/dynamic-runtime-check || { echo "dynamic runtime checks were not produced" >&2; exit 1; }
+	@touch $@
+
+dynamic-runtime-check: $(MUSL_SHARED_STAMP)
+	$(MUSL_SHARED_ROOT)/lib/ld-musl-x86_64.so.1 \
+		--library-path $(MUSL_SHARED_ROOT)/lib:$(PORT_OUT)/musl-shared-sysroot/usr/lib:$(MUSL_SHARED_ROOT)/usr/lib \
+		$(MUSL_SHARED_ROOT)/usr/bin/dynamic-hello make-check
+	$(MUSL_SHARED_ROOT)/lib/ld-musl-x86_64.so.1 \
+		--library-path $(MUSL_SHARED_ROOT)/lib:$(PORT_OUT)/musl-shared-sysroot/usr/lib:$(MUSL_SHARED_ROOT)/usr/lib \
+		$(MUSL_SHARED_ROOT)/usr/bin/dlopen-test $(abspath $(MUSL_SHARED_ROOT)/usr/lib/libtunix_dynamic.so.1)
 
 $(WALLPAPER_CONVERTER): $(IMAGE_CODECS_STAMP)
 	@test -x $@ || { echo "wallpaper converter was not produced" >&2; exit 1; }
@@ -230,7 +252,7 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp $(ROOTFS)/home
 	cp -R initrd/. $(ROOTFS)/
@@ -241,6 +263,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	cp $(SYSTEM_TOOLS) $(ROOTFS)/bin/
 	cp -R $(TCC_ROOT)/. $(ROOTFS)/
 	cp -R $(LUA_ROOT)/. $(ROOTFS)/
+	cp -R $(MUSL_SHARED_ROOT)/. $(ROOTFS)/
 	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/usr/include $(ROOTFS)/usr/lib $(ROOTFS)/usr/share
 	cp -R $(IMAGE_CODECS_ROOT)/usr/include/. $(ROOTFS)/usr/include/
 	cp -R $(IMAGE_CODECS_ROOT)/usr/lib/. $(ROOTFS)/usr/lib/
@@ -251,12 +274,18 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	cp ports/src/nano/syntax/*.nanorc $(ROOTFS)/usr/share/nano/
 	@test -x $(ROOTFS)/usr/bin/tcc || { echo "TinyCC was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/lua || { echo "Lua was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/lib/ld-musl-x86_64.so.1 || { echo "shared musl loader was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/dynamic-runtime-check || { echo "dynamic runtime checks were not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/busybox $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
 		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep \
-		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/tunix-wallpaper
+		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/tunix-wallpaper \
+		$(ROOTFS)/usr/bin/dynamic-hello $(ROOTFS)/usr/bin/dynamic-nopie \
+		$(ROOTFS)/usr/bin/dlopen-test $(ROOTFS)/usr/bin/pthread-test \
+		$(ROOTFS)/usr/bin/dynamic-runtime-check $(ROOTFS)/lib/ld-musl-x86_64.so.1 \
+		$(ROOTFS)/lib/libc.so
 	@test -x $(ROOTFS)/bin/sleep || { echo "native sleep utility was not installed" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	@for app in $(BUSYBOX_APPLETS); do ln -s busybox $(ROOTFS)/bin/$$app; done
