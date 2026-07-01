@@ -9,6 +9,7 @@
 #include "include/usercopy.h"
 #include "include/vfs.h"
 
+#define EINTR 4
 #define EAGAIN 11
 #define EFAULT 14
 #define EINVAL 22
@@ -159,24 +160,21 @@ static size_t master_feed_input(struct pty_pair *pty, const uint8_t *bytes,
         uint8_t value = bytes[completed];
         if ((pty->termios.iflag & TTY_ICRNL) && value == '\r') value = '\n';
 
-        if ((pty->termios.lflag & TTY_ISIG) && value == pty->termios.cc[TTY_VINTR]) {
-            signal_foreground(pty, SIGINT);
+        if ((pty->termios.lflag & TTY_ISIG) &&
+            (value == pty->termios.cc[TTY_VINTR] ||
+             value == pty->termios.cc[TTY_VQUIT] ||
+             value == pty->termios.cc[TTY_VSUSP])) {
+            int signal_number = value == pty->termios.cc[TTY_VINTR] ? SIGINT :
+                                value == pty->termios.cc[TTY_VQUIT] ? SIGQUIT : SIGTSTP;
+            char echoed = signal_number == SIGINT ? 'C' :
+                          signal_number == SIGQUIT ? '\\' : 'Z';
+            signal_foreground(pty, signal_number);
             pty->canonical_length = 0;
+            pty->eof_pending = 0;
+            queue_reset(&pty->to_slave);
             if (pty->termios.lflag & TTY_ECHO) {
                 (void)queue_push(&pty->to_master, '^');
-                (void)queue_push(&pty->to_master, 'C');
-                (void)queue_push(&pty->to_master, '\r');
-                (void)queue_push(&pty->to_master, '\n');
-            }
-            continue;
-        }
-
-        if ((pty->termios.lflag & TTY_ISIG) && value == pty->termios.cc[TTY_VSUSP]) {
-            signal_foreground(pty, SIGTSTP);
-            pty->canonical_length = 0;
-            if (pty->termios.lflag & TTY_ECHO) {
-                (void)queue_push(&pty->to_master, '^');
-                (void)queue_push(&pty->to_master, 'Z');
+                (void)queue_push(&pty->to_master, (uint8_t)echoed);
                 (void)queue_push(&pty->to_master, '\r');
                 (void)queue_push(&pty->to_master, '\n');
             }
@@ -310,6 +308,14 @@ void pty_close_endpoint(struct pty_pair *pty, int master) {
 
 int64_t pty_read(struct pty_pair *pty, int master, size_t size, void *buffer) {
     if (!pty || !buffer) return -EINVAL;
+    if (!master) {
+        struct process *reader = process_current();
+        if (reader && reader->controlling_pty == pty && pty->foreground_pgid > 0 &&
+            reader->pgid != (uint64_t)pty->foreground_pgid) {
+            (void)process_send_signal(-(int64_t)reader->pgid, SIGTTIN);
+            return -EINTR;
+        }
+    }
     struct pty_queue *queue = master ? &pty->to_master : &pty->to_slave;
     if (!queue->count) {
         if (!master && pty->eof_pending) {

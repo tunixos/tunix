@@ -436,7 +436,9 @@ static int child_matches(const struct process *child, const struct process *pare
 
 static int store_wait_status(struct process *parent, struct process *child, uint64_t status_user) {
     if (!status_user) return 0;
-    int status = (child->exit_status & 0xFF) << 8;
+    int status = child->termination_signal
+        ? (child->termination_signal & 0x7F)
+        : ((child->exit_status & 0xFF) << 8);
     return vmm_copy_to_space(parent->cr3, status_user, &status, sizeof(status));
 }
 
@@ -552,6 +554,11 @@ static void notify_children_of_parent_death(struct process *parent) {
         }
         item = item->next;
     } while (item != queue);
+}
+
+static void process_exit_from_signal(struct syscall_frame *frame, int signal_number) {
+    if (current) current->termination_signal = signal_number;
+    process_exit_from_syscall(frame, 128 + signal_number);
 }
 
 void process_exit_from_syscall(struct syscall_frame *frame, int status) {
@@ -925,7 +932,8 @@ static void signal_one_process(struct process *target, int signal_number) {
         target->state = PROCESS_READY;
         target->continued_pending = 1;
         target->stop_reported = 0;
-        target->signal_pending &= ~(signal_bit(SIGSTOP) | signal_bit(SIGTSTP));
+        target->signal_pending &= ~(signal_bit(SIGSTOP) | signal_bit(SIGTSTP) |
+                                    signal_bit(SIGTTIN) | signal_bit(SIGTTOU));
         if (notify_parent_of_job_change(target, WCONTINUED, 0xFFFF))
             target->continued_pending = 0;
     }
@@ -1025,7 +1033,9 @@ void process_prepare_user_return(struct syscall_frame *frame) {
          (action->handler == SIG_DFL &&
           (signal_number == SIGCHLD || signal_number == SIGCONT)))) return;
     if (signal_number == SIGSTOP ||
-        (action->handler == SIG_DFL && signal_number == SIGTSTP)) {
+        (action->handler == SIG_DFL &&
+         (signal_number == SIGTSTP || signal_number == SIGTTIN ||
+          signal_number == SIGTTOU))) {
         current->stop_signal = signal_number;
         current->stop_reported = 0;
         current->continued_pending = 0;
@@ -1038,11 +1048,11 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         return;
     }
     if (action->handler == SIG_DFL || signal_number == SIGKILL) {
-        process_exit_from_syscall(frame, 128 + signal_number);
+        process_exit_from_signal(frame, signal_number);
         return;
     }
     if (action->handler >= USER_ADDRESS_LIMIT || action->restorer >= USER_ADDRESS_LIMIT) {
-        process_exit_from_syscall(frame, 128 + SIGSEGV);
+        process_exit_from_signal(frame, SIGSEGV);
         return;
     }
 
@@ -1054,7 +1064,7 @@ void process_prepare_user_return(struct syscall_frame *frame) {
     }
     uint64_t new_rsp = (stack_top & ~15ULL) - 8;
     if (vmm_copy_to_space(current->cr3, new_rsp, &action->restorer, sizeof(action->restorer)) != 0) {
-        process_exit_from_syscall(frame, 128 + SIGSEGV);
+        process_exit_from_signal(frame, SIGSEGV);
         return;
     }
     current->signal_saved_frame = *frame;

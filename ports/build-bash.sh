@@ -58,9 +58,13 @@ mkdir -p "$BASH_BUILD"
     "$BASH_SOURCE_DIR/configure" \
         --prefix=/ \
         --without-bash-malloc \
-        --disable-nls \
-        --disable-job-control
+        --disable-nls
     make -j"$JOBS" bash
+    grep -Eq '^#define[[:space:]]+JOB_CONTROL[[:space:]]+1$' config.h ||
+        fail "Bash configure completed without job-control support"
+    ./bash --noprofile --norc -c \
+        'type jobs >/dev/null && type fg >/dev/null && type bg >/dev/null' ||
+        fail "Bash job-control builtins are unavailable"
 )
 
 mkdir -p "$OUT"

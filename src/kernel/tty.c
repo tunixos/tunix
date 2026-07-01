@@ -23,6 +23,7 @@ static uint8_t input_buffer[TTY_INPUT_CAPACITY];
 static size_t input_head;
 static size_t input_tail;
 static size_t input_count;
+static volatile int input_interrupted;
 static int shift_down;
 static int ctrl_down;
 static int alt_down;
@@ -403,7 +404,40 @@ int64_t tty_write(size_t size, const void *buffer) {
     return (int64_t)size;
 }
 
+static int signal_input_character(uint8_t value) {
+    if (!(console_termios.lflag & TTY_ISIG) || console_foreground_pgid <= 0)
+        return 0;
+
+    int signal_number = 0;
+    const char *echo = NULL;
+    size_t echo_length = 0;
+    if (value == console_termios.cc[TTY_VINTR]) {
+        signal_number = SIGINT;
+        echo = "^C\n";
+        echo_length = 3;
+    } else if (value == console_termios.cc[TTY_VQUIT]) {
+        signal_number = SIGQUIT;
+        echo = "^\\\n";
+        echo_length = 3;
+    } else if (value == console_termios.cc[TTY_VSUSP]) {
+        signal_number = SIGTSTP;
+        echo = "^Z\n";
+        echo_length = 3;
+    } else {
+        return 0;
+    }
+
+    canonical_length = canonical_offset = 0;
+    input_head = input_tail = input_count = 0;
+    input_interrupted = 1;
+    if ((console_termios.lflag & TTY_ECHO) && echo)
+        (void)tty_write(echo_length, echo);
+    (void)process_send_signal(-(int64_t)console_foreground_pgid, signal_number);
+    return 1;
+}
+
 static int input_push(uint8_t value) {
+    if (signal_input_character(value)) return 0;
     if (input_count == TTY_INPUT_CAPACITY) return -1;
     input_buffer[input_tail] = value;
     input_tail = (input_tail + 1U) % TTY_INPUT_CAPACITY;
@@ -531,6 +565,10 @@ void tty_poll_inputs(void) {
 static int read_input_char(void) {
     for (;;) {
         tty_poll_inputs();
+        if (input_interrupted) {
+            input_interrupted = 0;
+            return -EINTR;
+        }
         int value = input_pop();
         if (value >= 0) return value;
         __asm__ volatile("pause");
@@ -542,8 +580,7 @@ static int canonical_input_complete(void) {
     for (size_t i = 0, at = input_head; i < input_count; i++) {
         uint8_t value = input_buffer[at];
         if (value == '\n' || value == '\r' ||
-            value == console_termios.cc[TTY_VEOF] ||
-            value == console_termios.cc[TTY_VINTR]) return 1;
+            value == console_termios.cc[TTY_VEOF]) return 1;
         at = (at + 1U) % TTY_INPUT_CAPACITY;
     }
     return 0;
@@ -560,13 +597,7 @@ static int refill_canonical(void) {
     canonical_offset = 0;
     while (canonical_length < sizeof(canonical_buffer)) {
         int value = read_input_char();
-        if (value == console_termios.cc[TTY_VINTR] && (console_termios.lflag & TTY_ISIG)) {
-            if (console_termios.lflag & TTY_ECHO) tty_write(2, "^C");
-            tty_write(1, "\n");
-            if (console_foreground_pgid > 0)
-                process_send_signal(-(int64_t)console_foreground_pgid, SIGINT);
-            return -EINTR;
-        }
+        if (value < 0) return value;
         if (value == console_termios.cc[TTY_VEOF]) {
             if (canonical_length == 0) return 0;
             break;
@@ -591,11 +622,18 @@ static int refill_canonical(void) {
 
 int64_t tty_read(size_t size, void *buffer) {
     if (!buffer || size == 0) return 0;
+    struct process *reader = process_current();
+    if (reader && console_foreground_pgid > 0 &&
+        reader->pgid != (uint64_t)console_foreground_pgid) {
+        (void)process_send_signal(-(int64_t)reader->pgid, SIGTTIN);
+        return -EINTR;
+    }
     char *out = (char *)buffer;
 
     if (!(console_termios.lflag & TTY_ICANON)) {
         size_t received = 0;
         int value = read_input_char();
+        if (value < 0) return value;
         out[received++] = (char)value;
         if (console_termios.lflag & TTY_ECHO) {
             char c = (char)value;
@@ -640,6 +678,7 @@ void tty_init(void) {
     console_foreground_pgid = 0;
     canonical_length = canonical_offset = 0;
     input_head = input_tail = input_count = 0;
+    input_interrupted = 0;
     shift_down = ctrl_down = alt_down = altgr_down = caps_lock = extended_prefix = 0;
     keymap_load_default();
     ansi_state = 0;
@@ -668,6 +707,7 @@ int tty_ioctl(unsigned long request, void *argument) {
             return 0;
         case TIOCSPGRP:
             console_foreground_pgid = *(const int *)argument;
+            input_interrupted = 0;
             return 0;
         case TIOCGETD:
             *(int *)argument = 0;
@@ -688,4 +728,7 @@ int tty_ioctl(unsigned long request, void *argument) {
 }
 
 int tty_foreground_pgid(void) { return console_foreground_pgid; }
-void tty_set_foreground_pgid(int pgid) { console_foreground_pgid = pgid; }
+void tty_set_foreground_pgid(int pgid) {
+    console_foreground_pgid = pgid;
+    input_interrupted = 0;
+}

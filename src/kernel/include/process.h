@@ -39,6 +39,7 @@ struct process {
     char exe_path[256];
     int state;
     int exit_status;
+    int termination_signal;
     int stop_signal;
     int stop_reported;
     int continued_pending;

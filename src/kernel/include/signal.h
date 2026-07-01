@@ -19,6 +19,8 @@
 #define SIGCONT 18
 #define SIGSTOP 19
 #define SIGTSTP 20
+#define SIGTTIN 21
+#define SIGTTOU 22
 
 #define SIG_BLOCK   0
 #define SIG_UNBLOCK 1
