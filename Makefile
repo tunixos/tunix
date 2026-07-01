@@ -27,7 +27,11 @@ LUA_ROOT := $(PORT_OUT)/lua-root
 LUA_STAMP := $(PORT_OUT)/.lua-ready
 IMAGE_CODECS_ROOT := $(PORT_OUT)/image-codecs-root
 IMAGE_CODECS_STAMP := $(PORT_OUT)/.image-codecs-ready
+IMAGE_CODECS_SHARED_ROOT := $(PORT_OUT)/image-codecs-shared-root
+IMAGE_CODECS_SHARED_STAMP := $(PORT_OUT)/.image-codecs-shared-ready
+DESKTOP_SYSROOT := $(PORT_OUT)/desktop-sysroot
 MUSL_SHARED_ROOT := $(PORT_OUT)/musl-shared-root
+BOOT_CONFIG_STAMP := $(BUILD)/.boot-config-ready
 MUSL_SHARED_STAMP := $(PORT_OUT)/.musl-shared-ready
 WALLPAPER_CONVERTER := $(PORT_OUT)/tunix-wallpaper
 TERMINAL_FONT_SOURCE ?= assets/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf
@@ -67,7 +71,7 @@ INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 WALLPAPER_SOURCE ?= assets/tunix-mountain-lake.jpg
 WALLPAPER_OUTPUT := initrd/usr/share/tunix/wallpaper.twl
 
-.PHONY: all run headless wallpaper terminal-font dynamic-runtime-check clean
+.PHONY: all run headless wallpaper terminal-font dynamic-runtime-check shared-image-codecs-check clean
 all: $(IMAGE)
 
 wallpaper: $(WALLPAPER_OUTPUT)
@@ -98,6 +102,26 @@ dynamic-runtime-check: $(MUSL_SHARED_STAMP)
 	$(MUSL_SHARED_ROOT)/lib/ld-musl-x86_64.so.1 \
 		--library-path $(MUSL_SHARED_ROOT)/lib:$(PORT_OUT)/musl-shared-sysroot/usr/lib:$(MUSL_SHARED_ROOT)/usr/lib \
 		$(MUSL_SHARED_ROOT)/usr/bin/dlopen-test $(abspath $(MUSL_SHARED_ROOT)/usr/lib/libtunix_dynamic.so.1)
+
+$(IMAGE_CODECS_SHARED_STAMP): $(MUSL_SHARED_STAMP) \
+	ports/build-image-codecs-shared.sh \
+	tools/shared-image-codecs-test.c \
+	ports/src/zlib/configure \
+	ports/src/libpng/CMakeLists.txt \
+	ports/src/libjpeg-turbo/CMakeLists.txt
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" ./ports/build-image-codecs-shared.sh
+	@test -f $(DESKTOP_SYSROOT)/usr/lib/libz.so || { echo "shared zlib was not installed into the desktop sysroot" >&2; exit 1; }
+	@test -f $(DESKTOP_SYSROOT)/usr/lib/libpng16.so || { echo "shared libpng was not installed into the desktop sysroot" >&2; exit 1; }
+	@test -f $(DESKTOP_SYSROOT)/usr/lib/libjpeg.so || { echo "shared libjpeg was not installed into the desktop sysroot" >&2; exit 1; }
+	@test -f $(DESKTOP_SYSROOT)/usr/lib/libturbojpeg.so || { echo "shared TurboJPEG was not installed into the desktop sysroot" >&2; exit 1; }
+	@test -x $(IMAGE_CODECS_SHARED_ROOT)/usr/bin/shared-image-codecs-check || { echo "shared image codec checks were not produced" >&2; exit 1; }
+	@touch $@
+
+shared-image-codecs-check: $(IMAGE_CODECS_SHARED_STAMP)
+	$(MUSL_SHARED_ROOT)/lib/ld-musl-x86_64.so.1 \
+		--library-path $(MUSL_SHARED_ROOT)/lib:$(IMAGE_CODECS_SHARED_ROOT)/usr/lib:$(DESKTOP_SYSROOT)/usr/lib \
+		$(IMAGE_CODECS_SHARED_ROOT)/usr/bin/shared-image-codecs-test
 
 $(WALLPAPER_CONVERTER): $(IMAGE_CODECS_STAMP)
 	@test -x $@ || { echo "wallpaper converter was not produced" >&2; exit 1; }
@@ -171,7 +195,11 @@ $(BUILD)/syscall_entry.o: src/kernel/arch/x86_64/syscall_entry.S | $(BUILD)
 $(BUILD)/%.o: src/kernel/%.c | $(BUILD)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(BUILD)/main.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/include/pic.h
+$(BOOT_CONFIG_STAMP): src/kernel/include/boot_manifest.h scripts/build-image.py scripts/check-boot-config.py | $(BUILD)
+	$(PYTHON) scripts/check-boot-config.py src/kernel/include/boot_manifest.h scripts/build-image.py $@
+
+$(BUILD)/main.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/include/pic.h \
+	src/kernel/include/boot_manifest.h $(BOOT_CONFIG_STAMP)
 $(BUILD)/input.o: src/kernel/include/input.h src/kernel/include/io.h src/kernel/include/tty.h
 $(BUILD)/pic.o: src/kernel/include/pic.h src/kernel/include/io.h
 $(BUILD)/devfs.o: src/kernel/include/vfs.h src/kernel/include/pty.h src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/ata.h src/kernel/include/klog.h src/kernel/include/input.h
@@ -252,7 +280,7 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp $(ROOTFS)/home
 	cp -R initrd/. $(ROOTFS)/
@@ -267,6 +295,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/usr/include $(ROOTFS)/usr/lib $(ROOTFS)/usr/share
 	cp -R $(IMAGE_CODECS_ROOT)/usr/include/. $(ROOTFS)/usr/include/
 	cp -R $(IMAGE_CODECS_ROOT)/usr/lib/. $(ROOTFS)/usr/lib/
+	cp -R $(IMAGE_CODECS_SHARED_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp -R $(IMAGE_CODECS_ROOT)/usr/share/. $(ROOTFS)/usr/share/
 	cp -R $(NCURSES_ROOT)/usr/share/terminfo $(ROOTFS)/usr/share/
@@ -276,6 +305,11 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	@test -x $(ROOTFS)/usr/bin/lua || { echo "Lua was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/lib/ld-musl-x86_64.so.1 || { echo "shared musl loader was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/dynamic-runtime-check || { echo "dynamic runtime checks were not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/shared-image-codecs-check || { echo "shared image codec checks were not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/lib/libz.so.1 || { echo "shared zlib runtime was not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/lib/libpng16.so.16 || { echo "shared libpng runtime was not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/lib/libjpeg.so.62 || { echo "shared libjpeg runtime was not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/lib/libturbojpeg.so.0 || { echo "shared TurboJPEG runtime was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/busybox $(ROOTFS)/bin/nano \
@@ -284,15 +318,18 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/tunix-wallpaper \
 		$(ROOTFS)/usr/bin/dynamic-hello $(ROOTFS)/usr/bin/dynamic-nopie \
 		$(ROOTFS)/usr/bin/dlopen-test $(ROOTFS)/usr/bin/pthread-test \
-		$(ROOTFS)/usr/bin/dynamic-runtime-check $(ROOTFS)/lib/ld-musl-x86_64.so.1 \
+		$(ROOTFS)/usr/bin/dynamic-runtime-check \
+		$(ROOTFS)/usr/bin/shared-image-codecs-test $(ROOTFS)/usr/bin/shared-image-codecs-check \
+		$(ROOTFS)/lib/ld-musl-x86_64.so.1 \
 		$(ROOTFS)/lib/libc.so
 	@test -x $(ROOTFS)/bin/sleep || { echo "native sleep utility was not installed" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	@for app in $(BUSYBOX_APPLETS); do ln -s busybox $(ROOTFS)/bin/$$app; done
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .
 
-$(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts/build-image.py
+$(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts/build-image.py $(BOOT_CONFIG_STAMP)
 	$(PYTHON) scripts/build-image.py $@ $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS)
+	$(PYTHON) scripts/check-boot-image.py $@ $(INITRAMFS)
 
 run: $(IMAGE)
 	rm -f $(BUILD)/serial.log
