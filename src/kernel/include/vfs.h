@@ -12,6 +12,7 @@
 #define VFS_SYMLINK     0x06U
 #define VFS_READONLY    0x100U
 #define VFS_OWNED_DATA  0x200U
+#define VFS_INPUTDEVICE 0x400U
 
 struct vfs_node;
 

@@ -306,3 +306,11 @@ irq1:
     push 0
     push 33
     jmp isr_common_stub
+
+/* Legacy 8259 PIC IRQ12 PS/2 auxiliary device, remapped to IDT vector 0x2c. */
+.global irq12
+irq12:
+    cli
+    push 0
+    push 44
+    jmp isr_common_stub

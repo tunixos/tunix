@@ -65,6 +65,7 @@ extern void isr30(void);
 extern void isr31(void);
 extern void irq0(void);
 extern void irq1(void);
+extern void irq12(void);
 
 void idt_init(void) {
     idtp.limit = (sizeof(struct idt_entry) * 256) - 1;
@@ -108,6 +109,7 @@ void idt_init(void) {
     idt_set_gate(31, (uint64_t)isr31, 0x08, 0x8E, 0);
     idt_set_gate(32, (uint64_t)irq0, 0x08, 0x8E, 0);
     idt_set_gate(33, (uint64_t)irq1, 0x08, 0x8E, 0);
+    idt_set_gate(44, (uint64_t)irq12, 0x08, 0x8E, 0);
 
     idt_load((uint64_t)&idtp);
 }

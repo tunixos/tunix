@@ -141,6 +141,7 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
     tty_init();
     input_init();
     pic_unmask(1U);
+    if (input_mouse_available()) pic_unmask(12U);
     devfs_init();
 #if TUNIX_DEBUG_LOGS
     kprintf("TUNIX: VFS ramfs tarfs devfs ready\n");

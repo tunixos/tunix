@@ -24,7 +24,8 @@ void isr_handler(struct interrupt_frame *regs) {
         pic_send_eoi((unsigned)regs->int_no);
         return;
     }
-    if (regs->int_no == PIC_MASTER_VECTOR + 1U) {
+    if (regs->int_no == PIC_MASTER_VECTOR + 1U ||
+        regs->int_no == PIC_SLAVE_VECTOR + 4U) {
         input_irq();
         pic_send_eoi((unsigned)regs->int_no);
         return;

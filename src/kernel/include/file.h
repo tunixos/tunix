@@ -9,6 +9,7 @@ struct pipe_buffer;
 struct unix_socket;
 struct inet_socket;
 struct pty_pair;
+struct input_reader;
 
 #define FILE_KIND_VFS        1
 #define FILE_KIND_PIPE_READ  2
@@ -17,6 +18,7 @@ struct pty_pair;
 #define FILE_KIND_PTY_MASTER 5
 #define FILE_KIND_PTY_SLAVE  6
 #define FILE_KIND_INET_SOCKET 7
+#define FILE_KIND_INPUT       8
 
 struct file {
     int refs;
@@ -28,6 +30,7 @@ struct file {
     struct unix_socket *socket;
     struct inet_socket *inet_socket;
     struct pty_pair *pty;
+    struct input_reader *input_reader;
 };
 
 struct file *file_open_node(struct vfs_node *node, uint32_t flags);

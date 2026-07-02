@@ -11,6 +11,7 @@
 #include "include/tty.h"
 #include "include/usercopy.h"
 #include "include/vfs.h"
+#include "../include/tunix/input_event.h"
 
 #define EFAULT 14
 #define EINVAL 22
@@ -190,6 +191,17 @@ static void keyboard_close(struct vfs_node *node) {
     input_scancode_close();
 }
 
+static int64_t input_event_ioctl(struct vfs_node *node, unsigned long request,
+                                 uint64_t user_argument) {
+    if (!node || request != TUNIX_EVIOCGINFO) return -EINVAL;
+    if (!user_argument) return -EFAULT;
+    struct tunix_input_device_info info;
+    unsigned device_id = (unsigned)(uintptr_t)node->data;
+    int status = input_get_device_info(device_id, &info);
+    if (status != 0) return status;
+    return copy_to_user(user_argument, &info, sizeof(info)) == 0 ? 0 : -EFAULT;
+}
+
 static struct vfs_node *attach_device(struct vfs_node *dev, const char *name,
                                       uint32_t flags, uint32_t mode,
                                       vfs_read_fn read, vfs_write_fn write,
@@ -237,11 +249,29 @@ void devfs_init(void) {
 
     struct vfs_node *input = vfs_mkdir_p("/dev/input");
     if (input) {
+        /* Keep the legacy raw-scancode node for console tooling. */
         struct vfs_node *keyboard = attach_device(input, "keyboard", VFS_CHARDEVICE, 0440,
                                                   keyboard_read, NULL, keyboard_ready);
         if (keyboard) {
             keyboard->open = keyboard_open;
             keyboard->close = keyboard_close;
+        }
+
+        struct vfs_node *event0 = attach_device(input, "event0",
+            VFS_CHARDEVICE | VFS_INPUTDEVICE, 0440, NULL, NULL, NULL);
+        if (event0) {
+            event0->data = (void *)(uintptr_t)TUNIX_INPUT_DEVICE_KEYBOARD;
+            event0->ioctl = input_event_ioctl;
+        }
+
+        if (input_mouse_available()) {
+            struct vfs_node *event1 = attach_device(input, "event1",
+                VFS_CHARDEVICE | VFS_INPUTDEVICE, 0440, NULL, NULL, NULL);
+            if (event1) {
+                event1->data = (void *)(uintptr_t)TUNIX_INPUT_DEVICE_MOUSE;
+                event1->ioctl = input_event_ioctl;
+            }
+            (void)vfs_create_symlink("/dev/input/mouse0", "/dev/input/event1", 0);
         }
     }
     (void)vfs_create_symlink("/dev/tty", "/dev/console", 0);

@@ -64,7 +64,8 @@ PROCUTIL := $(BUILD)/user/procutil.o
 LOADKEYS := $(BUILD)/user/loadkeys
 SLEEP := $(BUILD)/user/sleep
 PREEMPT_TEST := $(BUILD)/user/preempt-test
-SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS) $(SLEEP) $(PREEMPT_TEST)
+INPUT_TEST := $(BUILD)/user/input-test
+SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS) $(SLEEP) $(PREEMPT_TEST) $(INPUT_TEST)
 BUSYBOX_APPLETS := awk basename cat chmod clear cp cut date dd dirname du echo egrep env expr false \
 	fgrep find grep head id ls md5sum mkdir mv printenv printf pwd readlink realpath rm \
 	rmdir sed seq sha256sum sort stat tail tee test touch tr true uname uniq wc which xargs yes hwclock ifconfig route arp ping nslookup udhcpc netstat
@@ -201,14 +202,14 @@ $(BOOT_CONFIG_STAMP): src/kernel/include/boot_manifest.h scripts/build-image.py 
 
 $(BUILD)/main.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/include/pic.h \
 	src/kernel/include/boot_manifest.h $(BOOT_CONFIG_STAMP)
-$(BUILD)/input.o: src/kernel/include/input.h src/kernel/include/io.h src/kernel/include/tty.h
+$(BUILD)/input.o: src/kernel/include/input.h src/kernel/include/io.h src/kernel/include/tty.h src/include/tunix/input_event.h
 $(BUILD)/pic.o: src/kernel/include/pic.h src/kernel/include/io.h
 $(BUILD)/timer.o: src/kernel/include/timer.h src/kernel/include/interrupt.h src/kernel/include/process.h src/kernel/include/io.h
-$(BUILD)/devfs.o: src/kernel/include/vfs.h src/kernel/include/pty.h src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/ata.h src/kernel/include/klog.h src/kernel/include/input.h
+$(BUILD)/devfs.o: src/kernel/include/vfs.h src/kernel/include/pty.h src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/ata.h src/kernel/include/klog.h src/kernel/include/input.h src/include/tunix/input_event.h
 $(BUILD)/unix_socket.o: src/kernel/include/unix_socket.h src/kernel/include/pipe.h
 $(BUILD)/pty.o: src/kernel/include/pty.h src/kernel/include/tty.h src/kernel/include/file.h
-$(BUILD)/file.o: src/kernel/include/file.h src/kernel/include/vfs.h src/kernel/include/pty.h
-$(BUILD)/syscall.o: src/kernel/include/vfs.h src/kernel/include/tty.h src/kernel/include/pty.h src/kernel/include/process.h src/kernel/include/random.h src/kernel/include/time.h
+$(BUILD)/file.o: src/kernel/include/file.h src/kernel/include/vfs.h src/kernel/include/pty.h src/kernel/include/input.h
+$(BUILD)/syscall.o: src/kernel/include/vfs.h src/kernel/include/tty.h src/kernel/include/pty.h src/kernel/include/process.h src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/input.h
 $(BUILD)/terminal_font.o: $(TERMINAL_FONT_DATA) src/kernel/include/terminal_font.h
 $(BUILD)/terminal.o: src/kernel/include/terminal_font.h src/kernel/include/terminal.h
 $(BUILD)/tty.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/include/terminal.h src/include/tunix/keymap.h
@@ -265,6 +266,7 @@ $(BUILD)/user/%.o: src/userspace/%.c src/userspace/procutil.h src/libc/include/t
 	$(CC) $(USER_CFLAGS) -Isrc/userspace -c $< -o $@
 
 $(BUILD)/user/loadkeys.o $(BUILD)/user/loadkeys_parser.o: src/userspace/loadkeys_parser.h src/include/tunix/keymap.h
+$(BUILD)/user/input_test.o: src/include/tunix/input_event.h
 
 $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top: $(BUILD)/user/%: $(BUILD)/user/%.o $(PROCUTIL) $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(PROCUTIL) $(BUILD)/user/$*.o
@@ -280,6 +282,10 @@ $(SLEEP): $(BUILD)/user/sleep.o $(USER_RUNTIME) src/userspace/linker.ld
 
 $(PREEMPT_TEST): $(BUILD)/user/preempt_test.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/preempt_test.o
+	$(STRIP) --strip-all $@
+
+$(INPUT_TEST): $(BUILD)/user/input_test.o $(USER_RUNTIME) src/userspace/linker.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/input_test.o
 	$(STRIP) --strip-all $@
 
 $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
@@ -298,7 +304,8 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	cp -R $(TCC_ROOT)/. $(ROOTFS)/
 	cp -R $(LUA_ROOT)/. $(ROOTFS)/
 	cp -R $(MUSL_SHARED_ROOT)/. $(ROOTFS)/
-	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/usr/include $(ROOTFS)/usr/lib $(ROOTFS)/usr/share
+	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/usr/include/tunix $(ROOTFS)/usr/lib $(ROOTFS)/usr/share
+	cp src/include/tunix/input_event.h $(ROOTFS)/usr/include/tunix/input_event.h
 	cp -R $(IMAGE_CODECS_ROOT)/usr/include/. $(ROOTFS)/usr/include/
 	cp -R $(IMAGE_CODECS_ROOT)/usr/lib/. $(ROOTFS)/usr/lib/
 	cp -R $(IMAGE_CODECS_SHARED_ROOT)/. $(ROOTFS)/
@@ -320,7 +327,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/busybox $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
-		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test \
+		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test \
 		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/tunix-wallpaper \
 		$(ROOTFS)/usr/bin/dynamic-hello $(ROOTFS)/usr/bin/dynamic-nopie \
 		$(ROOTFS)/usr/bin/dlopen-test $(ROOTFS)/usr/bin/pthread-test \
@@ -330,6 +337,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(BUSYBOX) $(TCC_STAMP) $(NANO) $(
 		$(ROOTFS)/lib/libc.so
 	@test -x $(ROOTFS)/bin/sleep || { echo "native sleep utility was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/preempt-test || { echo "scheduler preemption test was not installed" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/input-test || { echo "input event test was not installed" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	@for app in $(BUSYBOX_APPLETS); do ln -s busybox $(ROOTFS)/bin/$$app; done
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .

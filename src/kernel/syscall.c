@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "include/file.h"
+#include "include/input.h"
 #include "include/heap.h"
 #include "include/kstring.h"
 #include "include/pipe.h"
@@ -520,6 +521,8 @@ static int file_read_ready(struct file *file) {
     if (file->kind == FILE_KIND_INET_SOCKET) return inet_socket_read_ready(file->inet_socket);
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_read_ready(file->pty, file->kind == FILE_KIND_PTY_MASTER);
+    if (file->kind == FILE_KIND_INPUT)
+        return input_reader_ready(file->input_reader);
     if (file->kind != FILE_KIND_VFS || !file->node) return -1;
     if (file->node->read_ready) return file->node->read_ready(file->node);
     if ((file->node->flags & 0xFFU) == VFS_CHARDEVICE) return 0;
@@ -537,6 +540,7 @@ static int file_write_ready(struct file *file) {
     if (file->kind == FILE_KIND_INET_SOCKET) return inet_socket_write_ready(file->inet_socket);
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_write_ready(file->pty, file->kind == FILE_KIND_PTY_MASTER);
+    if (file->kind == FILE_KIND_INPUT) return 0;
     if (file->kind != FILE_KIND_VFS || !file->node) return -1;
     return 1;
 }
@@ -1235,6 +1239,8 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_ioctl(file->pty, file->kind == FILE_KIND_PTY_MASTER,
                          request, user_argument);
+    if (file->kind == FILE_KIND_INPUT && file->node && file->node->ioctl)
+        return file->node->ioctl(file->node, request, user_argument);
     if (file->kind == FILE_KIND_INET_SOCKET) {
         size_t argument_size = (request == 0x890BU || request == 0x890CU) ? 128U : 40U;
         uint8_t argument[128];
@@ -1325,7 +1331,8 @@ static int64_t sys_fstat(int fd, uint64_t user_stat) {
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
     struct file *file = process->fds[fd];
     if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_PTY_MASTER &&
-         file->kind != FILE_KIND_PTY_SLAVE) || !file->node) return -EBADF;
+         file->kind != FILE_KIND_PTY_SLAVE && file->kind != FILE_KIND_INPUT) ||
+        !file->node) return -EBADF;
     struct linux_stat stat;
     fill_stat(file->node, &stat);
     return copy_to_user(user_stat, &stat, sizeof(stat)) == 0 ? 0 : -EFAULT;
