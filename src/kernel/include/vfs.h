@@ -13,8 +13,10 @@
 #define VFS_READONLY    0x100U
 #define VFS_OWNED_DATA  0x200U
 #define VFS_INPUTDEVICE 0x400U
+#define VFS_FRAMEBUFFER 0x800U
 
 struct vfs_node;
+struct file;
 
 typedef int64_t (*vfs_read_fn)(struct vfs_node *, uint64_t, size_t, void *);
 typedef int64_t (*vfs_write_fn)(struct vfs_node *, uint64_t, size_t, const void *);
@@ -22,8 +24,8 @@ typedef int64_t (*vfs_ioctl_fn)(struct vfs_node *, unsigned long, uint64_t);
 typedef int (*vfs_ready_fn)(struct vfs_node *);
 typedef void (*vfs_open_fn)(struct vfs_node *);
 typedef void (*vfs_close_fn)(struct vfs_node *);
-typedef int64_t (*vfs_mmap_fn)(struct vfs_node *, uint64_t, uint64_t, uint64_t,
-                               uint64_t, uint64_t);
+typedef int64_t (*vfs_mmap_fn)(struct vfs_node *, struct file *, uint64_t,
+                               uint64_t, uint64_t, uint64_t, uint64_t);
 
 struct vfs_node {
     char name[128];

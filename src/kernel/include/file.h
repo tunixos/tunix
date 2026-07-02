@@ -19,6 +19,7 @@ struct input_reader;
 #define FILE_KIND_PTY_SLAVE  6
 #define FILE_KIND_INET_SOCKET 7
 #define FILE_KIND_INPUT       8
+#define FILE_KIND_FRAMEBUFFER 9
 
 struct file {
     int refs;

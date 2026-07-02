@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "include/file.h"
 #include "include/heap.h"
+#include "include/framebuffer.h"
 #include "include/input.h"
 #include "include/pipe.h"
 #include "include/pty.h"
@@ -27,7 +28,9 @@ struct file *file_open_node(struct vfs_node *node, uint32_t flags) {
     file->inet_socket = NULL;
     file->pty = NULL;
     file->input_reader = NULL;
-    if (node->flags & VFS_INPUTDEVICE) {
+    if (node->flags & VFS_FRAMEBUFFER) {
+        file->kind = FILE_KIND_FRAMEBUFFER;
+    } else if (node->flags & VFS_INPUTDEVICE) {
         unsigned device_id = (unsigned)(uintptr_t)node->data;
         file->input_reader = input_reader_open(device_id);
         if (!file->input_reader) {
@@ -126,6 +129,8 @@ void file_unref(struct file *file) {
         file->node->close(file->node);
     if (file->kind == FILE_KIND_INPUT && file->input_reader)
         input_reader_close(file->input_reader);
+    if (file->kind == FILE_KIND_FRAMEBUFFER)
+        framebuffer_file_close(file);
     if (file->kind == FILE_KIND_SOCKET && file->socket)
         unix_socket_unref(file->socket);
     if (file->kind == FILE_KIND_INET_SOCKET && file->inet_socket)
@@ -144,6 +149,8 @@ int64_t file_read(struct file *file, size_t size, void *buffer) {
         return pty_read(file->pty, file->kind == FILE_KIND_PTY_MASTER, size, buffer);
     if (file->kind == FILE_KIND_INPUT)
         return input_reader_read(file->input_reader, size, buffer);
+    if (file->kind == FILE_KIND_FRAMEBUFFER)
+        return framebuffer_file_read(file, size, buffer);
     if (file->kind != FILE_KIND_VFS || !file->node) return -EBADF;
     int64_t result = vfs_read(file->node, file->offset, size, buffer);
     if (result > 0) file->offset += (uint64_t)result;
@@ -160,6 +167,8 @@ int64_t file_write(struct file *file, size_t size, const void *buffer) {
         if (file->pipe && file->pipe->readers == 0) return -EPIPE;
         return pipe_write(file->pipe, size, buffer);
     }
+    if (file->kind == FILE_KIND_FRAMEBUFFER)
+        return framebuffer_file_write(file, size, buffer);
     if (file->kind != FILE_KIND_VFS || !file->node) return -EBADF;
     int64_t result = vfs_write(file->node, file->offset, size, buffer);
     if (result > 0) file->offset += (uint64_t)result;

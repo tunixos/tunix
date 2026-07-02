@@ -5,6 +5,7 @@
 #include "include/klog.h"
 #include "include/kstring.h"
 #include "include/input.h"
+#include "include/framebuffer.h"
 #include "include/pty.h"
 #include "include/random.h"
 #include "include/time.h"
@@ -245,6 +246,15 @@ void devfs_init(void) {
         struct vfs_node *disk = attach_device(dev, "sda",
             VFS_BLOCKDEVICE | VFS_READONLY, 0440, disk_read, NULL, NULL);
         if (disk) disk->length = (uint64_t)sectors * 512ULL;
+    }
+
+    if (framebuffer_available()) {
+        struct vfs_node *fb = attach_device(dev, "fb0",
+            VFS_CHARDEVICE | VFS_FRAMEBUFFER, 0660, NULL, NULL, always_ready);
+        if (fb) {
+            fb->length = framebuffer_byte_length();
+            fb->mmap = framebuffer_device_mmap;
+        }
     }
 
     struct vfs_node *input = vfs_mkdir_p("/dev/input");

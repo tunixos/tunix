@@ -5,6 +5,7 @@
 
 int terminal_init(const char *wallpaper_path);
 void terminal_clear(void);
+void terminal_redraw(void);
 void terminal_print(const char *text);
 void terminal_put_char(char c);
 void terminal_put_codepoint(uint32_t codepoint);

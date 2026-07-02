@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "include/file.h"
+#include "include/framebuffer.h"
 #include "include/input.h"
 #include "include/heap.h"
 #include "include/kstring.h"
@@ -523,6 +524,7 @@ static int file_read_ready(struct file *file) {
         return pty_read_ready(file->pty, file->kind == FILE_KIND_PTY_MASTER);
     if (file->kind == FILE_KIND_INPUT)
         return input_reader_ready(file->input_reader);
+    if (file->kind == FILE_KIND_FRAMEBUFFER) return 1;
     if (file->kind != FILE_KIND_VFS || !file->node) return -1;
     if (file->node->read_ready) return file->node->read_ready(file->node);
     if ((file->node->flags & 0xFFU) == VFS_CHARDEVICE) return 0;
@@ -541,6 +543,7 @@ static int file_write_ready(struct file *file) {
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_write_ready(file->pty, file->kind == FILE_KIND_PTY_MASTER);
     if (file->kind == FILE_KIND_INPUT) return 0;
+    if (file->kind == FILE_KIND_FRAMEBUFFER) return 1;
     if (file->kind != FILE_KIND_VFS || !file->node) return -1;
     return 1;
 }
@@ -1202,6 +1205,7 @@ static int64_t sys_fsync(int fd) {
     struct process *process = process_current();
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
     struct file *file = process->fds[fd];
+    if (file->kind == FILE_KIND_FRAMEBUFFER) return 0;
     if (file->kind != FILE_KIND_VFS || !file->node) return -EINVAL;
     uint32_t node_type = file->node->flags & 0xFFU;
     if (node_type == VFS_FILE || node_type == VFS_DIRECTORY || node_type == VFS_BLOCKDEVICE)
@@ -1241,6 +1245,8 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
                          request, user_argument);
     if (file->kind == FILE_KIND_INPUT && file->node && file->node->ioctl)
         return file->node->ioctl(file->node, request, user_argument);
+    if (file->kind == FILE_KIND_FRAMEBUFFER)
+        return framebuffer_file_ioctl(file, request, user_argument);
     if (file->kind == FILE_KIND_INET_SOCKET) {
         size_t argument_size = (request == 0x890BU || request == 0x890CU) ? 128U : 40U;
         uint8_t argument[128];
@@ -1331,7 +1337,8 @@ static int64_t sys_fstat(int fd, uint64_t user_stat) {
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
     struct file *file = process->fds[fd];
     if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_PTY_MASTER &&
-         file->kind != FILE_KIND_PTY_SLAVE && file->kind != FILE_KIND_INPUT) ||
+         file->kind != FILE_KIND_PTY_SLAVE && file->kind != FILE_KIND_INPUT &&
+         file->kind != FILE_KIND_FRAMEBUFFER) ||
         !file->node) return -EBADF;
     struct linux_stat stat;
     fill_stat(file->node, &stat);
@@ -1342,7 +1349,8 @@ static int64_t sys_lseek(int fd, int64_t offset, int whence) {
     struct process *process = process_current();
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
     struct file *file = process->fds[fd];
-    if (file->kind != FILE_KIND_VFS || !file->node) return -ESPIPE;
+    if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_FRAMEBUFFER) ||
+        !file->node) return -ESPIPE;
     int64_t base;
     if (whence == SEEK_SET) base = 0;
     else if (whence == SEEK_CUR) base = (int64_t)file->offset;
@@ -1629,11 +1637,12 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
     if (!(flags & MAP_ANONYMOUS)) {
         if (fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
         file = process->fds[fd];
-        if (file->kind != FILE_KIND_VFS || !file->node) return -ENODEV;
+        if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_FRAMEBUFFER) ||
+            !file->node) return -ENODEV;
         if (file->node->mmap) {
             if (!(flags & MAP_SHARED)) return -EINVAL;
-            int64_t status = file->node->mmap(file->node, process->cr3, base,
-                                              length, offset, page_flags);
+            int64_t status = file->node->mmap(file->node, file, process->cr3,
+                                              base, length, offset, page_flags);
             if (status < 0) return status;
             if (advance_mmap_base) {
                 process->mmap_base = base + length + 4096;

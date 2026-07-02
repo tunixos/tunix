@@ -331,12 +331,14 @@ static void draw_cell_overlay(int row, int col, int cursor) {
 }
 
 static void render_cell(int row, int col, int cursor) {
+    if (!framebuffer_console_active()) return;
     if (row < 0 || col < 0 || row >= layout.rows || col >= layout.columns) return;
     copy_cell_background(row, col);
     draw_cell_overlay(row, col, cursor);
 }
 
 static void render_console(void) {
+    if (!framebuffer_console_active()) return;
     uint32_t width = (uint32_t)layout.columns * layout.cell_width;
     uint32_t height = (uint32_t)layout.rows * layout.cell_height;
     copy_backing_rect(layout.content_x, layout.content_y, width, height);
@@ -351,6 +353,7 @@ static void render_console(void) {
 }
 
 static void render_region_scroll_up(int top, int bottom, unsigned count) {
+    if (!framebuffer_console_active()) return;
     if (!count || top < 0 || bottom >= layout.rows || top > bottom) return;
     uint32_t x = layout.content_x;
     uint32_t y = layout.content_y + (uint32_t)top * layout.cell_height;
@@ -364,6 +367,7 @@ static void render_region_scroll_up(int top, int bottom, unsigned count) {
 }
 
 static void render_region_scroll_down(int top, int bottom, unsigned count) {
+    if (!framebuffer_console_active()) return;
     if (!count || top < 0 || bottom >= layout.rows || top > bottom) return;
     uint32_t x = layout.content_x;
     uint32_t y = layout.content_y + (uint32_t)top * layout.cell_height;
@@ -442,6 +446,11 @@ int terminal_init(const char *wallpaper_path) {
     terminal_ready = 1;
     render_cell(0, 0, 1);
     return 0;
+}
+
+void terminal_redraw(void) {
+    if (!terminal_ready || !framebuffer_console_active()) return;
+    render_console();
 }
 
 void terminal_clear(void) {
