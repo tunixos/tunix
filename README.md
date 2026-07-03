@@ -1,35 +1,50 @@
 # Tunix
 
-Tunix is a small and simple Unix-like operating system experiment for x86_64.
+Tunix is a small Unix-like operating system experiment for x86_64. It includes a custom bootloader, kernel, initramfs-based userspace, framebuffer terminal, and a small set of ported userland tools.
 
 <img width="1332" height="836" alt="image" src="https://github.com/user-attachments/assets/4fb0a9b9-4753-4e6a-ba60-acc51211ebfd" />
 
 ## Features
 
 - Custom bootloader and kernel code
-- Basic userspace tools
-- BusyBox, Bash, and TinyCC support
+- Initramfs-backed root filesystem
+- Framebuffer terminal with keyboard input
+- Basic VFS, devfs, procfs, process, and syscall support
+- BusyBox, Bash, TinyCC, nano, Lua, and selected libraries
 
-## Build
+## Quick Start
+
+Initialize submodules first:
+
+```sh
+git submodule update --init --recursive
+```
+
+Build the disk image:
 
 ```sh
 make all
 ```
 
-## Run
+Run it in QEMU:
 
 ```sh
 make run
 ```
 
-To run headless:
+Or run headless:
 
 ```sh
 make headless
 ```
 
-## Clean
+Clean generated files:
 
 ```sh
 make clean
 ```
+
+## Documentation
+
+- [Build and Run](docs/build-and-run.md)
+- [Ports](docs/ports.md)
