@@ -14,6 +14,7 @@
 #define SIGUSR1 10
 #define SIGSEGV 11
 #define SIGPIPE 13
+#define SIGALRM 14
 #define SIGTERM 15
 #define SIGCHLD 17
 #define SIGCONT 18
@@ -27,6 +28,7 @@
 #define SIG_SETMASK 2
 
 #define SA_ONSTACK 0x08000000ULL
+#define SA_RESTART 0x10000000ULL
 
 #define SS_ONSTACK 1
 #define SS_DISABLE 2

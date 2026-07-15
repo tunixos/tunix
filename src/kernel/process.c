@@ -363,6 +363,32 @@ static int runnable(const struct process *process) {
     return process && (process->state == PROCESS_READY || process->state == PROCESS_RUNNING);
 }
 
+static void signal_one_process(struct process *target, int signal_number);
+
+static void wake_expired_itimers(void) {
+    if (!queue) return;
+
+    uint64_t now = time_uptime_ns();
+    struct process *item = queue;
+    do {
+        if (item->state != PROCESS_DEAD && item->itimer_real_deadline_ns &&
+            now >= item->itimer_real_deadline_ns) {
+            if (item->itimer_real_interval_ns) {
+                uint64_t elapsed = now - item->itimer_real_deadline_ns;
+                uint64_t periods = 1 + elapsed / item->itimer_real_interval_ns;
+                uint64_t advance = periods > UINT64_MAX / item->itimer_real_interval_ns ?
+                    UINT64_MAX : periods * item->itimer_real_interval_ns;
+                item->itimer_real_deadline_ns = UINT64_MAX - item->itimer_real_deadline_ns < advance ?
+                    UINT64_MAX : item->itimer_real_deadline_ns + advance;
+            } else {
+                item->itimer_real_deadline_ns = 0;
+            }
+            signal_one_process(item, SIGALRM);
+        }
+        item = item->next;
+    } while (item != queue);
+}
+
 static void wake_expired_futex_waiters(void) {
     if (!queue) return;
 
@@ -384,6 +410,7 @@ static void wake_expired_futex_waiters(void) {
 
 static struct process *next_runnable(struct process *after) {
     if (!queue) return NULL;
+    wake_expired_itimers();
     wake_expired_futex_waiters();
     struct process *candidate = after ? after->next : queue;
     struct process *start = candidate;
@@ -1176,6 +1203,20 @@ void process_prepare_user_return(struct syscall_frame *frame) {
     if (action->handler >= USER_ADDRESS_LIMIT || action->restorer >= USER_ADDRESS_LIMIT) {
         process_exit_from_signal(frame, SIGSEGV);
         return;
+    }
+
+    /* A frame rewound to retry a blocking syscall must observe the signal:
+       return -EINTR at the instruction after the syscall so the retry does
+       not silently restart, unless the handler asked for SA_RESTART. */
+    if (current->syscall_rewound) {
+        current->syscall_rewound = 0;
+        if (!(action->flags & SA_RESTART)) {
+            frame->user_rip += 2U;
+            frame->rax = (uint64_t)-(int64_t)EINTR;
+            current->io_wait_active = 0;
+            current->io_wait_syscall = 0;
+            current->io_wait_deadline_ns = 0;
+        }
     }
 
     uint64_t stack_top = frame->user_rsp;

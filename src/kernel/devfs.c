@@ -18,6 +18,7 @@
 #define EINVAL 22
 #define ENOSPC 28
 #define EIO 5
+#define EAGAIN 11
 #define RTC_RD_TIME 0x80247009UL
 
 struct linux_rtc_time {
@@ -36,6 +37,7 @@ static int64_t console_read(struct vfs_node *node, uint64_t offset,
                             size_t size, void *buffer) {
     (void)node;
     (void)offset;
+    if (!tty_input_ready()) return -EAGAIN;
     return tty_read(size, buffer);
 }
 

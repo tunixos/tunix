@@ -90,9 +90,16 @@ struct process {
     uint64_t io_wait_syscall;
     uint64_t io_wait_deadline_ns;
 
+    /* Set while the saved frame has been rewound to re-issue a blocking
+       syscall; lets signal delivery turn the retry into -EINTR. */
+    int syscall_rewound;
+
     int futex_wait_active;
     uint64_t futex_wait_address;
     uint64_t futex_wait_deadline_ns;
+
+    uint64_t itimer_real_interval_ns;
+    uint64_t itimer_real_deadline_ns;
 
     uint64_t signal_pending;
     uint64_t signal_blocked;

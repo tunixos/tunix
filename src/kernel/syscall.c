@@ -73,6 +73,9 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_DUP 32
 #define SYS_DUP2 33
 #define SYS_NANOSLEEP 35
+#define SYS_GETITIMER 36
+#define SYS_ALARM 37
+#define SYS_SETITIMER 38
 #define SYS_GETPID 39
 #define SYS_SOCKET 41
 #define SYS_CONNECT 42
@@ -627,6 +630,7 @@ static int retry_io_wait(struct syscall_frame *frame, uint64_t syscall_number,
 
     frame->user_rip -= 2U;
     frame->rax = syscall_number;
+    waiting->syscall_rewound = 1;
     process_yield_from_syscall(frame);
     return 1;
 }
@@ -2698,6 +2702,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
     process_reap_deferred();
     struct process *caller = process_current();
     uint64_t syscall_number = frame->rax;
+    if (caller) caller->syscall_rewound = 0;
     if (caller && caller->io_wait_active && caller->io_wait_syscall != syscall_number)
         clear_io_wait(caller);
     int skip_signal_delivery = 0;
@@ -2711,6 +2716,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
             if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK)) {
                 frame->user_rip -= 2U;
                 frame->rax = SYS_READ;
+                if (process) process->syscall_rewound = 1;
                 process_yield_from_syscall(frame);
             } else {
                 frame->rax = (uint64_t)result;
@@ -2724,6 +2730,8 @@ void syscall_dispatch(struct syscall_frame *frame) {
             if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK)) {
                 frame->user_rip -= 2U;
                 frame->rax = SYS_WRITE;
+                struct process *writer = process_current();
+                if (writer) writer->syscall_rewound = 1;
                 process_yield_from_syscall(frame);
             } else {
                 frame->rax = (uint64_t)result;
@@ -2878,6 +2886,91 @@ void syscall_dispatch(struct syscall_frame *frame) {
             else if (!retry_io_wait(frame, SYS_NANOSLEEP, duration)) frame->rax = 0;
             break;
         }
+        case SYS_GETITIMER: {
+            struct process *process = process_current();
+            if ((int)frame->rdi != 0 /* ITIMER_REAL */) {
+                frame->rax = (uint64_t)-(int64_t)EINVAL;
+                break;
+            }
+            if (!process) {
+                frame->rax = (uint64_t)-(int64_t)EINVAL;
+                break;
+            }
+            uint64_t now = time_uptime_ns();
+            uint64_t remaining_ns = process->itimer_real_deadline_ns > now ?
+                process->itimer_real_deadline_ns - now : 0;
+            struct linux_timeval current_value[2];
+            current_value[0].tv_sec = (int64_t)(process->itimer_real_interval_ns / 1000000000ULL);
+            current_value[0].tv_usec = (int64_t)((process->itimer_real_interval_ns / 1000ULL) % 1000000ULL);
+            current_value[1].tv_sec = (int64_t)(remaining_ns / 1000000000ULL);
+            current_value[1].tv_usec = (int64_t)((remaining_ns / 1000ULL) % 1000000ULL);
+            if (frame->rsi && copy_to_user(frame->rsi, current_value, sizeof(current_value)) != 0) {
+                frame->rax = (uint64_t)-(int64_t)EFAULT;
+                break;
+            }
+            frame->rax = 0;
+            break;
+        }
+        case SYS_SETITIMER: {
+            struct process *process = process_current();
+            if ((int)frame->rdi != 0 /* ITIMER_REAL */) {
+                frame->rax = (uint64_t)-(int64_t)EINVAL;
+                break;
+            }
+            if (!process || !frame->rsi) {
+                frame->rax = (uint64_t)-(int64_t)EFAULT;
+                break;
+            }
+            struct linux_timeval new_value[2];
+            if (copy_from_user(new_value, frame->rsi, sizeof(new_value)) != 0) {
+                frame->rax = (uint64_t)-(int64_t)EFAULT;
+                break;
+            }
+            if (new_value[0].tv_sec < 0 || new_value[0].tv_usec < 0 || new_value[0].tv_usec >= 1000000LL ||
+                new_value[1].tv_sec < 0 || new_value[1].tv_usec < 0 || new_value[1].tv_usec >= 1000000LL) {
+                frame->rax = (uint64_t)-(int64_t)EINVAL;
+                break;
+            }
+            uint64_t now = time_uptime_ns();
+            if (frame->rdx) {
+                uint64_t remaining_ns = process->itimer_real_deadline_ns > now ?
+                    process->itimer_real_deadline_ns - now : 0;
+                struct linux_timeval old_value[2];
+                old_value[0].tv_sec = (int64_t)(process->itimer_real_interval_ns / 1000000000ULL);
+                old_value[0].tv_usec = (int64_t)((process->itimer_real_interval_ns / 1000ULL) % 1000000ULL);
+                old_value[1].tv_sec = (int64_t)(remaining_ns / 1000000000ULL);
+                old_value[1].tv_usec = (int64_t)((remaining_ns / 1000ULL) % 1000000ULL);
+                if (copy_to_user(frame->rdx, old_value, sizeof(old_value)) != 0) {
+                    frame->rax = (uint64_t)-(int64_t)EFAULT;
+                    break;
+                }
+            }
+            uint64_t interval_ns = (uint64_t)new_value[0].tv_sec * 1000000000ULL +
+                                    (uint64_t)new_value[0].tv_usec * 1000ULL;
+            uint64_t value_ns = (uint64_t)new_value[1].tv_sec * 1000000000ULL +
+                                (uint64_t)new_value[1].tv_usec * 1000ULL;
+            process->itimer_real_interval_ns = interval_ns;
+            process->itimer_real_deadline_ns = value_ns ? now + value_ns : 0;
+            frame->rax = 0;
+            break;
+        }
+        case SYS_ALARM: {
+            struct process *process = process_current();
+            if (!process) {
+                frame->rax = 0;
+                break;
+            }
+            uint64_t seconds = frame->rdi & 0xFFFFFFFFULL;
+            uint64_t now = time_uptime_ns();
+            uint64_t remaining_ns = process->itimer_real_deadline_ns > now ?
+                process->itimer_real_deadline_ns - now : 0;
+            uint64_t remaining_sec = remaining_ns / 1000000000ULL;
+            if (remaining_ns % 1000000000ULL) remaining_sec++;
+            process->itimer_real_interval_ns = 0;
+            process->itimer_real_deadline_ns = seconds ? now + seconds * 1000000000ULL : 0;
+            frame->rax = remaining_sec;
+            break;
+        }
         case SYS_EPOLL_WAIT:
         case SYS_EPOLL_PWAIT: {
             int timeout_ms = (int)frame->r10;
@@ -2910,6 +3003,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
                 !(file->flags & O_NONBLOCK)) {
                 frame->user_rip -= 2U;
                 frame->rax = SYS_CONNECT;
+                if (process) process->syscall_rewound = 1;
                 process_yield_from_syscall(frame);
             } else {
                 frame->rax = (uint64_t)result;
@@ -2927,6 +3021,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
             if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK) && !(flags & MSG_DONTWAIT)) {
                 frame->user_rip -= 2U;
                 frame->rax = SYS_RECVFROM;
+                if (process) process->syscall_rewound = 1;
                 process_yield_from_syscall(frame);
             } else {
                 frame->rax = (uint64_t)result;
@@ -2943,6 +3038,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
             if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK) && !(flags & MSG_DONTWAIT)) {
                 frame->user_rip -= 2U;
                 frame->rax = SYS_RECVMSG;
+                if (process) process->syscall_rewound = 1;
                 process_yield_from_syscall(frame);
             } else {
                 frame->rax = (uint64_t)result;

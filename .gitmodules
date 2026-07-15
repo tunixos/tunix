@@ -33,3 +33,9 @@
 	path = ports/src/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls
 	branch = mbedtls-3.6
+[submodule "ports/src/tty-clock"]
+	path = ports/src/tty-clock
+	url = https://github.com/xorg62/tty-clock
+[submodule "ports/src/tty-tetris"]
+	path = ports/src/tty-tetris
+	url = https://github.com/xorg62/tty-tetris
