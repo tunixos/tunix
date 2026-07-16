@@ -39,3 +39,6 @@
 [submodule "ports/src/tty-tetris"]
 	path = ports/src/tty-tetris
 	url = https://github.com/xorg62/tty-tetris
+[submodule "ports/src/binutils"]
+	path = ports/src/binutils
+	url = https://sourceware.org/git/binutils-gdb.git
