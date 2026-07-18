@@ -462,6 +462,12 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	ln -sfn ../usr/bin/openssl $(ROOTFS)/bin/openssl
 	cp -R $(IMAGE_CODECS_ROOT)/usr/share/. $(ROOTFS)/usr/share/
 	cp -R $(NCURSES_ROOT)/usr/share/terminfo $(ROOTFS)/usr/share/
+	# ncurses ships the terminal utilities; reset is a symlink to tset upstream.
+	cp $(NCURSES_ROOT)/usr/bin/clear $(ROOTFS)/bin/clear
+	cp $(NCURSES_ROOT)/usr/bin/tput $(ROOTFS)/bin/tput
+	cp $(NCURSES_ROOT)/usr/bin/tset $(ROOTFS)/bin/tset
+	ln -sfn tset $(ROOTFS)/bin/reset
+	chmod 0755 $(ROOTFS)/bin/clear $(ROOTFS)/bin/tput $(ROOTFS)/bin/tset
 	mkdir -p $(ROOTFS)/usr/share/nano
 	cp ports/src/nano/syntax/*.nanorc $(ROOTFS)/usr/share/nano/
 	@test -x $(ROOTFS)/usr/bin/tcc || { echo "TinyCC was not installed into the rootfs" >&2; exit 1; }
@@ -512,6 +518,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -x $(ROOTFS)/bin/tty-clock || { echo "tty-clock was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/tty-tetris || { echo "tty-tetris was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/htop || { echo "htop was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/clear || { echo "ncurses clear was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/sleep || { echo "native sleep utility was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/preempt-test || { echo "scheduler preemption test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/input-test || { echo "input event test was not installed" >&2; exit 1; }
