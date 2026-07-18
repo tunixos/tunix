@@ -215,6 +215,8 @@ static struct nlmsghdr *nl_msg_begin(struct nl_builder *b, uint16_t type, uint16
     b->msg_start = b->len;
     struct nlmsghdr *header = (struct nlmsghdr *)(b->buf + b->len);
     memset(header, 0, sizeof(*header));
+    /* Never leave a zero length behind if the message is abandoned early. */
+    header->nlmsg_len = (uint32_t)(sizeof(*header) + family_length);
     header->nlmsg_type = type;
     header->nlmsg_flags = flags;
     header->nlmsg_seq = seq;
@@ -235,11 +237,22 @@ static void nl_attr(struct nl_builder *b, uint16_t type, const void *data, size_
     attr->rta_len = (uint16_t)total;
     attr->rta_type = type;
     if (length) memcpy(b->buf + b->len + sizeof(*attr), data, length);
-    b->len += total;
+    /* Advance by the aligned size so nlmsg_len covers the padding; rta_len
+       itself stays unpadded, as on Linux. Readers step by
+       NETLINK_ALIGN(rta_len), so excluding it walks past the message end. */
+    size_t padded = NLMSG_ALIGN(total);
+    for (size_t pad = total; pad < padded; pad++) b->buf[b->len + pad] = 0;
+    b->len += padded;
 }
 
 static void nl_msg_end(struct nl_builder *b, struct nlmsghdr *header) {
-    if (!header || b->overflow) return;
+    if (!header) return;
+    if (b->overflow) {
+        /* Drop the partial message; a header with an unset nlmsg_len makes
+           readers spin on it forever instead of erroring out. */
+        b->len = b->msg_start;
+        return;
+    }
     header->nlmsg_len = (uint32_t)(b->len - b->msg_start);
 }
 

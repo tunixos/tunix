@@ -48,6 +48,8 @@ NANO := $(PORT_OUT)/nano
 TTY_CLOCK := $(PORT_OUT)/tty-clock
 TTY_TETRIS := $(PORT_OUT)/tty-tetris
 HTOP := $(PORT_OUT)/htop
+FASTFETCH_ROOT := $(PORT_OUT)/fastfetch-root
+FASTFETCH_STAMP := $(PORT_OUT)/.fastfetch-ready
 LUA := $(PORT_OUT)/lua
 LUA_ROOT := $(PORT_OUT)/lua-root
 LUA_STAMP := $(PORT_OUT)/.lua-ready
@@ -259,6 +261,13 @@ $(HTOP): $(NCURSES_STAMP) ports/build-htop.sh | $(BUILD)/.tools
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-htop.sh
 
+# Recipe, not a submodule port: fetches from GitHub, so a cold build needs
+# network. The patch dependency rebuilds when a patch changes.
+$(FASTFETCH_STAMP): $(BASH) ports/src/recipes/fastfetch.sh $(wildcard ports/src/patches/fastfetch/*.patch) | $(BUILD)/.tools
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/src/recipes/fastfetch.sh
+	@touch $@
+
 $(LUA_STAMP): $(BASH) ports/build-lua.sh | $(BUILD)/.tools
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-lua.sh
@@ -425,7 +434,7 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -445,6 +454,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	cp -R $(TCC_ROOT)/. $(ROOTFS)/
 	cp -R $(BINUTILS_ROOT)/. $(ROOTFS)/
 	cp -R $(LUA_ROOT)/. $(ROOTFS)/
+	cp -R $(FASTFETCH_ROOT)/. $(ROOTFS)/
 	cp -R $(MUSL_SHARED_ROOT)/. $(ROOTFS)/
 	for root in $(GNU_PORT_ROOTS); do cp -R $$root/. $(ROOTFS)/; done
 	cp -R $(IPROUTE2_ROOT)/. $(ROOTFS)/
@@ -497,6 +507,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -L $(ROOTFS)/usr/lib/libturbojpeg.so.0 || { echo "shared TurboJPEG runtime was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
+	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
 	for tool in as ld ar nm ranlib objcopy objdump readelf size strings strip addr2line; do \
 		ln -sfn ../usr/bin/$$tool $(ROOTFS)/bin/$$tool; \
 	done
@@ -504,7 +515,8 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 		$(ROOTFS)/bin/tty-clock $(ROOTFS)/bin/tty-tetris $(ROOTFS)/bin/htop \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
 		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test \
-		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/tunix-wallpaper \
+		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/fastfetch \
+		$(ROOTFS)/usr/bin/tunix-wallpaper \
 		$(ROOTFS)/usr/bin/as $(ROOTFS)/usr/bin/ld $(ROOTFS)/usr/bin/ar \
 		$(ROOTFS)/usr/bin/nm $(ROOTFS)/usr/bin/ranlib $(ROOTFS)/usr/bin/objcopy \
 		$(ROOTFS)/usr/bin/objdump $(ROOTFS)/usr/bin/readelf $(ROOTFS)/usr/bin/size \
@@ -518,6 +530,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -x $(ROOTFS)/bin/tty-clock || { echo "tty-clock was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/tty-tetris || { echo "tty-tetris was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/htop || { echo "htop was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/fastfetch || { echo "fastfetch was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/clear || { echo "ncurses clear was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/sleep || { echo "native sleep utility was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/preempt-test || { echo "scheduler preemption test was not installed" >&2; exit 1; }
