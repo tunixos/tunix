@@ -35,6 +35,11 @@ struct vfs_node {
     uint32_t uid;
     uint32_t gid;
     uint32_t disk_inode;
+    /* Epoch seconds, matching the width ext2 stores on disk. The format has no
+       sub-second field, so stat reports a nanosecond part of zero. */
+    uint32_t atime;
+    uint32_t mtime;
+    uint32_t ctime;
     uint64_t inode;
     uint64_t length;
     uint64_t capacity;
@@ -74,6 +79,12 @@ struct vfs_persist_ops {
 
 void vfs_set_persist_ops(const struct vfs_persist_ops *ops);
 void vfs_notify_meta_changed(struct vfs_node *node);
+
+#define VFS_TIME_ATIME 0x1U
+#define VFS_TIME_MTIME 0x2U
+#define VFS_TIME_CTIME 0x4U
+/* Stamp the selected timestamps with the current time. */
+void vfs_stamp_times(struct vfs_node *node, uint32_t which);
 void vfs_setup_memory_file(struct vfs_node *node);
 
 extern struct vfs_node *vfs_root;

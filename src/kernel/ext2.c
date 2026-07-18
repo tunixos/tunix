@@ -172,6 +172,14 @@ static uint32_t epoch32(void) {
     return (uint32_t)time_epoch_seconds();
 }
 
+/* The on-disk inode has carried timestamps all along; this is the half that
+   was missing, so a restored tree reports the times it was saved with. */
+static void restore_times(struct vfs_node *node, const struct ext2_inode *inode) {
+    node->atime = inode->i_atime;
+    node->mtime = inode->i_mtime;
+    node->ctime = inode->i_ctime;
+}
+
 /* --- block layer -------------------------------------------------------- */
 
 static int read_blocks(uint32_t block, uint32_t count, void *out) {
@@ -706,7 +714,9 @@ static int file_write_range(uint32_t ino, struct vfs_node *node,
 
     inode.i_size = node->length > 0xFFFFFFFFULL ? 0xFFFFFFFFU
                                                 : (uint32_t)node->length;
-    inode.i_mtime = epoch32();
+    inode.i_atime = node->atime;
+    inode.i_ctime = node->ctime;
+    inode.i_mtime = node->mtime;
     if (inode_write(ino, &inode) != 0) return -1;
     return allocated;
 }
@@ -728,15 +738,16 @@ static int create_one(struct vfs_node *node) {
     uint32_t ino = alloc_inode();
     if (!ino) return -1;
     uint32_t parent_ino = node->parent->disk_inode;
-    uint32_t now = epoch32();
 
     struct ext2_inode inode;
     memset(&inode, 0, sizeof(inode));
     inode.i_uid = (uint16_t)node->uid;
     inode.i_gid = (uint16_t)node->gid;
-    inode.i_atime = now;
-    inode.i_ctime = now;
-    inode.i_mtime = now;
+    /* Persist the times the node already carries, so what stat reported before
+       the flush is what comes back after a reboot. */
+    inode.i_atime = node->atime;
+    inode.i_ctime = node->ctime;
+    inode.i_mtime = node->mtime;
 
     if (kind == VFS_DIRECTORY) {
         uint32_t block = alloc_block();
@@ -900,7 +911,8 @@ static void ext2_event_truncated(struct vfs_node *node) {
     if (inode_read(node->disk_inode, &inode) != 0) return;
     inode_release_blocks(&inode);
     inode.i_size = 0;
-    inode.i_mtime = epoch32();
+    inode.i_ctime = node->ctime;
+    inode.i_mtime = node->mtime;
     if (inode_write(node->disk_inode, &inode) != 0) return;
     if (node->length) file_write_range(node->disk_inode, node, 0, node->length);
     flush_meta();
@@ -913,7 +925,7 @@ static void ext2_event_meta_changed(struct vfs_node *node) {
     inode.i_mode = (uint16_t)((inode.i_mode & 0xF000U) | (node->mode & 07777U));
     inode.i_uid = (uint16_t)node->uid;
     inode.i_gid = (uint16_t)node->gid;
-    inode.i_ctime = epoch32();
+    inode.i_ctime = node->ctime;
     inode_write(node->disk_inode, &inode);
     cache_flush_all();
 }
@@ -1133,6 +1145,7 @@ static int load_directory(uint32_t dir_ino, struct vfs_node *dir_node,
                 node->mode = child.i_mode & 07777U;
                 node->uid = child.i_uid;
                 node->gid = child.i_gid;
+                restore_times(node, &child);
                 restored++;
                 int below = load_directory(child_ino, node, depth + 1U);
                 if (below < 0) goto fail;
@@ -1153,6 +1166,7 @@ static int load_directory(uint32_t dir_ino, struct vfs_node *dir_node,
                 node->mode = child.i_mode & 07777U;
                 node->uid = child.i_uid;
                 node->gid = child.i_gid;
+                restore_times(node, &child);
                 node->disk_inode = child_ino;
                 vfs_setup_memory_file(node);
                 restored++;
@@ -1171,6 +1185,7 @@ static int load_directory(uint32_t dir_ino, struct vfs_node *dir_node,
                 node->flags |= VFS_OWNED_DATA;
                 node->uid = child.i_uid;
                 node->gid = child.i_gid;
+                restore_times(node, &child);
                 node->disk_inode = child_ino;
                 restored++;
             }

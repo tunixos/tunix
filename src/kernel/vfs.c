@@ -3,6 +3,7 @@
 #include "include/heap.h"
 #include "include/inotify.h"
 #include "include/kstring.h"
+#include "include/time.h"
 #include "include/vfs.h"
 
 #define VFS_PATH_MAX 256
@@ -19,7 +20,16 @@ void vfs_set_persist_ops(const struct vfs_persist_ops *ops) {
     persist_ops = ops;
 }
 
+void vfs_stamp_times(struct vfs_node *node, uint32_t which) {
+    if (!node) return;
+    uint32_t now = (uint32_t)time_epoch_seconds();
+    if (which & VFS_TIME_ATIME) node->atime = now;
+    if (which & VFS_TIME_MTIME) node->mtime = now;
+    if (which & VFS_TIME_CTIME) node->ctime = now;
+}
+
 void vfs_notify_meta_changed(struct vfs_node *node) {
+    vfs_stamp_times(node, VFS_TIME_CTIME);
     PERSIST(meta_changed, node);
 }
 
@@ -36,6 +46,7 @@ struct vfs_node *vfs_alloc_node(const char *name, uint32_t flags) {
     node->inode = next_inode++;
     uint32_t kind = flags & 0xFFU;
     node->mode = kind == VFS_DIRECTORY ? 0755 : (kind == VFS_SYMLINK ? 0777 : 0644);
+    vfs_stamp_times(node, VFS_TIME_ATIME | VFS_TIME_MTIME | VFS_TIME_CTIME);
     return node;
 }
 
@@ -252,6 +263,7 @@ static int64_t memory_write(struct vfs_node *node, uint64_t offset, size_t size,
     memcpy((uint8_t *)node->data + offset, buffer, size);
     if (end > node->length) node->length = end;
     if (size) {
+        vfs_stamp_times(node, VFS_TIME_MTIME | VFS_TIME_CTIME);
         inotify_notify(node, TUNIX_IN_MODIFY, NULL, 0);
         PERSIST(written, node, offset, size);
     }
@@ -459,6 +471,7 @@ int vfs_truncate(struct vfs_node *node, uint64_t length) {
     if (ensure_capacity(node, length) != 0) return -1;
     if (length > node->length) memset((uint8_t *)node->data + node->length, 0, (size_t)(length - node->length));
     node->length = length;
+    vfs_stamp_times(node, VFS_TIME_MTIME | VFS_TIME_CTIME);
     inotify_notify(node, TUNIX_IN_MODIFY, NULL, 0);
     PERSIST(truncated, node);
     return 0;

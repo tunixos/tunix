@@ -450,6 +450,51 @@ struct linux_statfs {
 
 typedef char linux_statfs_size_check[(sizeof(struct linux_statfs) == 120) ? 1 : -1];
 
+struct linux_statx_timestamp {
+    int64_t tv_sec;
+    uint32_t tv_nsec;
+    int32_t __reserved;
+};
+
+struct linux_statx {
+    uint32_t stx_mask;
+    uint32_t stx_blksize;
+    uint64_t stx_attributes;
+    uint32_t stx_nlink;
+    uint32_t stx_uid;
+    uint32_t stx_gid;
+    uint16_t stx_mode;
+    uint16_t __spare0[1];
+    uint64_t stx_ino;
+    uint64_t stx_size;
+    uint64_t stx_blocks;
+    uint64_t stx_attributes_mask;
+    struct linux_statx_timestamp stx_atime;
+    struct linux_statx_timestamp stx_btime;
+    struct linux_statx_timestamp stx_ctime;
+    struct linux_statx_timestamp stx_mtime;
+    uint32_t stx_rdev_major;
+    uint32_t stx_rdev_minor;
+    uint32_t stx_dev_major;
+    uint32_t stx_dev_minor;
+    uint64_t stx_mnt_id;
+    uint32_t stx_dio_mem_align;
+    uint32_t stx_dio_offset_align;
+    uint64_t stx_subvol;
+    uint32_t stx_atomic_write_unit_min;
+    uint32_t stx_atomic_write_unit_max;
+    uint32_t stx_atomic_write_segments_max;
+    uint32_t __spare1[1];
+    uint64_t __spare2[9];
+};
+
+typedef char linux_statx_size_check[(sizeof(struct linux_statx) == 256) ? 1 : -1];
+
+#define STATX_BASIC_STATS 0x7FFU
+/* AT_STATX_FORCE_SYNC | AT_STATX_DONT_SYNC: cache-coherency hints with nothing
+   to do here, so they are accepted and ignored. */
+#define AT_STATX_SYNC_TYPE 0x6000
+
 #define EXT2_SUPER_MAGIC 0xEF53U
 #define PROC_SUPER_MAGIC 0x9FA0U
 #define TMPFS_MAGIC 0x01021994U
@@ -1772,6 +1817,10 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
                     (kind == VFS_BLOCKDEVICE ? 0060000U :
                     (kind == VFS_SYMLINK ? 0120000U : 0100000U)));
     stat->st_mode = type | (node->mode & 0777U);
+    /* ext2 rev 0 has no sub-second field, so the nanosecond parts stay zero. */
+    stat->st_atim.tv_sec = (int64_t)node->atime;
+    stat->st_mtim.tv_sec = (int64_t)node->mtime;
+    stat->st_ctim.tv_sec = (int64_t)node->ctime;
 }
 
 static int64_t stat_path(int dirfd, uint64_t user_path, uint64_t user_stat, int follow) {
@@ -1872,6 +1921,63 @@ static int64_t sys_fstat(int fd, uint64_t user_stat) {
     struct linux_stat stat;
     fill_stat(file->node, &stat);
     return copy_to_user(user_stat, &stat, sizeof(stat)) == 0 ? 0 : -EFAULT;
+}
+
+/*
+ * STATX_BTIME is deliberately left out of the reported mask rather than
+ * answered with a zero: callers test the mask before trusting a birth time,
+ * and ext2 rev 0 has no field to store one in.
+ */
+static void fill_statx(struct vfs_node *node, struct linux_statx *out) {
+    struct linux_stat basic;
+    fill_stat(node, &basic);
+
+    memset(out, 0, sizeof(*out));
+    out->stx_mask = STATX_BASIC_STATS;
+    out->stx_blksize = (uint32_t)basic.st_blksize;
+    out->stx_nlink = (uint32_t)basic.st_nlink;
+    out->stx_uid = basic.st_uid;
+    out->stx_gid = basic.st_gid;
+    out->stx_mode = (uint16_t)basic.st_mode;
+    out->stx_ino = basic.st_ino;
+    out->stx_size = (uint64_t)basic.st_size;
+    out->stx_blocks = (uint64_t)basic.st_blocks;
+    out->stx_atime.tv_sec = basic.st_atim.tv_sec;
+    out->stx_mtime.tv_sec = basic.st_mtim.tv_sec;
+    out->stx_ctime.tv_sec = basic.st_ctim.tv_sec;
+}
+
+static int64_t sys_statx(int dirfd, uint64_t user_path, int flags,
+                         uint32_t mask, uint64_t user_buf) {
+    (void)mask; /* Everything we can answer is cheap, so nothing is skipped. */
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT |
+                  AT_STATX_SYNC_TYPE))
+        return -EINVAL;
+
+    char first = 0;
+    if (copy_from_user(&first, user_path, 1) != 0) return -EFAULT;
+
+    struct vfs_node *node = NULL;
+    if (!first && (flags & AT_EMPTY_PATH) && dirfd >= 0) {
+        struct process *process = process_current();
+        if (!process || dirfd >= PROCESS_MAX_FDS || !process->fds[dirfd]) return -EBADF;
+        struct file *file = process->fds[dirfd];
+        if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_PTY_MASTER &&
+             file->kind != FILE_KIND_PTY_SLAVE && file->kind != FILE_KIND_INPUT &&
+             file->kind != FILE_KIND_FRAMEBUFFER) || !file->node) return -EBADF;
+        node = file->node;
+    } else {
+        char path[256];
+        int status = copy_path_at(dirfd, user_path, path);
+        if (status != 0) return status;
+        node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path)
+                                             : vfs_lookup(path);
+    }
+    if (!node) return -ENOENT;
+
+    struct linux_statx out;
+    fill_statx(node, &out);
+    return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
 }
 
 static int64_t sys_lseek(int fd, int64_t offset, int whence) {
@@ -2048,14 +2154,57 @@ static int64_t sys_fchmod(int fd, uint32_t mode) {
     return 0;
 }
 
-static int64_t sys_utimens_at(int dirfd, uint64_t user_path, int flags) {
+#define UTIME_NOW 0x3FFFFFFF
+#define UTIME_OMIT 0x3FFFFFFE
+
+static int64_t sys_utimens_at(int dirfd, uint64_t user_path, uint64_t user_times,
+                              int flags) {
     if (flags & ~AT_SYMLINK_NOFOLLOW) return -EINVAL;
-    char path[256];
-    int status = copy_path_at(dirfd, user_path, path);
-    if (status != 0) return status;
-    struct vfs_node *node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-    if (!node) return -ENOENT;
-    return (node->flags & VFS_READONLY) ? -EROFS : 0;
+
+    struct vfs_node *node = NULL;
+    if (!user_path) {
+        /* Both musl and glibc implement futimens(fd, times) as
+           utimensat(fd, NULL, times, 0), so a NULL path means "operate on
+           dirfd itself" rather than being a bad pointer. */
+        struct process *process = process_current();
+        if (!process || dirfd < 0 || dirfd >= PROCESS_MAX_FDS || !process->fds[dirfd])
+            return -EBADF;
+        struct file *file = process->fds[dirfd];
+        if (file->kind != FILE_KIND_VFS || !file->node) return -EBADF;
+        node = file->node;
+    } else {
+        char path[256];
+        int status = copy_path_at(dirfd, user_path, path);
+        if (status != 0) return status;
+        node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path)
+                                             : vfs_lookup(path);
+        if (!node) return -ENOENT;
+    }
+    if (node->flags & VFS_READONLY) return -EROFS;
+
+    /* A NULL times array means "both to now"; musl also folds an explicit
+       UTIME_NOW/UTIME_NOW pair into that form before issuing the syscall. */
+    if (!user_times) {
+        vfs_stamp_times(node, VFS_TIME_ATIME | VFS_TIME_MTIME | VFS_TIME_CTIME);
+        vfs_notify_meta_changed(node);
+        return 0;
+    }
+
+    struct linux_timespec times[2];
+    if (copy_from_user(times, user_times, sizeof(times)) != 0) return -EFAULT;
+
+    uint32_t now = (uint32_t)time_epoch_seconds();
+    for (int index = 0; index < 2; index++) {
+        int64_t nsec = times[index].tv_nsec;
+        if (nsec == UTIME_OMIT) continue;
+        uint32_t value = (nsec == UTIME_NOW) ? now : (uint32_t)times[index].tv_sec;
+        if (index == 0) node->atime = value;
+        else node->mtime = value;
+    }
+    /* Changing the times is itself a metadata change. */
+    node->ctime = now;
+    vfs_notify_meta_changed(node);
+    return 0;
 }
 
 static int map_zero_pages(struct process *process, uint64_t start, uint64_t end, uint64_t flags) {
@@ -3496,7 +3645,10 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_SYMLINKAT: frame->rax = (uint64_t)sys_symlink_at(frame->rdi, (int)frame->rsi, frame->rdx); break;
         case SYS_READLINKAT: frame->rax = (uint64_t)sys_readlink_at((int)frame->rdi, frame->rsi, frame->rdx, (size_t)frame->r10); break;
         case SYS_FCHMODAT: frame->rax = (uint64_t)sys_chmod_at((int)frame->rdi, frame->rsi, (uint32_t)frame->rdx, 0); break;
-        case SYS_UTIMENSAT: frame->rax = (uint64_t)sys_utimens_at((int)frame->rdi, frame->rsi, (int)frame->r10); break;
+        case SYS_UTIMENSAT:
+            frame->rax = (uint64_t)sys_utimens_at((int)frame->rdi, frame->rsi,
+                                                  frame->rdx, (int)frame->r10);
+            break;
         case SYS_SET_ROBUST_LIST: frame->rax = (uint64_t)sys_set_robust_list(frame->rdi, (size_t)frame->rsi); break;
         case SYS_GET_ROBUST_LIST: frame->rax = (uint64_t)sys_get_robust_list((int)frame->rdi, frame->rsi, frame->rdx); break;
         case SYS_ACCEPT4: frame->rax = (uint64_t)sys_accept((int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10); break;
@@ -3507,7 +3659,10 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_GETDENTS64: frame->rax = (uint64_t)sys_getdents64((int)frame->rdi, frame->rsi, (size_t)frame->rdx); break;
         case SYS_STATFS: frame->rax = (uint64_t)sys_statfs(frame->rdi, frame->rsi); break;
         case SYS_FSTATFS: frame->rax = (uint64_t)sys_fstatfs((int)frame->rdi, frame->rsi); break;
-        case SYS_STATX: frame->rax = (uint64_t)-(int64_t)ENOSYS; break;
+        case SYS_STATX:
+            frame->rax = (uint64_t)sys_statx((int)frame->rdi, frame->rsi, (int)frame->rdx,
+                                             (uint32_t)frame->r10, frame->r8);
+            break;
         case SYS_RSEQ: frame->rax = (uint64_t)-(int64_t)ENOSYS; break;
         case SYS_FACCESSAT2: {
             unsigned flags = (unsigned)frame->r10;
