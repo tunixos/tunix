@@ -41,6 +41,7 @@ jobs:
             flex \
             gettext \
             git \
+            gperf \
             libtool \
             make \
             nasm \
