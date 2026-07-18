@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "include/ext2.h"
 #include "include/kstring.h"
 #include "include/pmm.h"
 #include "include/process.h"
@@ -165,7 +166,10 @@ static int64_t proc_mounts_read(struct vfs_node *node, uint64_t offset,
                                 size_t size, void *output) {
     (void)node;
     struct text_buffer text = {{0}, 0};
-    text_string(&text, "initramfs / ramfs rw 0 0\n");
+    /* Report what the root really is: the ext2 volume once it is mounted,
+       otherwise the initramfs we are still running from. */
+    text_string(&text, ext2fs_mounted() ? "/dev/sda / ext2 rw 0 0\n"
+                                        : "initramfs / ramfs rw 0 0\n");
     text_string(&text, "devfs /dev devfs rw 0 0\n");
     text_string(&text, "proc /proc proc rw 0 0\n");
     return text_read(&text, offset, size, output);

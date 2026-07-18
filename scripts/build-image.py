@@ -17,7 +17,12 @@ MANIFEST_VERSION = 3
 # loads the archive before installing its own page tables.
 MAX_INITRAMFS_BYTES = 96 * 1024 * 1024
 DATA_REGION_ALIGN_SECTORS = 2048
-DATA_REGION_BYTES = 64 * 1024 * 1024
+# 128 MiB is the most the ext2 driver can address: region_usable_blocks() caps
+# the filesystem at EXT2_BLOCKS_PER_GROUP (32768) 4 KiB blocks, because the
+# block bitmap is a single 4 KiB block and the driver formats one block group.
+# Raising this further only pads the image; growing past it needs multi-group
+# support in src/kernel/ext2.c.
+DATA_REGION_BYTES = 128 * 1024 * 1024
 
 
 def read(path: str) -> bytes:

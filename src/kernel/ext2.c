@@ -1194,6 +1194,17 @@ int ext2fs_owns(struct vfs_node *node) {
     return ext2_mounted_flag && node && node->disk_inode != 0;
 }
 
+int ext2fs_stats(struct ext2_fs_stats *out) {
+    if (!ext2_mounted_flag || !out) return -1;
+    out->block_size = EXT2_BLOCK_SIZE;
+    out->blocks = sb.s_blocks_count;
+    out->free_blocks = sb.s_free_blocks_count;
+    out->reserved_blocks = sb.s_r_blocks_count;
+    out->inodes = sb.s_inodes_count;
+    out->free_inodes = sb.s_free_inodes_count;
+    return 0;
+}
+
 int ext2fs_fsync_node(struct vfs_node *node) {
     if (!ext2fs_owns(node)) return 0;
     if ((node->flags & 0xFFU) == VFS_FILE &&

@@ -104,6 +104,8 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_FCNTL 72
 #define SYS_FSYNC 74
 #define SYS_FDATASYNC 75
+#define SYS_STATFS 137
+#define SYS_FSTATFS 138
 #define SYS_SYNC 162
 #define SYS_SYNCFS 306
 #define SYS_FTRUNCATE 77
@@ -425,6 +427,29 @@ struct linux_stat {
     struct linux_timespec st_ctim;
     int64_t __glibc_reserved[3];
 };
+
+/* x86_64 layout: every field is 8 bytes, 120 bytes total. musl reads this
+   directly and derives statvfs from it. */
+struct linux_statfs {
+    uint64_t f_type;
+    uint64_t f_bsize;
+    uint64_t f_blocks;
+    uint64_t f_bfree;
+    uint64_t f_bavail;
+    uint64_t f_files;
+    uint64_t f_ffree;
+    int32_t f_fsid[2];
+    uint64_t f_namelen;
+    uint64_t f_frsize;
+    uint64_t f_flags;
+    uint64_t f_spare[4];
+};
+
+typedef char linux_statfs_size_check[(sizeof(struct linux_statfs) == 120) ? 1 : -1];
+
+#define EXT2_SUPER_MAGIC 0xEF53U
+#define PROC_SUPER_MAGIC 0x9FA0U
+#define TMPFS_MAGIC 0x01021994U
 
 struct linux_iovec {
     uint64_t base;
@@ -1741,7 +1766,8 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
     uint32_t kind = node->flags & 0xFFU;
     uint32_t type = kind == VFS_DIRECTORY ? 0040000U :
                     (kind == VFS_CHARDEVICE ? 0020000U :
-                    (kind == VFS_SYMLINK ? 0120000U : 0100000U));
+                    (kind == VFS_BLOCKDEVICE ? 0060000U :
+                    (kind == VFS_SYMLINK ? 0120000U : 0100000U)));
     stat->st_mode = type | (node->mode & 0777U);
 }
 
@@ -1754,6 +1780,82 @@ static int64_t stat_path(int dirfd, uint64_t user_path, uint64_t user_stat, int 
     struct linux_stat stat;
     fill_stat(node, &stat);
     return copy_to_user(user_stat, &stat, sizeof(stat)) == 0 ? 0 : -EFAULT;
+}
+
+/*
+ * Tunix has one VFS tree rather than real mounts, so the filesystem a node
+ * belongs to is derived from the tree: the volatile top-level directories
+ * (/tmp, /run, /var/tmp, /dev, /proc) are RAM-only, everything else lives on
+ * the ext2 root. Walk up to the nearest volatile ancestor to classify.
+ */
+static void fill_statfs(struct vfs_node *node, struct linux_statfs *out) {
+    memset(out, 0, sizeof(*out));
+    /* The VFS name field caps a component at 127 characters plus the NUL. */
+    out->f_namelen = sizeof(node->name) - 1;
+
+    struct vfs_node *volatile_root = NULL;
+    for (struct vfs_node *walk = node; walk; walk = walk->parent) {
+        if (walk->flags & VFS_VOLATILE) volatile_root = walk;
+        /* vfs_root is its own parent (vfs_init), so stop rather than spin. */
+        if (walk->parent == walk) break;
+    }
+
+    if (volatile_root) {
+        /* No per-filesystem quota exists, so report the RAM these share. */
+        out->f_type = strcmp(volatile_root->name, "proc") == 0
+                          ? PROC_SUPER_MAGIC : TMPFS_MAGIC;
+        out->f_bsize = PMM_PAGE_SIZE;
+        out->f_frsize = PMM_PAGE_SIZE;
+        if (out->f_type == TMPFS_MAGIC) {
+            out->f_blocks = pmm_total_page_count();
+            out->f_bfree = pmm_free_page_count();
+            out->f_bavail = out->f_bfree;
+        }
+        return;
+    }
+
+    struct ext2_fs_stats stats;
+    if (ext2fs_stats(&stats) == 0) {
+        out->f_type = EXT2_SUPER_MAGIC;
+        out->f_bsize = stats.block_size;
+        out->f_frsize = stats.block_size;
+        out->f_blocks = stats.blocks;
+        out->f_bfree = stats.free_blocks;
+        out->f_bavail = stats.free_blocks > stats.reserved_blocks
+                            ? stats.free_blocks - stats.reserved_blocks : 0;
+        out->f_files = stats.inodes;
+        out->f_ffree = stats.free_inodes;
+        return;
+    }
+
+    /* Running from the initramfs, before any ext2 root is mounted. */
+    out->f_type = TMPFS_MAGIC;
+    out->f_bsize = PMM_PAGE_SIZE;
+    out->f_frsize = PMM_PAGE_SIZE;
+    out->f_blocks = pmm_total_page_count();
+    out->f_bfree = pmm_free_page_count();
+    out->f_bavail = out->f_bfree;
+}
+
+static int64_t sys_statfs(uint64_t user_path, uint64_t user_buf) {
+    char path[256];
+    int status = copy_path_at(AT_FDCWD, user_path, path);
+    if (status != 0) return status;
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return -ENOENT;
+    struct linux_statfs out;
+    fill_statfs(node, &out);
+    return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
+}
+
+static int64_t sys_fstatfs(int fd, uint64_t user_buf) {
+    struct process *process = process_current();
+    if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
+    struct file *file = process->fds[fd];
+    if (file->kind != FILE_KIND_VFS || !file->node) return -EBADF;
+    struct linux_statfs out;
+    fill_statfs(file->node, &out);
+    return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
 }
 
 static int64_t sys_fstat(int fd, uint64_t user_stat) {
@@ -3399,6 +3501,8 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_RENAMEAT2: frame->rax = (uint64_t)sys_rename_at((int)frame->rdi, frame->rsi, (int)frame->rdx, frame->r10, (unsigned)frame->r8); break;
         case SYS_GETRANDOM: frame->rax = (uint64_t)sys_getrandom(frame->rdi, (size_t)frame->rsi, (unsigned)frame->rdx); break;
         case SYS_GETDENTS64: frame->rax = (uint64_t)sys_getdents64((int)frame->rdi, frame->rsi, (size_t)frame->rdx); break;
+        case SYS_STATFS: frame->rax = (uint64_t)sys_statfs(frame->rdi, frame->rsi); break;
+        case SYS_FSTATFS: frame->rax = (uint64_t)sys_fstatfs((int)frame->rdi, frame->rsi); break;
         case SYS_STATX: frame->rax = (uint64_t)-(int64_t)ENOSYS; break;
         case SYS_RSEQ: frame->rax = (uint64_t)-(int64_t)ENOSYS; break;
         case SYS_FACCESSAT2: {

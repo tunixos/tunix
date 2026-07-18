@@ -508,6 +508,9 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
+	# coreutils df reads /proc/self/mountinfo, then falls back to /etc/mtab.
+	# procfs has no per-process mountinfo, so provide the traditional symlink.
+	ln -sfn ../proc/mounts $(ROOTFS)/etc/mtab
 	for tool in as ld ar nm ranlib objcopy objdump readelf size strings strip addr2line; do \
 		ln -sfn ../usr/bin/$$tool $(ROOTFS)/bin/$$tool; \
 	done
