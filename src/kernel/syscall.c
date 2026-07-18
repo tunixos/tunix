@@ -189,6 +189,9 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_EACCESS 0x200
 #define AT_EMPTY_PATH 0x1000
+/* Linux accepts and ignores this whenever there is nothing to automount, which
+   is always the case here. coreutils passes it on every fstatat. */
+#define AT_NO_AUTOMOUNT 0x800
 #define AT_REMOVEDIR 0x200
 #define AT_SYMLINK_FOLLOW 0x400
 
@@ -3477,7 +3480,8 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_OPENAT: frame->rax = (uint64_t)open_at((int)frame->rdi, frame->rsi, frame->rdx, frame->r10); break;
         case SYS_MKDIRAT: frame->rax = (uint64_t)sys_mkdir_at((int)frame->rdi, frame->rsi, frame->rdx); break;
         case SYS_NEWFSTATAT:
-            if (frame->r10 & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) frame->rax = (uint64_t)-(int64_t)EINVAL;
+            if (frame->r10 & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT))
+                frame->rax = (uint64_t)-(int64_t)EINVAL;
             else {
                 char first = 0;
                 if (copy_from_user(&first, frame->rsi, 1) != 0) frame->rax = (uint64_t)-(int64_t)EFAULT;
