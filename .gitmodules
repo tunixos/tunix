@@ -69,3 +69,6 @@
 [submodule "ports/src/htop"]
 	path = ports/src/htop
 	url = https://github.com/htop-dev/htop
+[submodule "ports/src/make"]
+	path = ports/src/make
+	url = git://git.savannah.gnu.org/make

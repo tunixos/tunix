@@ -23,6 +23,7 @@
 # Optional:
 #   PORT_CONFIGURE_ARGS   - bash array of extra ./configure arguments.
 #   PORT_CONFIGURE_ENV    - bash array of extra KEY=VALUE configure env.
+#   PORT_EXTRA_CFLAGS     - extra CFLAGS for this port only (not for musl).
 #   PORT_VERIFY           - name of a function run after install for checks.
 
 : "${ROOT:?gnu-port.sh: ROOT must be set before sourcing}"
@@ -57,7 +58,10 @@ gnu_port_detect_flags() {
     fi
     rm -f "$probe" "$probe.bin"
     COMMON_CFLAGS="-O2 -fno-stack-protector -fno-pie $NO_AUTO_ATOMIC"
-    PORT_CFLAGS="-Os -fno-stack-protector -fno-pie $NO_AUTO_ATOMIC"
+    # PORT_EXTRA_CFLAGS lets a port opt into flags the others do not need, such
+    # as an older -std for source that predates C23. It is deliberately kept out
+    # of COMMON_CFLAGS so it never leaks into the shared musl build.
+    PORT_CFLAGS="-Os -fno-stack-protector -fno-pie $NO_AUTO_ATOMIC ${PORT_EXTRA_CFLAGS:-}"
     COMMON_LDFLAGS="-static -no-pie $NO_AUTO_ATOMIC"
 }
 
@@ -170,13 +174,29 @@ gnu_port_bootstrap() {
     fi
     # gnu_port_prepare_stubs (called from gnu_autotools_port) has already put
     # harmless wget/help2man stubs on PATH for us.
+    # Most GNU packages vendor gnulib as a submodule at <src>/gnulib, which the
+    # loop above has populated. GNU make does not: it has no .gitmodules and
+    # instead pins GNULIB_REVISION in bootstrap.conf for bootstrap to fetch
+    # itself. Support both, because --no-git *requires* a local gnulib and
+    # fails outright without one.
+    local -a bootstrap_args=( --skip-po )
+    if [[ -n "$(ls -A "$src/gnulib" 2>/dev/null)" ]]; then
+        # --no-git: use the checkout we have rather than letting bootstrap run
+        #           its own git plumbing against the pinned submodule.
+        bootstrap_args+=( --no-git --gnulib-srcdir="$src/gnulib" )
+    else
+        grep -q '^GNULIB_REVISION=' "$src/bootstrap.conf" 2>/dev/null || \
+            gnu_port_fail "$PORT_NAME has no vendored gnulib and no pinned GNULIB_REVISION"
+        # bootstrap clones gnulib at the pinned revision into the source tree,
+        # so this costs network on the first build only. The revision comes
+        # from bootstrap.conf, so the result stays reproducible.
+        echo "build-$PORT_NAME: no vendored gnulib; bootstrap will fetch the revision pinned in bootstrap.conf"
+    fi
     (
         cd "$src"
-        # --no-git:  use the gnulib checkout we just populated instead of letting
-        #            bootstrap run its own git plumbing against the pinned submodule.
         # --skip-po: never download translation catalogs (they are stripped from
         #            the image anyway); this avoids a network fetch during build.
-        ./bootstrap --no-git --skip-po --gnulib-srcdir="$src/gnulib"
+        ./bootstrap "${bootstrap_args[@]}"
     ) || gnu_port_fail "bootstrap failed for $PORT_NAME"
 }
 

@@ -32,12 +32,17 @@ TAR_ROOT := $(PORT_OUT)/tar-root
 TAR_STAMP := $(PORT_OUT)/.tar-ready
 GZIP_ROOT := $(PORT_OUT)/gzip-root
 GZIP_STAMP := $(PORT_OUT)/.gzip-ready
+# GNUMAKE_ rather than MAKE_: MAKE is special to GNU make itself.
+GNUMAKE_ROOT := $(PORT_OUT)/make-root
+GNUMAKE_STAMP := $(PORT_OUT)/.make-ready
 IPROUTE2_ROOT := $(PORT_OUT)/iproute2-root
 IPROUTE2_STAMP := $(PORT_OUT)/.iproute2-ready
 GNU_PORT_STAMPS := $(COREUTILS_STAMP) $(GREP_STAMP) $(SED_STAMP) $(GAWK_STAMP) \
-	$(FINDUTILS_STAMP) $(DIFFUTILS_STAMP) $(TAR_STAMP) $(GZIP_STAMP)
+	$(FINDUTILS_STAMP) $(DIFFUTILS_STAMP) $(TAR_STAMP) $(GZIP_STAMP) \
+	$(GNUMAKE_STAMP)
 GNU_PORT_ROOTS := $(COREUTILS_ROOT) $(GREP_ROOT) $(SED_ROOT) $(GAWK_ROOT) \
-	$(FINDUTILS_ROOT) $(DIFFUTILS_ROOT) $(TAR_ROOT) $(GZIP_ROOT)
+	$(FINDUTILS_ROOT) $(DIFFUTILS_ROOT) $(TAR_ROOT) $(GZIP_ROOT) \
+	$(GNUMAKE_ROOT)
 TCC_ROOT := $(PORT_OUT)/tcc-root
 TCC_STAMP := $(PORT_OUT)/.tcc-ready
 BINUTILS_ROOT := $(PORT_OUT)/binutils-root
@@ -229,6 +234,12 @@ $(GZIP_STAMP): $(BASH) ports/build-gzip.sh ports/lib/gnu-port.sh | $(BUILD)/.too
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-gzip.sh
 	@test -x $(GZIP_ROOT)/usr/bin/gzip || { echo "gzip was not produced" >&2; exit 1; }
+	@touch $@
+
+$(GNUMAKE_STAMP): $(BASH) ports/build-make.sh ports/lib/gnu-port.sh | $(BUILD)/.tools
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-make.sh
+	@test -x $(GNUMAKE_ROOT)/usr/bin/make || { echo "make was not produced" >&2; exit 1; }
 	@touch $@
 
 # iproute2's ip/ss drive the kernel AF_NETLINK/rtnetlink implementation
