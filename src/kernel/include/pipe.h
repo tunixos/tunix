@@ -15,10 +15,16 @@ struct pipe_buffer {
     size_t count;
     int readers;
     int writers;
+    /* Sleep channels. Only the addresses matter; the values are never read.
+       Readers wait for data, writers wait for space. */
+    char data_wait;
+    char space_wait;
 };
 
 int pipe_create(struct file **read_end, struct file **write_end);
 int64_t pipe_read(struct pipe_buffer *pipe, size_t size, void *buffer);
 int64_t pipe_write(struct pipe_buffer *pipe, size_t size, const void *buffer);
+/* Drop a reader or writer, freeing the buffer once both sides are gone. */
+void pipe_release(struct pipe_buffer *pipe, int write_end);
 
 #endif

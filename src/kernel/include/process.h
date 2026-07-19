@@ -96,6 +96,8 @@ struct process {
 
     int futex_wait_active;
     uint64_t futex_wait_address;
+    /* Non-NULL while blocked in process_sleep_on(). */
+    const void *wait_channel;
     uint64_t futex_wait_deadline_ns;
 
     uint64_t itimer_real_interval_ns;
@@ -121,6 +123,9 @@ uint64_t process_current_ppid(void);
 void process_start_first(void) __attribute__((noreturn));
 void process_yield_from_syscall(struct syscall_frame *frame);
 void process_timer_interrupt(struct interrupt_frame *frame);
+/* Deliver a user-mode CPU exception as a signal. Returns 0 when the fault came
+   from kernel mode, which the caller must treat as fatal. */
+int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_number);
 void process_run_child_first_from_syscall(struct syscall_frame *frame, uint64_t child_pid);
 void process_reap_deferred(void);
 void process_exit_from_syscall(struct syscall_frame *frame, int status);
@@ -148,6 +153,18 @@ int process_sigreturn(struct syscall_frame *frame);
 int64_t process_futex_wait(struct syscall_frame *frame, uint64_t address,
                            uint32_t expected, int64_t timeout_ns);
 int process_futex_wake(uint64_t address, int maximum);
+
+/*
+ * Sleep on an opaque channel -- any stable kernel address identifying what is
+ * being waited for. Returns 0 once the caller has been woken, or -EAGAIN when
+ * nothing else was runnable and switching away would have hung the machine; in
+ * that case the caller must fall back to retrying.
+ *
+ * Callers rewind the syscall so it re-executes on wake, which means a wakeup is
+ * only a hint: the condition is always re-tested, so a spurious wake is safe.
+ */
+int process_sleep_on(struct syscall_frame *frame, const void *channel);
+int process_wake_all(const void *channel);
 uint32_t process_get_umask(void);
 uint32_t process_set_umask(uint32_t mask);
 void process_set_fs_base(uint64_t value);

@@ -64,6 +64,12 @@ void file_ref(struct file *file);
 void file_unref(struct file *file);
 int64_t file_read(struct file *file, size_t size, void *buffer);
 int64_t file_write(struct file *file, size_t size, const void *buffer);
+/*
+ * Channel to sleep on when a read/write returned EAGAIN, or NULL when this file
+ * kind has no wakeup source and the caller must fall back to retrying.
+ */
+const void *file_read_wait_channel(struct file *file);
+const void *file_write_wait_channel(struct file *file);
 uint32_t file_poll_events(struct file *file, uint32_t requested);
 
 #endif

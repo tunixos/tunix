@@ -496,6 +496,30 @@ void process_start_first(void) {
     panic("process_enter_user returned");
 }
 
+/*
+ * A CPU exception raised in user mode is that process's fault, not the
+ * kernel's. Turn it into a signal so the offending program dies on its own
+ * instead of taking the machine down; only a fault raised in kernel mode is
+ * genuinely unrecoverable. Returns non-zero when the fault was handled.
+ */
+int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_number) {
+    if (!frame || (frame->cs & 3U) != 3U || !current ||
+        current->state != PROCESS_RUNNING) return 0;
+
+    process_account_runtime();
+    save_interrupt_context(&current->saved_frame, frame);
+    struct syscall_frame resume = current->saved_frame;
+
+    (void)process_send_signal((int64_t)current->pid, signal_number);
+    /* Delivers the signal: redirects to a handler if one is installed, or
+       terminates the process and switches away when the action is default. */
+    process_prepare_user_return(&resume);
+    if (!current || current->state != PROCESS_RUNNING) return 1;
+    current->saved_frame = resume;
+    load_interrupt_context(frame, &resume);
+    return 1;
+}
+
 void process_timer_interrupt(struct interrupt_frame *frame) {
     if (!frame || (frame->cs & 3U) != 3U || !current ||
         current->state != PROCESS_RUNNING) return;
@@ -911,6 +935,37 @@ int64_t process_futex_wait(struct syscall_frame *frame, uint64_t address,
         return -EAGAIN;
     }
     return 0;
+}
+
+int process_sleep_on(struct syscall_frame *frame, const void *channel) {
+    if (!current || !frame || !channel) return -EAGAIN;
+    struct process *waiting = current;
+    waiting->saved_frame = *frame;
+    waiting->state = PROCESS_BLOCKED;
+    waiting->wait_channel = channel;
+    if (switch_to_next(frame, waiting) != 0) {
+        /* Nothing else can run. Blocking here would stop the machine, so leave
+           the caller running and let it retry rather than deadlock. */
+        waiting->state = PROCESS_RUNNING;
+        waiting->wait_channel = NULL;
+        return -EAGAIN;
+    }
+    return 0;
+}
+
+int process_wake_all(const void *channel) {
+    if (!queue || !channel) return 0;
+    int woken = 0;
+    struct process *item = queue;
+    do {
+        if (item->state == PROCESS_BLOCKED && item->wait_channel == channel) {
+            item->wait_channel = NULL;
+            item->state = PROCESS_READY;
+            woken++;
+        }
+        item = item->next;
+    } while (item != queue);
+    return woken;
 }
 
 int process_futex_wake(uint64_t address, int maximum) {

@@ -4,6 +4,7 @@
 #include "include/heap.h"
 #include "include/kstring.h"
 #include "include/pipe.h"
+#include "include/process.h"
 
 #define EAGAIN 11
 
@@ -28,6 +29,8 @@ int64_t pipe_read(struct pipe_buffer *pipe, size_t size, void *buffer) {
         pipe->read_pos = (pipe->read_pos + 1) % PIPE_CAPACITY;
     }
     pipe->count -= amount;
+    /* Space freed up; anyone blocked in write can make progress. */
+    process_wake_all(&pipe->space_wait);
     return (int64_t)amount;
 }
 
@@ -42,5 +45,22 @@ int64_t pipe_write(struct pipe_buffer *pipe, size_t size, const void *buffer) {
         pipe->write_pos = (pipe->write_pos + 1) % PIPE_CAPACITY;
     }
     pipe->count += amount;
+    /* Data arrived; anyone blocked in read can make progress. */
+    process_wake_all(&pipe->data_wait);
     return (int64_t)amount;
+}
+
+void pipe_release(struct pipe_buffer *pipe, int write_end) {
+    if (!pipe) return;
+    if (write_end) {
+        if (pipe->writers > 0) pipe->writers--;
+        /* The last writer leaving turns a blocking read into EOF, and the last
+           reader leaving turns a blocking write into EPIPE, so both closes have
+           to wake the other side or it would sleep forever. */
+        if (pipe->writers == 0) process_wake_all(&pipe->data_wait);
+    } else {
+        if (pipe->readers > 0) pipe->readers--;
+        if (pipe->readers == 0) process_wake_all(&pipe->space_wait);
+    }
+    if (pipe->readers == 0 && pipe->writers == 0) kfree(pipe);
 }

@@ -1910,16 +1910,53 @@ static int64_t sys_fstatfs(int fd, uint64_t user_buf) {
     return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
 }
 
+/*
+ * Pipes and sockets have no VFS node, but fstat still has to describe them.
+ * Reporting EBADF for a perfectly good descriptor is what made `cat file | wc`
+ * fail: cat fstats its stdout to size its copy buffer, and grep fstats its
+ * stdin. Linux answers with S_IFIFO / S_IFSOCK, so do the same.
+ */
+static int fill_stat_nodeless(struct file *file, struct linux_stat *stat) {
+    uint32_t type;
+    switch (file->kind) {
+        case FILE_KIND_PIPE_READ:
+        case FILE_KIND_PIPE_WRITE:
+            type = 0010000U; /* S_IFIFO */
+            break;
+        case FILE_KIND_SOCKET:
+        case FILE_KIND_INET_SOCKET:
+        case FILE_KIND_NETLINK_SOCKET:
+            type = 0140000U; /* S_IFSOCK */
+            break;
+        default:
+            return -1;
+    }
+    memset(stat, 0, sizeof(*stat));
+    stat->st_mode = type | 0600U;
+    stat->st_nlink = 1;
+    stat->st_blksize = 4096;
+    /* No inode namespace for these, so give each open a stable unique value. */
+    stat->st_ino = (uint64_t)(uintptr_t)file;
+    return 0;
+}
+
+static int stat_from_file(struct file *file, struct linux_stat *stat) {
+    if (!file) return -1;
+    if (file->node &&
+        (file->kind == FILE_KIND_VFS || file->kind == FILE_KIND_PTY_MASTER ||
+         file->kind == FILE_KIND_PTY_SLAVE || file->kind == FILE_KIND_INPUT ||
+         file->kind == FILE_KIND_FRAMEBUFFER)) {
+        fill_stat(file->node, stat);
+        return 0;
+    }
+    return fill_stat_nodeless(file, stat);
+}
+
 static int64_t sys_fstat(int fd, uint64_t user_stat) {
     struct process *process = process_current();
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
-    struct file *file = process->fds[fd];
-    if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_PTY_MASTER &&
-         file->kind != FILE_KIND_PTY_SLAVE && file->kind != FILE_KIND_INPUT &&
-         file->kind != FILE_KIND_FRAMEBUFFER) ||
-        !file->node) return -EBADF;
     struct linux_stat stat;
-    fill_stat(file->node, &stat);
+    if (stat_from_file(process->fds[fd], &stat) != 0) return -EBADF;
     return copy_to_user(user_stat, &stat, sizeof(stat)) == 0 ? 0 : -EFAULT;
 }
 
@@ -1928,9 +1965,8 @@ static int64_t sys_fstat(int fd, uint64_t user_stat) {
  * answered with a zero: callers test the mask before trusting a birth time,
  * and ext2 rev 0 has no field to store one in.
  */
-static void fill_statx(struct vfs_node *node, struct linux_statx *out) {
-    struct linux_stat basic;
-    fill_stat(node, &basic);
+static void fill_statx(const struct linux_stat *basic_in, struct linux_statx *out) {
+    struct linux_stat basic = *basic_in;
 
     memset(out, 0, sizeof(*out));
     out->stx_mask = STATX_BASIC_STATS;
@@ -1957,26 +1993,23 @@ static int64_t sys_statx(int dirfd, uint64_t user_path, int flags,
     char first = 0;
     if (copy_from_user(&first, user_path, 1) != 0) return -EFAULT;
 
-    struct vfs_node *node = NULL;
+    struct linux_stat basic;
     if (!first && (flags & AT_EMPTY_PATH) && dirfd >= 0) {
         struct process *process = process_current();
         if (!process || dirfd >= PROCESS_MAX_FDS || !process->fds[dirfd]) return -EBADF;
-        struct file *file = process->fds[dirfd];
-        if ((file->kind != FILE_KIND_VFS && file->kind != FILE_KIND_PTY_MASTER &&
-             file->kind != FILE_KIND_PTY_SLAVE && file->kind != FILE_KIND_INPUT &&
-             file->kind != FILE_KIND_FRAMEBUFFER) || !file->node) return -EBADF;
-        node = file->node;
+        if (stat_from_file(process->fds[dirfd], &basic) != 0) return -EBADF;
     } else {
         char path[256];
         int status = copy_path_at(dirfd, user_path, path);
         if (status != 0) return status;
-        node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path)
-                                             : vfs_lookup(path);
+        struct vfs_node *node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path)
+                                                              : vfs_lookup(path);
+        if (!node) return -ENOENT;
+        fill_stat(node, &basic);
     }
-    if (!node) return -ENOENT;
 
     struct linux_statx out;
-    fill_statx(node, &out);
+    fill_statx(&basic, &out);
     return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
 }
 
@@ -2588,6 +2621,23 @@ static int64_t sys_sigprocmask(int how, uint64_t user_set, uint64_t user_old_set
     return 0;
 }
 
+/*
+ * Rewind the syscall so it re-runs and re-tests its condition, then block.
+ * Sleeping requires a wakeup source for this file kind; without one the only
+ * option is to spin, which is why the yield is a fallback rather than the rule.
+ */
+static void block_and_retry(struct syscall_frame *frame, uint64_t syscall_number,
+                            struct file *file, int writing) {
+    frame->user_rip -= 2U;
+    frame->rax = syscall_number;
+    struct process *process = process_current();
+    if (process) process->syscall_rewound = 1;
+    const void *channel = writing ? file_write_wait_channel(file)
+                                  : file_read_wait_channel(file);
+    if (!channel || process_sleep_on(frame, channel) != 0)
+        process_yield_from_syscall(frame);
+}
+
 static int64_t sys_readv_writev(int fd, uint64_t user_iov, int count, int write_mode) {
     if (count < 0 || count > 1024) return -EINVAL;
     int64_t total = 0;
@@ -3073,10 +3123,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
             struct process *process = process_current();
             struct file *file = process && fd >= 0 && fd < PROCESS_MAX_FDS ? process->fds[fd] : NULL;
             if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK)) {
-                frame->user_rip -= 2U;
-                frame->rax = SYS_READ;
-                if (process) process->syscall_rewound = 1;
-                process_yield_from_syscall(frame);
+                block_and_retry(frame, SYS_READ, file, 0);
             } else {
                 frame->rax = (uint64_t)result;
             }
@@ -3087,11 +3134,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
             int64_t result = sys_write(fd, frame->rsi, (size_t)frame->rdx);
             struct file *file = file_from_fd(fd);
             if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK)) {
-                frame->user_rip -= 2U;
-                frame->rax = SYS_WRITE;
-                struct process *writer = process_current();
-                if (writer) writer->syscall_rewound = 1;
-                process_yield_from_syscall(frame);
+                block_and_retry(frame, SYS_WRITE, file, 1);
             } else {
                 frame->rax = (uint64_t)result;
             }
@@ -3150,8 +3193,21 @@ void syscall_dispatch(struct syscall_frame *frame) {
             }
             break;
         }
-        case SYS_READV: frame->rax = (uint64_t)sys_readv_writev((int)frame->rdi, frame->rsi, (int)frame->rdx, 0); break;
-        case SYS_WRITEV: frame->rax = (uint64_t)sys_readv_writev((int)frame->rdi, frame->rsi, (int)frame->rdx, 1); break;
+        case SYS_READV:
+        case SYS_WRITEV: {
+            int writing = syscall_number == SYS_WRITEV;
+            int fd = (int)frame->rdi;
+            int64_t result = sys_readv_writev(fd, frame->rsi, (int)frame->rdx, writing);
+            /* readv/writev block exactly like read/write; coreutils reaches a
+               pipe through these, so leaving them unblocking surfaced EAGAIN
+               to userspace as "Resource temporarily unavailable". */
+            struct file *file = file_from_fd(fd);
+            if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK))
+                block_and_retry(frame, syscall_number, file, writing);
+            else
+                frame->rax = (uint64_t)result;
+            break;
+        }
         case SYS_ACCESS: {
             char path[256];
             int status = copy_path_at(AT_FDCWD, frame->rdi, path);

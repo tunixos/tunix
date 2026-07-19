@@ -211,6 +211,18 @@ struct file *file_create_pty_endpoint(struct pty_pair *pty, int master,
     return file;
 }
 
+const void *file_read_wait_channel(struct file *file) {
+    if (file && file->kind == FILE_KIND_PIPE_READ && file->pipe)
+        return &file->pipe->data_wait;
+    return NULL;
+}
+
+const void *file_write_wait_channel(struct file *file) {
+    if (file && file->kind == FILE_KIND_PIPE_WRITE && file->pipe)
+        return &file->pipe->space_wait;
+    return NULL;
+}
+
 void file_ref(struct file *file) {
     if (file) file->refs++;
 }
@@ -219,8 +231,8 @@ void file_unref(struct file *file) {
     if (!file || file->refs <= 0) return;
     file->refs--;
     if (file->refs != 0) return;
-    if (file->kind == FILE_KIND_PIPE_READ && file->pipe && file->pipe->readers > 0) file->pipe->readers--;
-    if (file->kind == FILE_KIND_PIPE_WRITE && file->pipe && file->pipe->writers > 0) file->pipe->writers--;
+    if ((file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_WRITE) && file->pipe)
+        pipe_release(file->pipe, file->kind == FILE_KIND_PIPE_WRITE);
     if (file->kind == FILE_KIND_VFS && file->node && file->node->close)
         file->node->close(file->node);
     if (file->kind == FILE_KIND_INPUT && file->input_reader)

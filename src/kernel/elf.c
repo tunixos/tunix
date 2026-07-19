@@ -19,7 +19,15 @@
 #define PF_X 1
 #define PF_W 2
 #define USER_STACK_TOP 0x00007FFFFFF00000ULL
-#define USER_STACK_PAGES 32ULL
+/*
+ * 128 KiB was not enough for coreutils: `wc` faulted 132 KiB below the old
+ * bottom, so a pipeline ending in it died. The whole range is mapped eagerly
+ * and never grows, so this is the hard ceiling every process gets -- 2 MiB
+ * leaves real headroom while staying cheap next to the 256 MiB the machine
+ * boots with. Growing it on demand from the page-fault handler would be the
+ * proper fix and would let this go back down.
+ */
+#define USER_STACK_PAGES 512ULL
 #define MAIN_PIE_BASE 0x0000550000000000ULL
 #define INTERP_BASE 0x00007F0000000000ULL
 #define DEFAULT_MMAP_BASE 0x0000600000000000ULL
