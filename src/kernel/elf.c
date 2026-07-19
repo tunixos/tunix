@@ -18,16 +18,8 @@
 #define PT_INTERP 3
 #define PF_X 1
 #define PF_W 2
-#define USER_STACK_TOP 0x00007FFFFFF00000ULL
-/*
- * 128 KiB was not enough for coreutils: `wc` faulted 132 KiB below the old
- * bottom, so a pipeline ending in it died. The whole range is mapped eagerly
- * and never grows, so this is the hard ceiling every process gets -- 2 MiB
- * leaves real headroom while staying cheap next to the 256 MiB the machine
- * boots with. Growing it on demand from the page-fault handler would be the
- * proper fix and would let this go back down.
- */
-#define USER_STACK_PAGES 512ULL
+/* USER_STACK_TOP / USER_STACK_INITIAL_PAGES come from vmm.h, shared with the
+   page-fault handler that grows the stack past the initial mapping. */
 #define MAIN_PIE_BASE 0x0000550000000000ULL
 #define INTERP_BASE 0x00007F0000000000ULL
 #define DEFAULT_MMAP_BASE 0x0000600000000000ULL
@@ -469,7 +461,8 @@ int elf_load_process(struct process *process, struct vfs_node *file,
         interpreter_base = interpreter.load_bias;
     }
 
-    uint64_t stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * 4096ULL;
+    /* Only the initial window; deeper pages arrive via process_grow_user_stack. */
+    uint64_t stack_bottom = USER_STACK_TOP - USER_STACK_INITIAL_PAGES * 4096ULL;
     for (uint64_t address = stack_bottom; address < USER_STACK_TOP; address += 4096) {
         uint64_t physical = (uint64_t)pmm_alloc_page();
         if (!physical) return -1;

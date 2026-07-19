@@ -54,6 +54,14 @@ void isr_handler(struct interrupt_frame *regs) {
         if (regs->int_no == 14) /* page fault: CR2 holds the bad address */
             __asm__ volatile("mov %%cr2, %0" : "=r"(fault_address));
 
+        /* A not-present write inside the stack window is the stack growing,
+           not a crash. Bit 0 of the error code clear means the page is absent;
+           a protection fault on a mapped page must never be papered over. */
+        if (regs->int_no == 14 && (regs->cs & 3U) == 3U &&
+            !(regs->err_code & 1U) && process_grow_user_stack(fault_address)) {
+            return; /* page mapped; retry the faulting instruction */
+        }
+
         if (process_fault_from_interrupt(regs, fault_signal(regs->int_no))) {
             kprintf("%s in user mode at RIP %p addr %p (error %x), signalling process\n",
                     exception_messages[regs->int_no], (void *)fault_rip,

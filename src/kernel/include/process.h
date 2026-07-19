@@ -123,6 +123,9 @@ uint64_t process_current_ppid(void);
 void process_start_first(void) __attribute__((noreturn));
 void process_yield_from_syscall(struct syscall_frame *frame);
 void process_timer_interrupt(struct interrupt_frame *frame);
+/* Map another user stack page for a fault inside the stack growth window.
+   Returns 1 when the faulting instruction should simply be retried. */
+int process_grow_user_stack(uint64_t fault_address);
 /* Deliver a user-mode CPU exception as a signal. Returns 0 when the fault came
    from kernel mode, which the caller must treat as fatal. */
 int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_number);

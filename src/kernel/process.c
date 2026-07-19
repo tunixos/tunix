@@ -7,6 +7,7 @@
 #include "include/heap.h"
 #include "include/interrupt.h"
 #include "include/kstring.h"
+#include "include/pmm.h"
 #include "include/process.h"
 #include "include/procfs.h"
 #include "include/syscall.h"
@@ -494,6 +495,42 @@ void process_start_first(void) {
     activate_process(first);
     process_enter_user(first->entry, first->user_stack_top, first->cr3);
     panic("process_enter_user returned");
+}
+
+/*
+ * Map one more stack page for the current process. Called from the page-fault
+ * handler before the fault is turned into a signal, so a program that walks
+ * past the initial mapping simply gets more stack instead of dying.
+ *
+ * Only the address range is checked, not its distance from rsp. Linux is
+ * stricter, which lets it catch a wild pointer that happens to land in the
+ * stack window; here a compiler that writes below rsp before adjusting it --
+ * which does happen without stack-clash protection -- matters more than that
+ * diagnostic, so the simpler rule wins.
+ *
+ * Returns 1 when a page was mapped and the faulting instruction should be
+ * retried, 0 when the fault was not a stack growth and must be handled.
+ */
+int process_grow_user_stack(uint64_t fault_address) {
+    if (!current || current->state != PROCESS_RUNNING || !current->cr3) return 0;
+    if (fault_address >= USER_STACK_TOP || fault_address < USER_STACK_LIMIT) return 0;
+
+    uint64_t page = fault_address & ~4095ULL;
+    uint64_t existing_physical = 0;
+    uint64_t existing_flags = 0;
+    /* Already mapped means this was a protection fault, not a missing page. */
+    if (vmm_translate(current->cr3, page, &existing_physical, &existing_flags) == 0)
+        return 0;
+
+    uint64_t physical = (uint64_t)pmm_alloc_page();
+    if (!physical) return 0;
+    memset(vmm_phys_to_virt(physical), 0, 4096);
+    if (vmm_map_page_in(current->cr3, page, physical,
+                        PAGE_PRESENT | PAGE_WRITE | PAGE_USER) != 0) {
+        pmm_free_page((void *)physical);
+        return 0;
+    }
+    return 1;
 }
 
 /*

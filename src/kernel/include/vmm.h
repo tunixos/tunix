@@ -7,6 +7,18 @@
 #define KERNEL_BASE 0xFFFFFFFF80000000ULL
 #define USER_ADDRESS_LIMIT 0x0000800000000000ULL
 
+/*
+ * User stack layout. Only USER_STACK_INITIAL_PAGES are mapped when the image
+ * is loaded; the rest is mapped on demand by the page-fault handler, so a
+ * process pays for the pages it actually touches instead of reserving the
+ * worst case up front. USER_STACK_MAX_PAGES is the ceiling a fault is still
+ * allowed to grow into.
+ */
+#define USER_STACK_TOP 0x00007FFFFFF00000ULL
+#define USER_STACK_INITIAL_PAGES 32ULL   /* 128 KiB mapped eagerly */
+#define USER_STACK_MAX_PAGES 2048ULL     /* 8 MiB ceiling, as on Linux */
+#define USER_STACK_LIMIT (USER_STACK_TOP - USER_STACK_MAX_PAGES * 4096ULL)
+
 #define PAGE_PRESENT  (1ULL << 0)
 #define PAGE_WRITE    (1ULL << 1)
 #define PAGE_USER     (1ULL << 2)
