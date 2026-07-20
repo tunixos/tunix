@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "include/file.h"
 #include "include/heap.h"
+#include "include/kstring.h"
 #include "include/framebuffer.h"
 #include "include/eventfd.h"
 #include "include/timerfd.h"
@@ -9,6 +10,7 @@
 #include "include/inotify.h"
 #include "include/input.h"
 #include "include/memfd.h"
+#include "include/signalfd.h"
 #include "include/pipe.h"
 #include "include/pty.h"
 #include "include/vfs.h"
@@ -24,21 +26,11 @@ struct file *file_open_node(struct vfs_node *node, uint32_t flags) {
     if (!node) return NULL;
     struct file *file = (struct file *)kmalloc(sizeof(*file));
     if (!file) return NULL;
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = FILE_KIND_VFS;
     file->flags = flags;
-    file->offset = 0;
     file->node = node;
-    file->pipe = NULL;
-    file->socket = NULL;
-    file->inet_socket = NULL;
-    file->netlink_socket = NULL;
-    file->pty = NULL;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     if (node->flags & VFS_FRAMEBUFFER) {
         file->kind = FILE_KIND_FRAMEBUFFER;
     } else if (node->flags & VFS_INPUTDEVICE) {
@@ -58,21 +50,11 @@ struct file *file_open_node(struct vfs_node *node, uint32_t flags) {
 struct file *file_create_pipe_end(struct pipe_buffer *pipe, int write_end) {
     if (!pipe) return NULL;
     struct file *file = (struct file *)kmalloc(sizeof(*file));
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = write_end ? FILE_KIND_PIPE_WRITE : FILE_KIND_PIPE_READ;
     file->flags = 0;
-    file->offset = 0;
-    file->node = NULL;
     file->pipe = pipe;
-    file->socket = NULL;
-    file->inet_socket = NULL;
-    file->netlink_socket = NULL;
-    file->pty = NULL;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     if (write_end) pipe->writers++;
     else pipe->readers++;
     return file;
@@ -83,21 +65,11 @@ struct file *file_create_socket(struct unix_socket *socket) {
     if (!socket) return NULL;
     struct file *file = (struct file *)kmalloc(sizeof(*file));
     if (!file) return NULL;
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = FILE_KIND_SOCKET;
     file->flags = 0;
-    file->offset = 0;
-    file->node = NULL;
-    file->pipe = NULL;
     file->socket = socket;
-    file->inet_socket = NULL;
-    file->netlink_socket = NULL;
-    file->pty = NULL;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     return file;
 }
 
@@ -105,21 +77,11 @@ struct file *file_create_inet_socket(struct inet_socket *socket) {
     if (!socket) return NULL;
     struct file *file = (struct file *)kmalloc(sizeof(*file));
     if (!file) return NULL;
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = FILE_KIND_INET_SOCKET;
     file->flags = 0;
-    file->offset = 0;
-    file->node = NULL;
-    file->pipe = NULL;
-    file->socket = NULL;
     file->inet_socket = socket;
-    file->netlink_socket = NULL;
-    file->pty = NULL;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     return file;
 }
 
@@ -127,42 +89,21 @@ struct file *file_create_netlink_socket(struct netlink_socket *socket) {
     if (!socket) return NULL;
     struct file *file = (struct file *)kmalloc(sizeof(*file));
     if (!file) return NULL;
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = FILE_KIND_NETLINK_SOCKET;
     file->flags = 0;
-    file->offset = 0;
-    file->node = NULL;
-    file->pipe = NULL;
-    file->socket = NULL;
-    file->inet_socket = NULL;
     file->netlink_socket = socket;
-    file->pty = NULL;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     return file;
 }
 
 static struct file *file_create_special(int kind, uint32_t flags) {
     struct file *file = (struct file *)kmalloc(sizeof(*file));
     if (!file) return NULL;
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = kind;
     file->flags = flags;
-    file->offset = 0;
-    file->node = NULL;
-    file->pipe = NULL;
-    file->socket = NULL;
-    file->inet_socket = NULL;
-    file->netlink_socket = NULL;
-    file->pty = NULL;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     return file;
 }
 
@@ -184,6 +125,12 @@ struct file *file_create_memfd(struct memfd_object *object, uint32_t flags) {
     return file;
 }
 
+struct file *file_create_signalfd(struct signalfd_context *context, uint32_t flags) {
+    struct file *file = file_create_special(FILE_KIND_SIGNALFD, flags);
+    if (file) file->signalfd = context;
+    return file;
+}
+
 struct file *file_create_epoll(struct epoll_context *context, uint32_t flags) {
     struct file *file = file_create_special(FILE_KIND_EPOLL, flags);
     if (file) file->epoll = context;
@@ -201,20 +148,12 @@ struct file *file_create_pty_endpoint(struct pty_pair *pty, int master,
     if (!pty || !node) return NULL;
     struct file *file = (struct file *)kmalloc(sizeof(*file));
     if (!file) return NULL;
+    memset(file, 0, sizeof(*file));
     file->refs = 1;
     file->kind = master ? FILE_KIND_PTY_MASTER : FILE_KIND_PTY_SLAVE;
     file->flags = flags;
-    file->offset = 0;
     file->node = node;
-    file->pipe = NULL;
-    file->socket = NULL;
-    file->inet_socket = NULL;
     file->pty = pty;
-    file->input_reader = NULL;
-    file->eventfd = NULL;
-    file->timerfd = NULL;
-    file->epoll = NULL;
-    file->inotify = NULL;
     return file;
 }
 
@@ -256,6 +195,8 @@ void file_unref(struct file *file) {
         inotify_destroy(file->inotify);
     if (file->kind == FILE_KIND_MEMFD && file->memfd)
         memfd_destroy(file->memfd);
+    if (file->kind == FILE_KIND_SIGNALFD && file->signalfd)
+        signalfd_destroy(file->signalfd);
     if (file->kind == FILE_KIND_SOCKET && file->socket)
         unix_socket_unref(file->socket);
     if (file->kind == FILE_KIND_INET_SOCKET && file->inet_socket)
@@ -285,6 +226,8 @@ int64_t file_read(struct file *file, size_t size, void *buffer) {
         return timerfd_read(file->timerfd, size, buffer);
     if (file->kind == FILE_KIND_INOTIFY)
         return inotify_read(file->inotify, size, buffer);
+    if (file->kind == FILE_KIND_SIGNALFD)
+        return signalfd_read(file->signalfd, size, buffer);
     /* A memfd carries a file offset like a regular file, so that reading it
        without mapping it behaves the way any other descriptor would. */
     if (file->kind == FILE_KIND_MEMFD) {
@@ -360,6 +303,8 @@ uint32_t file_poll_events(struct file *file, uint32_t requested) {
     } else if (file->kind == FILE_KIND_EVENTFD) {
         if (eventfd_read_ready(file->eventfd)) events |= pollin;
         if (eventfd_write_ready(file->eventfd)) events |= pollout;
+    } else if (file->kind == FILE_KIND_SIGNALFD) {
+        if (signalfd_read_ready(file->signalfd)) events |= pollin;
     } else if (file->kind == FILE_KIND_TIMERFD) {
         if (timerfd_read_ready(file->timerfd)) events |= pollin;
     } else if (file->kind == FILE_KIND_EPOLL) {

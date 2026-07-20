@@ -104,8 +104,11 @@ ln -s libtunix_dynamic.so.1 "$RUNTIME_ROOT/usr/lib/libtunix_dynamic.so"
 # passing the descriptor over SCM_RIGHTS.
 "$MUSL_CC" -O2 -fPIE -pie "$SOURCE/shm-test.c" \
     -o "$RUNTIME_ROOT/usr/bin/shm-test"
+# Signal delivery as a pollable descriptor, the way an event loop wants it.
+"$MUSL_CC" -O2 -fPIE -pie "$SOURCE/signalfd-test.c" \
+    -o "$RUNTIME_ROOT/usr/bin/signalfd-test"
 
-for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test; do
+for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test signalfd-test; do
     interp=$($READELF -l "$RUNTIME_ROOT/usr/bin/$binary" | \
         sed -n 's/.*Requesting program interpreter: \([^]]*\).*/\1/p')
     [[ "$interp" == "/lib/$loader_name" ]] || \
@@ -131,9 +134,11 @@ library_path="$RUNTIME_ROOT/lib:$SYSROOT/usr/lib:$RUNTIME_ROOT/usr/lib"
     "$RUNTIME_ROOT/usr/bin/pthread-test"
 "$host_loader" --library-path "$library_path" \
     "$RUNTIME_ROOT/usr/bin/shm-test"
+"$host_loader" --library-path "$library_path" \
+    "$RUNTIME_ROOT/usr/bin/signalfd-test"
 
 "$HOST_STRIP" --strip-unneeded "$LIBRARY"
-for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test; do
+for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test signalfd-test; do
     "$HOST_STRIP" --strip-all "$RUNTIME_ROOT/usr/bin/$binary"
 done
 
@@ -145,6 +150,7 @@ set -eu
 /usr/bin/dlopen-test
 /usr/bin/pthread-test
 /usr/bin/shm-test
+/usr/bin/signalfd-test
 printf '%s\n' 'dynamic-runtime-check: PASS'
 EOF_CHECK
 chmod 0755 "$RUNTIME_ROOT/usr/bin/dynamic-runtime-check"

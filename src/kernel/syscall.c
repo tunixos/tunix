@@ -6,6 +6,7 @@
 #include "include/epoll.h"
 #include "include/inotify.h"
 #include "include/memfd.h"
+#include "include/signalfd.h"
 #include "include/framebuffer.h"
 #include "include/input.h"
 #include "include/heap.h"
@@ -169,7 +170,9 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_PPOLL 271
 #define SYS_UTIMENSAT 280
 #define SYS_EPOLL_PWAIT 281
+#define SYS_SIGNALFD 282
 #define SYS_TIMERFD_CREATE 283
+#define SYS_SIGNALFD4 289
 #define SYS_EVENTFD 284
 #define SYS_TIMERFD_SETTIME 286
 #define SYS_TIMERFD_GETTIME 287
@@ -235,6 +238,8 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define EFD_CLOEXEC O_CLOEXEC
 #define TFD_NONBLOCK O_NONBLOCK
 #define TFD_CLOEXEC O_CLOEXEC
+#define SFD_NONBLOCK O_NONBLOCK
+#define SFD_CLOEXEC O_CLOEXEC
 #define TFD_TIMER_ABSTIME 1
 #define EPOLL_CLOEXEC O_CLOEXEC
 #define EPOLL_CTL_ADD 1
@@ -3094,6 +3099,44 @@ static int64_t sys_memfd_create(uint64_t user_name, uint32_t flags) {
     return install_new_file(file, flags & MFD_CLOEXEC);
 }
 
+/*
+ * signalfd4(2). `fd` of -1 creates a descriptor; anything else re-arms the mask
+ * on an existing one, which is how a program narrows or widens what it watches
+ * without churning its epoll set.
+ *
+ * The caller is expected to have blocked these signals with sigprocmask first,
+ * exactly as on Linux -- otherwise the normal delivery path consumes them
+ * before a read ever happens. That is the caller's job, not ours.
+ */
+static int64_t sys_signalfd(int fd, uint64_t user_mask, uint64_t mask_size,
+                            int flags) {
+    struct process *process = process_current();
+    if (!process) return -EINVAL;
+    if (flags & ~(SFD_NONBLOCK | SFD_CLOEXEC)) return -EINVAL;
+    if (mask_size != sizeof(uint64_t)) return -EINVAL;
+
+    uint64_t mask = 0;
+    if (copy_from_user(&mask, user_mask, sizeof(mask)) != 0) return -EFAULT;
+
+    if (fd >= 0) {
+        if (fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
+        struct file *file = process->fds[fd];
+        if (file->kind != FILE_KIND_SIGNALFD) return -EINVAL;
+        signalfd_set_mask(file->signalfd, mask);
+        return fd;
+    }
+
+    struct signalfd_context *context = signalfd_create(mask);
+    if (!context) return -ENOMEM;
+    struct file *file = file_create_signalfd(context,
+        (uint32_t)(flags & SFD_NONBLOCK));
+    if (!file) {
+        signalfd_destroy(context);
+        return -ENOMEM;
+    }
+    return install_new_file(file, flags & SFD_CLOEXEC);
+}
+
 static int64_t sys_timerfd_create(int clock_id, int flags) {
     if (flags & ~(TFD_NONBLOCK | TFD_CLOEXEC)) return -EINVAL;
     struct timerfd_context *context = timerfd_create(clock_id);
@@ -3656,6 +3699,15 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_FTRUNCATE: frame->rax = (uint64_t)sys_ftruncate((int)frame->rdi, frame->rsi); break;
         case SYS_MEMFD_CREATE:
             frame->rax = (uint64_t)sys_memfd_create(frame->rdi, (uint32_t)frame->rsi);
+            break;
+        /* The legacy signalfd takes no flags; signalfd4 is what libc calls. */
+        case SYS_SIGNALFD:
+            frame->rax = (uint64_t)sys_signalfd((int)frame->rdi, frame->rsi,
+                                                frame->rdx, 0);
+            break;
+        case SYS_SIGNALFD4:
+            frame->rax = (uint64_t)sys_signalfd((int)frame->rdi, frame->rsi,
+                                                frame->rdx, (int)frame->r10);
             break;
         case SYS_GETCWD: frame->rax = (uint64_t)sys_getcwd(frame->rdi, (size_t)frame->rsi); break;
         case SYS_CHDIR: frame->rax = (uint64_t)sys_chdir(frame->rdi); break;

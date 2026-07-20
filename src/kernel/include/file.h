@@ -16,6 +16,7 @@ struct timerfd_context;
 struct epoll_context;
 struct inotify_context;
 struct memfd_object;
+struct signalfd_context;
 
 #define FILE_KIND_VFS        1
 #define FILE_KIND_PIPE_READ  2
@@ -32,6 +33,7 @@ struct memfd_object;
 #define FILE_KIND_INOTIFY     13
 #define FILE_KIND_NETLINK_SOCKET 14
 #define FILE_KIND_MEMFD       15
+#define FILE_KIND_SIGNALFD    16
 
 struct file {
     int refs;
@@ -50,6 +52,7 @@ struct file {
     struct epoll_context *epoll;
     struct inotify_context *inotify;
     struct memfd_object *memfd;
+    struct signalfd_context *signalfd;
 };
 
 struct file *file_open_node(struct vfs_node *node, uint32_t flags);
@@ -61,6 +64,7 @@ struct file *file_create_eventfd(struct eventfd_context *context, uint32_t flags
 struct file *file_create_timerfd(struct timerfd_context *context, uint32_t flags);
 struct file *file_create_epoll(struct epoll_context *context, uint32_t flags);
 struct file *file_create_memfd(struct memfd_object *object, uint32_t flags);
+struct file *file_create_signalfd(struct signalfd_context *context, uint32_t flags);
 struct file *file_create_inotify(struct inotify_context *context, uint32_t flags);
 struct file *file_create_pty_endpoint(struct pty_pair *pty, int master,
                                       struct vfs_node *node, uint32_t flags);
