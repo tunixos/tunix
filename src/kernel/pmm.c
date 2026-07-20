@@ -16,6 +16,17 @@ extern void kprintf(const char *fmt, ...);
 extern void panic(const char *msg);
 
 static uint8_t *bitmap;
+/*
+ * One reference count per physical page, so a page can be shared by several
+ * address spaces. Copy-on-write fork is the only producer of sharing today:
+ * vmm_clone_address_space() maps the parent's pages into the child instead of
+ * copying them and takes a reference on each.
+ *
+ * A flat array costs 2 bytes per 4 KiB page -- 512 KiB at the 1 GiB direct-map
+ * limit -- which buys an O(1) lookup with no allocation on the fault path,
+ * where a copy-on-write break cannot afford to fail.
+ */
+static uint16_t *refcounts;
 static uint64_t total_pages;
 static uint64_t free_pages;
 static uint64_t next_hint;
@@ -56,10 +67,16 @@ void pmm_init(uint32_t mmap_count, uint64_t mmap_addr,
     total_pages = highest / PMM_PAGE_SIZE;
     uint64_t bitmap_bytes = (total_pages + 7) / 8;
     uint64_t bitmap_virtual = ((uint64_t)&kernel_end + 15ULL) & ~15ULL;
-    uint64_t bitmap_physical = bitmap_virtual - KERNEL_BASE;
     bitmap = (uint8_t *)bitmap_virtual;
 
+    /* The reference counts sit immediately after the allocation bitmap; both
+       are reserved below so no allocation can ever hand them out. */
+    uint64_t refcount_virtual = (bitmap_virtual + bitmap_bytes + 15ULL) & ~15ULL;
+    uint64_t refcount_bytes = total_pages * sizeof(uint16_t);
+    refcounts = (uint16_t *)refcount_virtual;
+
     for (uint64_t i = 0; i < bitmap_bytes; i++) bitmap[i] = 0xFF;
+    for (uint64_t i = 0; i < total_pages; i++) refcounts[i] = 0;
     free_pages = 0;
 
     for (uint32_t i = 0; i < mmap_count; i++) {
@@ -76,7 +93,7 @@ void pmm_init(uint32_t mmap_count, uint64_t mmap_addr,
         }
     }
 
-    uint64_t reserved_end = bitmap_physical + bitmap_bytes;
+    uint64_t reserved_end = (refcount_virtual - KERNEL_BASE) + refcount_bytes;
     reserved_end = (reserved_end + PMM_PAGE_SIZE - 1) & ~(PMM_PAGE_SIZE - 1);
     if (reserved_end < 0x100000ULL) reserved_end = 0x100000ULL;
 
@@ -108,6 +125,7 @@ void *pmm_alloc_page(void) {
         for (uint64_t page = begin; page < end; page++) {
             if (!bit_test(page)) {
                 bit_set(page);
+                refcounts[page] = 1;
                 free_pages--;
                 next_hint = page + 1;
                 if (next_hint >= total_pages) next_hint = 0;
@@ -120,6 +138,12 @@ void *pmm_alloc_page(void) {
     return NULL;
 }
 
+/*
+ * Drops one reference and only returns the page to the allocator when the last
+ * one goes away. Every existing caller was written when a page had exactly one
+ * owner, and for those pages the behaviour is unchanged; shared pages simply
+ * survive until the last address space holding them is torn down.
+ */
 void pmm_free_page(void *physical_address) {
     if (!physical_address) return;
     uint64_t address = (uint64_t)physical_address;
@@ -128,9 +152,32 @@ void pmm_free_page(void *physical_address) {
     }
     uint64_t page = address / PMM_PAGE_SIZE;
     if (!bit_test(page)) panic("PMM: double free");
+    if (refcounts[page] > 1) {
+        refcounts[page]--;
+        return;
+    }
+    refcounts[page] = 0;
     bit_clear(page);
     free_pages++;
     if (page < next_hint) next_hint = page;
+}
+
+/*
+ * Take an extra reference on an already-allocated page. Refuses rather than
+ * wraps if a page somehow reaches 65535 sharers: the caller (the fork path)
+ * falls back to copying, which is always correct, just slower.
+ */
+int pmm_page_ref(uint64_t physical) {
+    if (!pmm_page_is_allocated(physical)) return -1;
+    uint64_t page = physical / PMM_PAGE_SIZE;
+    if (refcounts[page] == 0xFFFFU) return -1;
+    refcounts[page]++;
+    return 0;
+}
+
+uint32_t pmm_page_refcount(uint64_t physical) {
+    if (!pmm_page_is_allocated(physical)) return 0;
+    return refcounts[physical / PMM_PAGE_SIZE];
 }
 
 uint64_t pmm_total_page_count(void) { return total_pages; }

@@ -383,8 +383,32 @@ int64_t vfs_readlink(struct vfs_node *node, void *buffer, size_t size) {
     return (int64_t)length;
 }
 
+/*
+ * Called once the node is already detached from its parent. A node can still be
+ * somebody's current working directory at that point -- Linux lets you rmdir a
+ * directory a process is sitting in -- so freeing unconditionally would leave
+ * that process with a dangling cwd. Instead the node is marked orphaned and the
+ * last vfs_node_unref() finishes the job.
+ */
 static void destroy_node(struct vfs_node *node) {
     if (!node) return;
+    if (node->refs) {
+        node->flags |= VFS_ORPHANED;
+        return;
+    }
+    if ((node->flags & VFS_OWNED_DATA) && node->data) kfree(node->data);
+    kfree(node);
+}
+
+void vfs_node_ref(struct vfs_node *node) {
+    if (node) node->refs++;
+}
+
+void vfs_node_unref(struct vfs_node *node) {
+    if (!node || !node->refs) return;
+    if (--node->refs) return;
+    /* Still linked into the tree: the parent owns it, nothing to do. */
+    if (!(node->flags & VFS_ORPHANED)) return;
     if ((node->flags & VFS_OWNED_DATA) && node->data) kfree(node->data);
     kfree(node);
 }

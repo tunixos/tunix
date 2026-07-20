@@ -347,7 +347,13 @@ int vmm_user_range_valid(uint64_t cr3_physical, uint64_t address,
     for (uint64_t page = first;; page += 4096) {
         uint64_t flags;
         if (vmm_translate(cr3_physical, page, NULL, &flags) != 0) return 0;
-        if (!(flags & PAGE_USER) || (write_required && !(flags & PAGE_WRITE))) return 0;
+        /* A copy-on-write page is logically writable even though the hardware
+           entry is read-only: the write is allowed, it just has to break the
+           sharing first. Callers that actually store into the page do that via
+           vmm_copy_to_space(); callers that only validate must not reject it,
+           or a post-fork read() into a buffer would fail with EFAULT. */
+        if (!(flags & PAGE_USER) ||
+            (write_required && !(flags & (PAGE_WRITE | PAGE_COW)))) return 0;
         if (page == last) break;
     }
     return 1;
@@ -382,6 +388,17 @@ int vmm_copy_to_space(uint64_t cr3_physical, uint64_t destination_user,
         uint64_t flags;
         if (vmm_translate(cr3_physical, destination_user, &physical, &flags) != 0) return -1;
         if (flags & PAGE_DEVICE) return -1;
+        /* The kernel is about to store into this page, which is exactly the
+           event the copy-on-write mapping exists to intercept. Userspace would
+           have taken a fault here; do the same work inline, then re-translate
+           because the page may now live somewhere else. */
+        if (flags & PAGE_COW) {
+            if (vmm_handle_cow_fault(cr3_physical, destination_user & ~0xFFFULL) != 0)
+                return -1;
+            if (vmm_translate(cr3_physical, destination_user, &physical, &flags) != 0)
+                return -1;
+        }
+        if (!(flags & PAGE_WRITE)) return -1;
         size_t chunk = 4096 - (size_t)(destination_user & 0xFFF);
         if (chunk > length) chunk = length;
         if (!physical_direct_range_valid(physical, chunk)) return -1;
@@ -436,14 +453,34 @@ static uint64_t clone_user_table(uint64_t source_physical, int level) {
                     destroy_user_table(destination_physical, level);
                     return 0;
                 }
-                uint64_t page_physical = (uint64_t)pmm_alloc_page();
-                if (!page_physical) {
-                    destroy_user_table(destination_physical, level);
-                    return 0;
+                /*
+                 * Share rather than copy. A writable page becomes read-only and
+                 * copy-on-write in *both* address spaces, so whichever side
+                 * writes first takes the fault and gets its own copy. A page
+                 * that was already read-only needs no COW marking -- a write to
+                 * it was a fault before the fork and still is -- but it does
+                 * need the reference, because both owners will free it.
+                 *
+                 * If the reference count saturates we fall back to copying,
+                 * which is what this code did unconditionally before.
+                 */
+                if (pmm_page_ref(source_page) == 0) {
+                    uint64_t shared_flags = preserved_flags;
+                    if (shared_flags & PAGE_WRITE) {
+                        shared_flags = (shared_flags & ~PAGE_WRITE) | PAGE_COW;
+                        source[index] = source_page | shared_flags;
+                    }
+                    destination[index] = source_page | shared_flags;
+                } else {
+                    uint64_t page_physical = (uint64_t)pmm_alloc_page();
+                    if (!page_physical) {
+                        destroy_user_table(destination_physical, level);
+                        return 0;
+                    }
+                    memcpy((void *)(KERNEL_BASE + page_physical),
+                           (void *)(KERNEL_BASE + source_page), 4096);
+                    destination[index] = page_physical | preserved_flags;
                 }
-                memcpy((void *)(KERNEL_BASE + page_physical),
-                       (void *)(KERNEL_BASE + source_page), 4096);
-                destination[index] = page_physical | preserved_flags;
             }
         } else {
             uint64_t child = clone_user_table(entry & ADDRESS_MASK, level - 1);
@@ -482,7 +519,61 @@ uint64_t vmm_clone_address_space(uint64_t source_cr3) {
         }
         destination[index] = child | (entry & ~ADDRESS_MASK);
     }
+    /*
+     * The clone cleared PAGE_WRITE on the *source*'s shared pages, and the
+     * source is the running process, so its TLB still holds writable entries
+     * for them. Reloading CR3 flushes the lot; doing it once here is cheaper
+     * and far less error-prone than an invlpg per page during the walk.
+     */
+    if (source_physical == read_cr3()) write_cr3(source_physical);
     return destination_cr3;
+}
+
+/*
+ * Break a copy-on-write page after a write fault. Returns 0 when the fault was
+ * handled and the instruction should be retried, -1 when it was not a COW fault
+ * and the caller should carry on to the signal path.
+ */
+int vmm_handle_cow_fault(uint64_t cr3_physical, uint64_t virtual_address) {
+    uint64_t cr3 = cr3_physical & ADDRESS_MASK;
+    if (!address_space_registered(cr3)) return -1;
+    if (virtual_address >= USER_ADDRESS_LIMIT) return -1;
+
+    uint64_t *pml4 = page_table_pointer(cr3);
+    if (!pml4) return -1;
+    uint64_t *pdpt = next_table(pml4, (virtual_address >> 39) & 0x1FF, 0, 0);
+    if (!pdpt) return -1;
+    uint64_t *pd = next_table(pdpt, (virtual_address >> 30) & 0x1FF, 0, 0);
+    if (!pd) return -1;
+    uint64_t *pt = next_table(pd, (virtual_address >> 21) & 0x1FF, 0, 0);
+    if (!pt) return -1;
+
+    uint16_t index = (virtual_address >> 12) & 0x1FF;
+    uint64_t entry = pt[index];
+    if ((entry & (PAGE_PRESENT | PAGE_COW | PAGE_USER)) !=
+        (PAGE_PRESENT | PAGE_COW | PAGE_USER)) return -1;
+
+    uint64_t physical = entry & ADDRESS_MASK;
+    uint64_t flags = (entry & ~ADDRESS_MASK & ~PAGE_COW) | PAGE_WRITE;
+
+    /* Sole remaining owner: no copy needed, just hand the page back its write
+       permission. This is the common case once siblings have exited or exec'd. */
+    if (pmm_page_refcount(physical) <= 1) {
+        pt[index] = physical | flags;
+    } else {
+        if (!physical_direct_range_valid(physical, 4096)) return -1;
+        uint64_t copy = (uint64_t)pmm_alloc_page();
+        if (!copy || !physical_direct_range_valid(copy, 4096)) {
+            if (copy) pmm_free_page((void *)copy);
+            return -1;
+        }
+        memcpy((void *)(KERNEL_BASE + copy), (void *)(KERNEL_BASE + physical), 4096);
+        pt[index] = copy | flags;
+        /* Drops this space's reference to the page it no longer maps. */
+        pmm_free_page((void *)physical);
+    }
+    if (cr3 == read_cr3()) invalidate(virtual_address);
+    return 0;
 }
 
 static void destroy_user_table(uint64_t physical, int level) {

@@ -24,6 +24,10 @@
 #define PAGE_USER     (1ULL << 2)
 #define PAGE_HUGE     (1ULL << 7)
 #define PAGE_DEVICE   (1ULL << 9)
+/* Software bit (the CPU ignores 9..11). Marks a page that fork shared instead
+   of copying: it is mapped read-only in every owner, and the first write takes
+   a fault that vmm_handle_cow_fault() turns into a private copy. */
+#define PAGE_COW      (1ULL << 10)
 #define PAGE_NX       (1ULL << 63)
 
 void vmm_init(void);
@@ -33,6 +37,10 @@ uint64_t vmm_kernel_cr3(void);
 uint64_t vmm_current_cr3(void);
 uint64_t vmm_create_address_space(void);
 uint64_t vmm_clone_address_space(uint64_t source_cr3);
+/* Give a copy-on-write page back its write permission, copying it first if it
+   still has other owners. 0 when the fault is handled, -1 when it was not a
+   copy-on-write fault. */
+int vmm_handle_cow_fault(uint64_t cr3_physical, uint64_t virtual_address);
 void vmm_destroy_address_space(uint64_t cr3_physical);
 void vmm_activate(uint64_t cr3_physical);
 int vmm_map_page_in(uint64_t cr3_physical, uint64_t virtual_address,

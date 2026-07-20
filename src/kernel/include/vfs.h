@@ -15,6 +15,8 @@
 #define VFS_INPUTDEVICE 0x400U
 #define VFS_FRAMEBUFFER 0x800U
 #define VFS_VOLATILE    0x1000U
+/* Detached from the tree but still referenced -- see vfs_node_unref(). */
+#define VFS_ORPHANED    0x2000U
 
 struct vfs_node;
 struct file;
@@ -54,6 +56,10 @@ struct vfs_node {
     struct vfs_node *parent;
     struct vfs_node *children;
     struct vfs_node *next;
+    /* Holders outside the directory tree, such as a process's current working
+       directory. The tree itself is not counted: a node with refs == 0 is
+       owned solely by its parent's child list. */
+    uint32_t refs;
 };
 
 struct dirent {
@@ -79,6 +85,11 @@ struct vfs_persist_ops {
 
 void vfs_set_persist_ops(const struct vfs_persist_ops *ops);
 void vfs_notify_meta_changed(struct vfs_node *node);
+
+/* Hold a node that lives outside the directory tree, such as a process's cwd.
+   Unreferencing an orphaned node is what finally frees it. */
+void vfs_node_ref(struct vfs_node *node);
+void vfs_node_unref(struct vfs_node *node);
 
 #define VFS_TIME_ATIME 0x1U
 #define VFS_TIME_MTIME 0x2U

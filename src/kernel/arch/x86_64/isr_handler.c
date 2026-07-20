@@ -62,6 +62,16 @@ void isr_handler(struct interrupt_frame *regs) {
             return; /* page mapped; retry the faulting instruction */
         }
 
+        /* A write protection fault on a *present* page is how a copy-on-write
+           page announces its first write after fork. Error code bit 0 set means
+           present, bit 1 set means it was a write; anything else here is a real
+           access violation and falls through to the signal path. */
+        if (regs->int_no == 14 && (regs->cs & 3U) == 3U &&
+            (regs->err_code & 1U) && (regs->err_code & 2U) &&
+            process_handle_cow_fault(fault_address)) {
+            return; /* page is private and writable now; retry the instruction */
+        }
+
         if (process_fault_from_interrupt(regs, fault_signal(regs->int_no))) {
             kprintf("%s in user mode at RIP %p addr %p (error %x), signalling process\n",
                     exception_messages[regs->int_no], (void *)fault_rip,

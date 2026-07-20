@@ -201,6 +201,8 @@ static void destroy_process_resources(struct process *process) {
     (void)pid;
 #endif
     procfs_unregister_process(process->pid);
+    vfs_node_unref(process->cwd);
+    process->cwd = NULL;
     if (process->memory) {
         memory_unref(process->memory);
         process->memory = NULL;
@@ -283,6 +285,7 @@ struct process *process_create_from_path(const char *path) {
     process->dumpable = 1;
     process->timerslack_ns = DEFAULT_TIMERSLACK_NS;
     process->cwd = vfs_root;
+    vfs_node_ref(process->cwd);
     strncpy(process->name, file->name, sizeof(process->name) - 1);
     strncpy(process->exe_path, path, sizeof(process->exe_path) - 1);
     process->cr3 = vmm_create_address_space();
@@ -531,6 +534,17 @@ int process_grow_user_stack(uint64_t fault_address) {
         return 0;
     }
     return 1;
+}
+
+/*
+ * First write to a page that fork shared instead of copying. Returns non-zero
+ * when the page was made private and writable, so the faulting instruction can
+ * simply be retried; zero means this was not a copy-on-write page and the
+ * caller should continue on to the signal path.
+ */
+int process_handle_cow_fault(uint64_t fault_address) {
+    if (!current || current->state != PROCESS_RUNNING || !current->cr3) return 0;
+    return vmm_handle_cow_fault(current->cr3, fault_address & ~4095ULL) == 0;
 }
 
 /*
@@ -798,6 +812,10 @@ int64_t process_fork_from_syscall(struct syscall_frame *frame) {
     child->sid = parent->sid;
     child->state = PROCESS_READY;
     child->cwd = parent->cwd;
+    /* Counted like the fds below: the child keeps the directory alive on its
+       own, so the parent chdir'ing or the directory being removed cannot leave
+       the child pointing at freed memory. */
+    vfs_node_ref(child->cwd);
     child->controlling_pty = parent->controlling_pty;
     child->umask = parent->umask;
     child->signal_stack_pointer = parent->signal_stack_pointer;
@@ -883,6 +901,7 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame,
     child->state = PROCESS_READY;
     child->is_thread = 1;
     child->cwd = parent->cwd;
+    vfs_node_ref(child->cwd);
     child->controlling_pty = parent->controlling_pty;
     child->umask = parent->umask;
     child->signal_stack_flags = SS_DISABLE;

@@ -2077,6 +2077,15 @@ static int64_t sys_getcwd(uint64_t user_buffer, size_t size) {
     return copy_to_user(user_buffer, path, length) == 0 ? (int64_t)user_buffer : -EFAULT;
 }
 
+/* Reference the new directory before releasing the old one: they can be the
+   same node, and dropping the last reference first would free it. */
+static void set_cwd(struct process *process, struct vfs_node *node) {
+    struct vfs_node *previous = process->cwd;
+    vfs_node_ref(node);
+    process->cwd = node;
+    vfs_node_unref(previous);
+}
+
 static int64_t sys_chdir(uint64_t user_path) {
     char path[256];
     int status = copy_path_at(AT_FDCWD, user_path, path);
@@ -2084,7 +2093,7 @@ static int64_t sys_chdir(uint64_t user_path) {
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     if ((node->flags & 0xFFU) != VFS_DIRECTORY) return -ENOTDIR;
-    process_current()->cwd = node;
+    set_cwd(process_current(), node);
     return 0;
 }
 
@@ -2093,7 +2102,7 @@ static int64_t sys_fchdir(int fd) {
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->fds[fd]) return -EBADF;
     struct file *file = process->fds[fd];
     if (file->kind != FILE_KIND_VFS || !file->node || (file->node->flags & 0xFFU) != VFS_DIRECTORY) return -ENOTDIR;
-    process->cwd = file->node;
+    set_cwd(process, file->node);
     return 0;
 }
 
