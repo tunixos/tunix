@@ -94,3 +94,9 @@
 [submodule "ports/src/wayland"]
 	path = ports/src/wayland
 	url = https://gitlab.freedesktop.org/wayland/wayland.git
+[submodule "ports/src/pixman"]
+	path = ports/src/pixman
+	url = https://gitlab.freedesktop.org/pixman/pixman.git
+[submodule "ports/src/libxkbcommon"]
+	path = ports/src/libxkbcommon
+	url = https://github.com/xkbcommon/libxkbcommon.git

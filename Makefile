@@ -78,6 +78,10 @@ LIBFFI_ROOT := $(PORT_OUT)/libffi-root
 LIBFFI_STAMP := $(PORT_OUT)/.libffi-ready
 WAYLAND_ROOT := $(PORT_OUT)/wayland-root
 WAYLAND_STAMP := $(PORT_OUT)/.wayland-ready
+PIXMAN_ROOT := $(PORT_OUT)/pixman-root
+PIXMAN_STAMP := $(PORT_OUT)/.pixman-ready
+LIBXKBCOMMON_ROOT := $(PORT_OUT)/libxkbcommon-root
+LIBXKBCOMMON_STAMP := $(PORT_OUT)/.libxkbcommon-ready
 LIBDRM_ROOT := $(PORT_OUT)/libdrm-root
 LIBDRM_STAMP := $(PORT_OUT)/.libdrm-ready
 MESA_ROOT := $(PORT_OUT)/mesa-root
@@ -202,6 +206,23 @@ $(WAYLAND_STAMP): $(LIBFFI_STAMP) ports/build-wayland.sh ports/lib/cross-port.sh
 	@test -L $(WAYLAND_ROOT)/usr/lib/libwayland-server.so.0 || { echo "libwayland-server was not produced" >&2; exit 1; }
 	@test -L $(WAYLAND_ROOT)/usr/lib/libwayland-client.so.0 || { echo "libwayland-client was not produced" >&2; exit 1; }
 	@test -x $(WAYLAND_ROOT)/usr/bin/wayland-roundtrip-test || { echo "the wayland roundtrip test was not produced" >&2; exit 1; }
+	@touch $@
+
+# pixman is weston's software renderer; libxkbcommon is its keyboard layer.
+# Neither needs a display, which is what makes a headless bring-up possible.
+$(PIXMAN_STAMP): $(MUSL_CROSS_STAMP) ports/build-pixman.sh ports/lib/cross-port.sh \
+	ports/src/pixman/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-pixman.sh
+	@test -L $(PIXMAN_ROOT)/usr/lib/libpixman-1.so.0 || { echo "pixman was not produced" >&2; exit 1; }
+	@touch $@
+
+$(LIBXKBCOMMON_STAMP): $(MUSL_CROSS_STAMP) ports/build-libxkbcommon.sh \
+	ports/lib/cross-port.sh tools/xkb-test.c ports/src/libxkbcommon/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxkbcommon.sh
+	@test -L $(LIBXKBCOMMON_ROOT)/usr/lib/libxkbcommon.so.0 || { echo "libxkbcommon was not produced" >&2; exit 1; }
+	@test -x $(LIBXKBCOMMON_ROOT)/usr/bin/xkb-test || { echo "the xkb test was not produced" >&2; exit 1; }
 	@touch $@
 
 $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.sh \
@@ -538,7 +559,7 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -572,6 +593,8 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	cp -R $(IMAGE_CODECS_SHARED_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBFFI_ROOT)/. $(ROOTFS)/
 	cp -R $(WAYLAND_ROOT)/. $(ROOTFS)/
+	cp -R $(PIXMAN_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBXKBCOMMON_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBDRM_ROOT)/. $(ROOTFS)/
 	cp -R $(MESA_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
@@ -623,6 +646,9 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -L $(ROOTFS)/usr/lib/libwayland-server.so.0 || { echo "libwayland-server was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libwayland-client.so.0 || { echo "libwayland-client was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/wayland-roundtrip-test || { echo "the wayland roundtrip test was not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/lib/libpixman-1.so.0 || { echo "pixman was not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/lib/libxkbcommon.so.0 || { echo "libxkbcommon was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xkb-test || { echo "the xkb test was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libdrm.so.2 || { echo "libdrm was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libEGL.so.1 || { echo "mesa libEGL was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libGLESv2.so.2 || { echo "mesa libGLESv2 was not installed into the rootfs" >&2; exit 1; }
