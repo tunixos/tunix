@@ -53,6 +53,8 @@ static struct process_memory *memory_create(uint64_t cr3, uint64_t brk_start,
                                             uint64_t brk_end, uint64_t mmap_base) {
     struct process_memory *memory = (struct process_memory *)kmalloc(sizeof(*memory));
     if (!memory) return NULL;
+    /* Zero first: the mapping table must start empty, not full of stack junk. */
+    memset(memory, 0, sizeof(*memory));
     memory->cr3 = cr3;
     memory->refs = 1;
     memory->brk_start = brk_start;
@@ -69,8 +71,74 @@ static void memory_unref(struct process_memory *memory) {
     if (!memory || memory->refs == 0) return;
     memory->refs--;
     if (memory->refs != 0) return;
+    /* The mappings die with the address space, so their references go too. */
+    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
+        if (memory->mappings[index].file) {
+            file_unref(memory->mappings[index].file);
+            memory->mappings[index].file = NULL;
+        }
+    }
     if (memory->cr3) vmm_destroy_address_space(memory->cr3);
     kfree(memory);
+}
+
+/*
+ * fork gives the child its own address space, and the shared file mappings are
+ * inherited along with the pages, so the records have to be copied and their
+ * files referenced again.
+ */
+static void memory_copy_mappings(struct process_memory *destination,
+                                 const struct process_memory *source) {
+    if (!destination || !source) return;
+    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
+        destination->mappings[index] = source->mappings[index];
+        if (destination->mappings[index].file)
+            file_ref(destination->mappings[index].file);
+    }
+}
+
+int process_record_file_mapping(uint64_t start, uint64_t length,
+                                struct file *file, uint64_t offset) {
+    if (!current || !current->memory || !file || !length) return -1;
+    /* A new mapping replaces whatever used to live there. */
+    process_forget_file_mappings(start, start + length);
+    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
+        struct process_file_mapping *entry = &current->memory->mappings[index];
+        if (entry->start) continue;
+        entry->start = start;
+        entry->length = length;
+        entry->offset = offset;
+        entry->file = file;
+        file_ref(file);
+        return 0;
+    }
+    /* Out of slots: the mapping still works, it just cannot be grown later. */
+    return -1;
+}
+
+void process_forget_file_mappings(uint64_t start, uint64_t end) {
+    if (!current || !current->memory || end <= start) return;
+    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
+        struct process_file_mapping *entry = &current->memory->mappings[index];
+        if (!entry->start) continue;
+        if (entry->start >= end || entry->start + entry->length <= start) continue;
+        file_unref(entry->file);
+        entry->start = 0;
+        entry->length = 0;
+        entry->offset = 0;
+        entry->file = NULL;
+    }
+}
+
+struct process_file_mapping *process_find_file_mapping(uint64_t address) {
+    if (!current || !current->memory) return NULL;
+    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
+        struct process_file_mapping *entry = &current->memory->mappings[index];
+        if (!entry->start) continue;
+        if (address >= entry->start && address < entry->start + entry->length)
+            return entry;
+    }
+    return NULL;
 }
 
 static void sync_memory_view(struct process *process) {
@@ -842,6 +910,9 @@ int64_t process_fork_from_syscall(struct syscall_frame *frame) {
         kfree(child);
         return -EINVAL;
     }
+    /* Shared file mappings are inherited with the pages, so the records that
+       describe them have to come along. */
+    memory_copy_mappings(child->memory, parent->memory);
     child->entry = parent->entry;
     child->user_stack_top = parent->user_stack_top;
     child->brk_start = parent_brk_start;

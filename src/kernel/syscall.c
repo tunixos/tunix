@@ -58,6 +58,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_LSEEK 8
 #define SYS_MMAP 9
 #define SYS_MPROTECT 10
+#define SYS_MREMAP 25
 #define SYS_MUNMAP 11
 #define SYS_BRK 12
 #define SYS_MSYNC 26
@@ -276,6 +277,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define MAP_SHARED 0x01
 #define MAP_PRIVATE 0x02
 #define MAP_FIXED 0x10
+#define MREMAP_MAYMOVE 1
 #define MAP_ANONYMOUS 0x20
 #define MAP_FIXED_NOREPLACE 0x100000
 
@@ -2375,6 +2377,9 @@ static int map_shared_object(struct process *process, uint64_t start,
 }
 
 static void unmap_pages(struct process *process, uint64_t start, uint64_t end) {
+    /* Forget any mapping record here first: the table must never describe
+       pages that are no longer mapped. */
+    process_forget_file_mappings(start, end);
     for (uint64_t address = start; address < end; address += 4096) {
         uint64_t physical;
         uint64_t flags;
@@ -2384,6 +2389,7 @@ static void unmap_pages(struct process *process, uint64_t start, uint64_t end) {
         }
     }
 }
+
 
 static int64_t sys_brk(uint64_t requested) {
     struct process *process = process_current();
@@ -2481,6 +2487,10 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
                 unmap_pages(process, base, base + length);
                 return -ENOMEM;
             }
+            /* Remember what backs this range so mremap() can grow it later.
+               Failing to record only costs the ability to grow, so the mapping
+               itself still stands. */
+            (void)process_record_file_mapping(base, length, file, offset);
             if (advance_mmap_base) {
                 process->mmap_base = base + length + 4096;
                 if (process->memory) process->memory->mmap_base = process->mmap_base;
@@ -2557,6 +2567,104 @@ static int64_t sys_munmap(uint64_t address, uint64_t length) {
     if (address >= USER_ADDRESS_LIMIT || length > USER_ADDRESS_LIMIT - address) return -EINVAL;
     unmap_pages(process, address, address + length);
     return 0;
+}
+
+/*
+ * mremap(2), enough of it for a growing shm pool.
+ *
+ * libwayland's wl_shm resizes a client's pool by mremap()ing the server's
+ * mapping of it, with no fallback: without this the compositor kills the client
+ * with a "failed mremap" protocol error.
+ *
+ * Growing a *file* mapping means covering more of the backing object, which
+ * page tables alone cannot describe -- hence the mapping table in
+ * process_memory. Growing an *anonymous* mapping just needs fresh zero pages,
+ * so that case works without a record, but only in place: moving anonymous
+ * pages is not implemented and returns ENOMEM rather than quietly handing back
+ * a mapping with the wrong contents.
+ */
+static int64_t sys_mremap(uint64_t address, uint64_t old_length,
+                          uint64_t new_length, int flags, uint64_t new_address) {
+    struct process *process = process_current();
+    if (!process) return -EINVAL;
+    if (address & 0xFFFULL) return -EINVAL;
+    if (!new_length) return -EINVAL;
+    /* MREMAP_FIXED, which is the only use for new_address, is not supported. */
+    if (flags & ~MREMAP_MAYMOVE) return -EINVAL;
+    (void)new_address;
+
+    old_length = align_up(old_length, 4096);
+    new_length = align_up(new_length, 4096);
+    if (address >= USER_ADDRESS_LIMIT ||
+        new_length > USER_ADDRESS_LIMIT - address) return -EINVAL;
+    if (vmm_translate(process->cr3, address, NULL, NULL) != 0) return -EFAULT;
+
+    if (new_length == old_length) return (int64_t)address;
+
+    struct process_file_mapping *mapping = process_find_file_mapping(address);
+
+    if (new_length < old_length) {
+        unmap_pages(process, address + new_length, address + old_length);
+        /* unmap_pages dropped the record; put back the part that survives. */
+        if (mapping)
+            (void)process_record_file_mapping(address, new_length,
+                                              mapping->file, mapping->offset);
+        return (int64_t)address;
+    }
+
+    /* Growing. Try in place first, which keeps every existing pointer valid. */
+    uint64_t tail = address + old_length;
+    uint64_t extra = new_length - old_length;
+    if (mapping_range_free(process, tail, extra)) {
+        int ok;
+        if (mapping && mapping->file->kind == FILE_KIND_MEMFD) {
+            ok = map_shared_object(process, tail, tail + extra,
+                                   mapping->file->memfd,
+                                   mapping->offset + old_length,
+                                   PAGE_WRITE) == 0;
+        } else if (!mapping) {
+            ok = map_zero_pages(process, tail, tail + extra, PAGE_WRITE) == 0;
+        } else {
+            ok = 0; /* a file mapping we cannot extend */
+        }
+        if (ok) {
+            if (mapping) {
+                struct file *file = mapping->file;
+                uint64_t offset = mapping->offset;
+                (void)process_record_file_mapping(address, new_length, file, offset);
+            }
+            return (int64_t)address;
+        }
+        unmap_pages(process, tail, tail + extra);
+    }
+
+    if (!(flags & MREMAP_MAYMOVE)) return -ENOMEM;
+    /* Moving is only possible when we know what backs the mapping, because the
+       new location is populated from the object rather than by copying pages. */
+    if (!mapping || mapping->file->kind != FILE_KIND_MEMFD) return -ENOMEM;
+
+    uint64_t destination;
+    uint64_t search_start = process->memory ? process->memory->mmap_base :
+                                              process->mmap_base;
+    if (find_mapping_range(process, search_start, new_length, &destination) != 0)
+        return -ENOMEM;
+
+    struct file *file = mapping->file;
+    uint64_t offset = mapping->offset;
+    if (map_shared_object(process, destination, destination + new_length,
+                          file->memfd, offset, PAGE_WRITE) != 0) {
+        unmap_pages(process, destination, destination + new_length);
+        return -ENOMEM;
+    }
+
+    /* The old range's pages are the object's, and the new mapping took its own
+       references, so release the old ones normally. */
+    unmap_pages(process, address, address + old_length);
+    (void)process_record_file_mapping(destination, new_length, file, offset);
+
+    process->mmap_base = destination + new_length + 4096;
+    if (process->memory) process->memory->mmap_base = process->mmap_base;
+    return (int64_t)destination;
 }
 
 static int64_t sys_mprotect(uint64_t address, uint64_t length, int prot) {
@@ -3374,6 +3482,10 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_LSEEK: frame->rax = (uint64_t)sys_lseek((int)frame->rdi, (int64_t)frame->rsi, (int)frame->rdx); break;
         case SYS_MMAP: frame->rax = (uint64_t)sys_mmap(frame->rdi, frame->rsi, (int)frame->rdx, (int)frame->r10, (int)frame->r8, frame->r9); break;
         case SYS_MPROTECT: frame->rax = (uint64_t)sys_mprotect(frame->rdi, frame->rsi, (int)frame->rdx); break;
+        case SYS_MREMAP:
+            frame->rax = (uint64_t)sys_mremap(frame->rdi, frame->rsi, frame->rdx,
+                                              (int)frame->r10, frame->r8);
+            break;
         /* Advisory memory/file hints: our VM eagerly backs every mapping and the
          * page cache is write-through, so there is nothing to prefetch, flush or
          * drop. Returning 0 (rather than ENOSYS) matters because these are public

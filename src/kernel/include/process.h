@@ -23,12 +23,33 @@ struct vfs_node;
 struct pty_pair;
 struct interrupt_frame;
 
+/*
+ * A MAP_SHARED mapping of a file, remembered so it can be grown later.
+ *
+ * Page tables alone cannot answer "what backs this address", which is exactly
+ * what mremap() needs in order to extend a mapping over more of its object.
+ * This is the minimum record that answers it; it is not general VMA tracking,
+ * and only shared file mappings are listed.
+ *
+ * The reference on `file` is what keeps the backing object alive when the
+ * process closes the descriptor but keeps the mapping.
+ */
+#define PROCESS_MAX_FILE_MAPPINGS 32
+
+struct process_file_mapping {
+    uint64_t start;   /* page-aligned user address, 0 when the slot is free */
+    uint64_t length;  /* page-aligned byte count */
+    uint64_t offset;  /* byte offset into the backing object */
+    struct file *file;
+};
+
 struct process_memory {
     uint64_t cr3;
     uint64_t refs;
     uint64_t brk_start;
     uint64_t brk_end;
     uint64_t mmap_base;
+    struct process_file_mapping mappings[PROCESS_MAX_FILE_MAPPINGS];
 };
 
 struct process {
@@ -130,6 +151,19 @@ void process_yield_from_syscall(struct syscall_frame *frame);
 void process_timer_interrupt(struct interrupt_frame *frame);
 /* Map another user stack page for a fault inside the stack growth window.
    Returns 1 when the faulting instruction should simply be retried. */
+/*
+ * The shared-file-mapping table behind mremap(). Addresses and lengths must be
+ * page aligned; the record takes its own reference on `file`.
+ */
+int process_record_file_mapping(uint64_t start, uint64_t length,
+                                struct file *file, uint64_t offset);
+/* Drops any record overlapping [start, end), releasing its file reference.
+   Called whenever pages are unmapped, so the table cannot outlive the pages. */
+void process_forget_file_mappings(uint64_t start, uint64_t end);
+/* The record covering `address`, or NULL when nothing shared-file-backed is
+   mapped there (an anonymous mapping, for instance). */
+struct process_file_mapping *process_find_file_mapping(uint64_t address);
+
 int process_grow_user_stack(uint64_t fault_address);
 int process_handle_cow_fault(uint64_t fault_address);
 /* Deliver a user-mode CPU exception as a signal. Returns 0 when the fault came
