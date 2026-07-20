@@ -100,3 +100,6 @@
 [submodule "ports/src/libxkbcommon"]
 	path = ports/src/libxkbcommon
 	url = https://github.com/xkbcommon/libxkbcommon.git
+[submodule "ports/src/xkeyboard-config"]
+	path = ports/src/xkeyboard-config
+	url = https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config.git

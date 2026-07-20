@@ -82,6 +82,8 @@ PIXMAN_ROOT := $(PORT_OUT)/pixman-root
 PIXMAN_STAMP := $(PORT_OUT)/.pixman-ready
 LIBXKBCOMMON_ROOT := $(PORT_OUT)/libxkbcommon-root
 LIBXKBCOMMON_STAMP := $(PORT_OUT)/.libxkbcommon-ready
+XKEYBOARD_CONFIG_ROOT := $(PORT_OUT)/xkeyboard-config-root
+XKEYBOARD_CONFIG_STAMP := $(PORT_OUT)/.xkeyboard-config-ready
 LIBDRM_ROOT := $(PORT_OUT)/libdrm-root
 LIBDRM_STAMP := $(PORT_OUT)/.libdrm-ready
 MESA_ROOT := $(PORT_OUT)/mesa-root
@@ -223,6 +225,15 @@ $(LIBXKBCOMMON_STAMP): $(MUSL_CROSS_STAMP) ports/build-libxkbcommon.sh \
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxkbcommon.sh
 	@test -L $(LIBXKBCOMMON_ROOT)/usr/lib/libxkbcommon.so.0 || { echo "libxkbcommon was not produced" >&2; exit 1; }
 	@test -x $(LIBXKBCOMMON_ROOT)/usr/bin/xkb-test || { echo "the xkb test was not produced" >&2; exit 1; }
+	@touch $@
+
+# The keyboard database libxkbcommon reads to build a keymap from names.
+# Data only -- upstream declares no language, so nothing is compiled.
+$(XKEYBOARD_CONFIG_STAMP): ports/build-xkeyboard-config.sh \
+	ports/src/xkeyboard-config/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xkeyboard-config.sh
+	@test -f $(XKEYBOARD_CONFIG_ROOT)/usr/share/xkeyboard-config-2/rules/evdev || { echo "the xkb database was not produced" >&2; exit 1; }
 	@touch $@
 
 $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.sh \
@@ -559,7 +570,7 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -595,6 +606,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	cp -R $(WAYLAND_ROOT)/. $(ROOTFS)/
 	cp -R $(PIXMAN_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBXKBCOMMON_ROOT)/. $(ROOTFS)/
+	cp -R $(XKEYBOARD_CONFIG_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBDRM_ROOT)/. $(ROOTFS)/
 	cp -R $(MESA_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
@@ -649,6 +661,8 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -L $(ROOTFS)/usr/lib/libpixman-1.so.0 || { echo "pixman was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libxkbcommon.so.0 || { echo "libxkbcommon was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xkb-test || { echo "the xkb test was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/share/xkeyboard-config-2/rules/evdev || { echo "the xkb database was not installed into the rootfs" >&2; exit 1; }
+	@test -L $(ROOTFS)/usr/share/X11/xkb || { echo "the xkb config root symlink is missing from the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libdrm.so.2 || { echo "libdrm was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libEGL.so.1 || { echo "mesa libEGL was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libGLESv2.so.2 || { echo "mesa libGLESv2 was not installed into the rootfs" >&2; exit 1; }
