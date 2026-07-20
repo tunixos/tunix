@@ -350,6 +350,23 @@ void framebuffer_file_close(struct file *file) {
     if (file) (void)framebuffer_release(file, 0);
 }
 
+/*
+ * The scanout as the kernel sees it, for drivers that composite in software.
+ * The DRM device uses this to present a dumb buffer: there is no CRTC to point
+ * at a different address, so presenting means copying into the one real
+ * framebuffer the bootloader gave us.
+ */
+uint8_t *framebuffer_scanout(void) {
+    if (!framebuffer.ready || !framebuffer.base) return NULL;
+    return (uint8_t *)framebuffer.base + framebuffer.memory_offset;
+}
+
+/* The mapping is write-through to the display, so presenting is only a barrier;
+   this is the same thing TUNIX_FBIO_FLUSH does. */
+void framebuffer_present(void) {
+    __sync_synchronize();
+}
+
 int64_t framebuffer_device_mmap(struct vfs_node *node, struct file *file,
                                 uint64_t cr3, uint64_t virtual_address,
                                 uint64_t length, uint64_t offset,

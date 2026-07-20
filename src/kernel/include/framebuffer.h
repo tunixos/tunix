@@ -35,6 +35,9 @@ void framebuffer_copy_rect(uint32_t destination_x, uint32_t destination_y,
                            uint32_t source_x, uint32_t source_y,
                            uint32_t width, uint32_t height);
 void framebuffer_fill_rgb(uint32_t rgb);
+/* Kernel-side view of the scanout, for software compositing (see drm.c). */
+uint8_t *framebuffer_scanout(void);
+void framebuffer_present(void);
 const uint8_t *framebuffer_font(void);
 uint32_t framebuffer_font_width(void);
 uint32_t framebuffer_font_height(void);

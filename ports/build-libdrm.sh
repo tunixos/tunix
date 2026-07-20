@@ -94,6 +94,19 @@ shared=$(find "$ROOT_DIR/usr/lib" -maxdepth 1 -type f -name 'libdrm.so.2.*' -pri
 cross_port_check_library "$shared" libdrm.so.2
 [[ -L "$ROOT_DIR/usr/lib/libdrm.so.2" ]] || cross_port_fail "libdrm SONAME symlink is missing"
 
+# A KMS client, so the kernel's /dev/dri/card0 is exercised the way real
+# graphics software exercises it rather than only by mesa's internals.
+mkdir -p "$ROOT_DIR/usr/bin"
+"$CROSS_CC" -std=c11 -Wall -Wextra -O2 -fPIE -pie \
+    -I"$GRAPHICS_SYSROOT/usr/include" \
+    -I"$GRAPHICS_SYSROOT/usr/include/libdrm" \
+    "$ROOT/tools/drm-test.c" \
+    -L"$GRAPHICS_SYSROOT/usr/lib" \
+    -Wl,-rpath-link,"$GRAPHICS_SYSROOT/usr/lib" \
+    -ldrm \
+    -o "$ROOT_DIR/usr/bin/drm-test"
+"$CROSS_STRIP" --strip-all "$ROOT_DIR/usr/bin/drm-test"
+
 # The image has no use for headers, static archives or pkg-config data; those
 # stay in the sysroot for the mesa build only.
 rm -rf "$ROOT_DIR/usr/include" "$ROOT_DIR/usr/lib/pkgconfig" "$ROOT_DIR/usr/share"

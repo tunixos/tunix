@@ -126,7 +126,7 @@ KERNEL_OBJS := \
 	$(BUILD)/pmm.o $(BUILD)/vmm.o $(BUILD)/framebuffer.o $(BUILD)/terminal_font.o $(BUILD)/terminal.o $(BUILD)/input.o \
 	$(BUILD)/heap.o $(BUILD)/syscall.o $(BUILD)/syscall_entry.o \
 	$(BUILD)/eventfd.o $(BUILD)/timerfd.o $(BUILD)/epoll.o $(BUILD)/inotify.o \
-	$(BUILD)/memfd.o $(BUILD)/signalfd.o \
+	$(BUILD)/memfd.o $(BUILD)/signalfd.o $(BUILD)/drm.o \
 	$(BUILD)/vfs.o $(BUILD)/tarfs.o $(BUILD)/ext2.o $(BUILD)/devfs.o $(BUILD)/unix_socket.o $(BUILD)/pty.o \
 	$(BUILD)/usercopy.o $(BUILD)/elf.o $(BUILD)/file.o \
 	$(BUILD)/pipe.o $(BUILD)/tty.o $(BUILD)/process.o $(BUILD)/procfs.o $(BUILD)/time.o $(BUILD)/random.o $(BUILD)/ata.o \
@@ -298,7 +298,7 @@ $(WESTON_STAMP): $(WAYLAND_STAMP) $(WAYLAND_PROTOCOLS_STAMP) $(PIXMAN_STAMP) \
 	@touch $@
 
 $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.sh \
-	ports/src/libdrm/meson.build
+	tools/drm-test.c ports/src/libdrm/meson.build
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libdrm.sh
 	@test -L $(LIBDRM_ROOT)/usr/lib/libdrm.so.2 || { echo "libdrm was not produced" >&2; exit 1; }
@@ -734,6 +734,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -x $(ROOTFS)/usr/bin/weston || { echo "weston was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/libweston-14/headless-backend.so || { echo "the weston headless backend was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libdrm.so.2 || { echo "libdrm was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/drm-test || { echo "the drm test was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libEGL.so.1 || { echo "mesa libEGL was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libGLESv2.so.2 || { echo "mesa libGLESv2 was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libgbm.so.1 || { echo "mesa libgbm was not installed into the rootfs" >&2; exit 1; }

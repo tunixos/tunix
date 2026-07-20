@@ -6,6 +6,7 @@
 #include "include/kstring.h"
 #include "include/input.h"
 #include "include/framebuffer.h"
+#include "include/drm.h"
 #include "include/pty.h"
 #include "include/random.h"
 #include "include/time.h"
@@ -256,6 +257,21 @@ void devfs_init(void) {
         if (fb) {
             fb->length = framebuffer_byte_length();
             fb->mmap = framebuffer_device_mmap;
+        }
+    }
+
+    /* The DRM device sits beside /dev/fb0 and drives the same display; it is
+       what lets unmodified Linux graphics software run here. */
+    drm_init();
+    if (drm_available()) {
+        struct vfs_node *dri = vfs_mkdir_p("/dev/dri");
+        if (dri) {
+            struct vfs_node *card = attach_device(dri, "card0", VFS_CHARDEVICE,
+                                                  0660, NULL, NULL, always_ready);
+            if (card) {
+                card->ioctl = drm_node_ioctl;
+                card->mmap = drm_device_mmap;
+            }
         }
     }
 
