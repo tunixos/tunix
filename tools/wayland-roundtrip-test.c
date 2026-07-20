@@ -161,29 +161,102 @@ static int64_t now_ms(void) {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-int main(void) {
-    /* libwayland puts its socket in XDG_RUNTIME_DIR and refuses to start
-       without one. /tmp is a tmpfs-like volatile directory on Tunix. */
-    setenv("XDG_RUNTIME_DIR", "/tmp", 1);
+/* Fires when the server accepts a connection, which is the single fact that
+   separates "the client never reached us" from "we never answered it". */
+static int clients_seen;
 
+static void handle_client_created(struct wl_listener *listener, void *data) {
+    (void)listener;
+    (void)data;
+    clients_seen++;
+}
+
+static struct wl_listener client_created_listener = { .notify = handle_client_created };
+
+/*
+ * Bring the server up far enough to be listening. Split out because the
+ * narrowing modes below need it without any of the client machinery.
+ */
+static struct wl_display *start_server(const char **socket_name_out) {
+    setenv("XDG_RUNTIME_DIR", "/tmp", 1);
     struct wl_display *display = wl_display_create();
     if (!display) {
         fprintf(stderr, "server: wl_display_create failed\n");
-        return 1;
+        return NULL;
     }
-    /* Installs the wl_shm global, whose implementation is what will mmap the
-       client's descriptor. */
     if (wl_display_init_shm(display) < 0) {
         fprintf(stderr, "server: wl_display_init_shm failed\n");
-        return 1;
+        return NULL;
     }
-    const char *socket_name = wl_display_add_socket_auto(display);
-    if (!socket_name) {
+    const char *name = wl_display_add_socket_auto(display);
+    if (!name) {
         fprintf(stderr, "server: cannot bind a socket in %s\n",
                 getenv("XDG_RUNTIME_DIR"));
-        return 1;
+        return NULL;
     }
-    printf("server: listening on %s\n", socket_name);
+    wl_display_add_client_created_listener(display, &client_created_listener);
+    if (socket_name_out) *socket_name_out = name;
+    printf("server: listening on %s\n", name);
+    return display;
+}
+
+/*
+ * Narrowing mode: bind a socket and tear it straight back down, with no client
+ * and no fork. If this is what panics, the bug is in closing a listening unix
+ * socket, and everything about Wayland is a red herring.
+ */
+static int run_socket_only(void) {
+    struct wl_display *display = start_server(NULL);
+    if (!display) return 1;
+    printf("socket-only: destroying the display\n");
+    wl_display_destroy(display);
+    printf("socket-only: PASS\n");
+    return 0;
+}
+
+/*
+ * Narrowing mode: let a client connect and do nothing else. Reports whether the
+ * server's event loop ever accepted it. Nothing is killed, so a panic here
+ * belongs to teardown rather than to signal delivery.
+ */
+static int run_connect_only(void) {
+    const char *socket_name = NULL;
+    struct wl_display *display = start_server(&socket_name);
+    if (!display) return 1;
+
+    pid_t pid = fork();
+    if (pid < 0) return 1;
+    if (pid == 0) {
+        struct wl_display *client = wl_display_connect(socket_name);
+        if (!client) _exit(2);
+        /* Hold the connection open, then leave of our own accord. */
+        sleep(3);
+        wl_display_disconnect(client);
+        _exit(0);
+    }
+
+    struct wl_event_loop *loop = wl_display_get_event_loop(display);
+    int64_t deadline = now_ms() + 5000;
+    while (now_ms() < deadline) {
+        wl_event_loop_dispatch(loop, 100);
+        wl_display_flush_clients(display);
+    }
+    printf("connect-only: server accepted %d client(s)\n", clients_seen);
+
+    int status = 0;
+    waitpid(pid, &status, WNOHANG);
+    printf("connect-only: destroying the display\n");
+    wl_display_destroy(display);
+    printf("connect-only: done\n");
+    return clients_seen > 0 ? 0 : 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--socket-only") == 0) return run_socket_only();
+    if (argc > 1 && strcmp(argv[1], "--connect-only") == 0) return run_connect_only();
+    const char *socket_name = NULL;
+    struct wl_display *display = start_server(&socket_name);
+    if (!display) return 1;
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -191,7 +264,11 @@ int main(void) {
         return 1;
     }
     if (pid == 0) {
-        wl_display_destroy(display);
+        /* Do NOT destroy the inherited display here. wl_display_destroy()
+           unlinks the socket and its lock file, so the child would delete the
+           very socket it is about to connect to -- and the server would then
+           sit there accepting nobody. The child simply leaves it alone; its
+           copy dies with the process. */
         _exit(run_client(socket_name));
     }
 
@@ -211,7 +288,8 @@ int main(void) {
     }
 
     if (!reaped) {
-        fprintf(stderr, "wayland-roundtrip-test: FAIL client did not finish\n");
+        fprintf(stderr, "wayland-roundtrip-test: FAIL client did not finish "
+                "(server accepted %d client(s))\n", clients_seen);
         kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
         return 1;
