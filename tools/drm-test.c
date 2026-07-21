@@ -24,8 +24,24 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <sys/ioctl.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+
+#include <tunix/framebuffer.h>
+
+/* Whether /dev/fb0 believes the display is spoken for; -1 if it cannot be
+   asked. This is how the console-versus-DRM arbitration is observed from
+   userspace: the two devices drive the same scanout, and exactly one of them
+   should own it at a time. */
+static int framebuffer_mode(void) {
+    int fb = open("/dev/fb0", O_RDWR | O_CLOEXEC);
+    if (fb < 0) return -1;
+    uint32_t mode = 0;
+    int status = ioctl(fb, TUNIX_FBIO_GET_MODE, &mode);
+    close(fb);
+    return status == 0 ? (int)mode : -1;
+}
 
 static int failures;
 
@@ -120,9 +136,18 @@ int main(void) {
                        create.handle, &fb_id) == 0 && fb_id,
           "drmModeAddFB");
 
+    /* Nothing has been presented yet, so the console still owns the display. */
+    check(framebuffer_mode() == (int)TUNIX_FB_MODE_CONSOLE,
+          "the console owns the display before any modeset");
+
     check(drmModeSetCrtc(fd, resources->crtcs[0], fb_id, 0, 0,
                          &connector->connector_id, 1, &mode) == 0,
           "drmModeSetCrtc puts the framebuffer on screen");
+
+    /* Presenting must have taken the display away from the console, or the two
+       would be drawing over each other every frame. */
+    check(framebuffer_mode() == (int)TUNIX_FB_MODE_GRAPHICS,
+          "the modeset takes the display away from the console");
 
     /* Page flip to the same buffer: the presentation path again, and what a
        compositor does every frame. */
@@ -158,6 +183,12 @@ int main(void) {
     drmModeFreeConnector(connector);
     drmModeFreeResources(resources);
     close(fd);
+
+    /* Closing the last descriptor on the card hands the display back: a
+       compositor that exits must not leave its final frame frozen over a shell
+       that is still running underneath. */
+    check(framebuffer_mode() == (int)TUNIX_FB_MODE_CONSOLE,
+          "closing the device returns the display to the console");
 
     if (failures) {
         printf("drm-test: FAIL (%d)\n", failures);

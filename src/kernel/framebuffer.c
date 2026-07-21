@@ -36,7 +36,10 @@ struct framebuffer_state {
     const uint8_t *font;
     uint16_t font_width;
     uint16_t font_height;
-    struct file *graphics_owner;
+    /* Whoever currently owns the display. Usually an open /dev/fb0 description,
+       but the DRM device claims it with a token of its own (see drm.c), so this
+       is deliberately untyped: the pointer is only ever compared. */
+    const void *graphics_owner;
     int ready;
 };
 
@@ -66,32 +69,32 @@ static int file_is_writable(const struct file *file) {
     return file && (file->flags & 3U) != 0U;
 }
 
-static int framebuffer_owner_is(const struct file *file) {
+static int framebuffer_owner_is(const void *owner) {
     uint64_t interrupt_flags = interrupt_save();
-    int owned = framebuffer.graphics_owner == file;
+    int owned = framebuffer.graphics_owner == owner;
     interrupt_restore(interrupt_flags);
     return owned;
 }
 
-static int framebuffer_acquire(struct file *file) {
+int framebuffer_claim_graphics(const void *owner) {
     if (!framebuffer.ready) return -ENODEV;
-    if (!file_is_writable(file)) return -EACCES;
+    if (!owner) return -EINVAL;
 
     uint64_t interrupt_flags = interrupt_save();
-    if (framebuffer.graphics_owner && framebuffer.graphics_owner != file) {
+    if (framebuffer.graphics_owner && framebuffer.graphics_owner != owner) {
         interrupt_restore(interrupt_flags);
         return -EBUSY;
     }
-    framebuffer.graphics_owner = file;
+    framebuffer.graphics_owner = owner;
     interrupt_restore(interrupt_flags);
     return 0;
 }
 
-static int framebuffer_release(struct file *file, int fail_if_not_owner) {
+int framebuffer_release_graphics(const void *owner, int fail_if_not_owner) {
     if (!framebuffer.ready) return -ENODEV;
 
     uint64_t interrupt_flags = interrupt_save();
-    if (framebuffer.graphics_owner != file) {
+    if (framebuffer.graphics_owner != owner) {
         int no_owner = framebuffer.graphics_owner == NULL;
         interrupt_restore(interrupt_flags);
         if (no_owner) return 0;
@@ -100,8 +103,21 @@ static int framebuffer_release(struct file *file, int fail_if_not_owner) {
     framebuffer.graphics_owner = NULL;
     interrupt_restore(interrupt_flags);
 
+    /* Whatever was on screen belonged to the owner that just left, so the
+       console has to paint itself back. */
     terminal_redraw();
     return 0;
+}
+
+/* /dev/fb0 owns by open file description, and only a writable one may draw. */
+static int framebuffer_acquire(struct file *file) {
+    if (!framebuffer.ready) return -ENODEV;
+    if (!file_is_writable(file)) return -EACCES;
+    return framebuffer_claim_graphics(file);
+}
+
+static int framebuffer_release(struct file *file, int fail_if_not_owner) {
+    return framebuffer_release_graphics(file, fail_if_not_owner);
 }
 
 int framebuffer_init(const struct boot_framebuffer_info *boot_info) {

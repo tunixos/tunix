@@ -37,6 +37,8 @@ int64_t drm_device_mmap(struct vfs_node *node, struct file *file,
 int64_t drm_device_read(struct vfs_node *node, uint64_t offset,
                         size_t size, void *buffer);
 int drm_device_read_ready(struct vfs_node *node);
+void drm_device_open(struct vfs_node *node);
+void drm_device_close(struct vfs_node *node);
 void drm_file_close(struct file *file);
 
 #endif

@@ -274,6 +274,10 @@ void devfs_init(void) {
             if (card) {
                 card->ioctl = drm_node_ioctl;
                 card->mmap = drm_device_mmap;
+                /* Open/close counting is how the console gets the display back
+                   when the last client goes away. */
+                card->open = drm_device_open;
+                card->close = drm_device_close;
             }
         }
     }

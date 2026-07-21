@@ -281,6 +281,19 @@ static uint32_t event_tail;
 static uint32_t event_count;
 static uint32_t flip_sequence;
 
+/*
+ * Display arbitration.
+ *
+ * The console and DRM draw into the same scanout, so one of them has to stand
+ * down. `drm_display_owner` is nothing but a unique address to hand
+ * framebuffer_claim_graphics() as an identity; `open_count` tracks how many
+ * descriptors are open on the card so the console can come back when the last
+ * one goes away -- which is what makes weston exiting leave a usable shell
+ * rather than a frozen picture.
+ */
+static const char drm_display_owner;
+static uint32_t open_count;
+
 static struct drm_dumb_buffer buffers[DRM_MAX_BUFFERS];
 static struct drm_framebuffer framebuffers[DRM_MAX_FRAMEBUFFERS];
 static uint32_t next_handle = 1;
@@ -298,6 +311,7 @@ void drm_init(void) {
     active_fb_id = 0;
     event_head = event_tail = event_count = 0;
     flip_sequence = 0;
+    open_count = 0;
     drm_ready = framebuffer_available();
 }
 
@@ -520,6 +534,13 @@ static int present_framebuffer(uint32_t fb_id) {
     struct drm_dumb_buffer *buffer = buffer_find(fb->handle);
     if (!buffer) return -ENOENT;
 
+    /* Take the display away from the text console before touching a pixel:
+       otherwise the console keeps writing into the same scanout and the two
+       fight over every frame. Claiming here rather than at open() means a
+       client that only queries the device leaves the console alone. */
+    int status = framebuffer_claim_graphics(&drm_display_owner);
+    if (status != 0) return status;
+
     uint8_t *scanout = framebuffer_scanout();
     if (!scanout) return -EPERM;
 
@@ -553,9 +574,11 @@ static int64_t ioctl_set_crtc(uint64_t user_argument) {
     if (copy_from_user(&crtc, user_argument, sizeof(crtc)) != 0) return -EFAULT;
     if (crtc.crtc_id != DRM_CRTC_ID) return -ENOENT;
 
-    /* fb_id 0 means "turn the output off"; we simply stop presenting. */
+    /* fb_id 0 means "turn the output off". We stop presenting and give the
+       display back, so the console reappears instead of the last frame. */
     if (!crtc.fb_id) {
         active_fb_id = 0;
+        (void)framebuffer_release_graphics(&drm_display_owner, 0);
         return 0;
     }
     int status = present_framebuffer(crtc.fb_id);
@@ -774,9 +797,13 @@ int64_t drm_file_ioctl(struct file *file, unsigned long request,
     case DRM_NR_SET_CLIENT_CAP: return 0;
     case DRM_NR_SET_VERSION: return 0;
     /* Single-master device with no authentication: there is nothing to hand
-       out magic tokens for. */
-    case DRM_NR_SET_MASTER:
+       out magic tokens for. Dropping master does mean giving the display back,
+       though -- that is how a compositor hands the console over on VT switch. */
     case DRM_NR_DROP_MASTER:
+        active_fb_id = 0;
+        (void)framebuffer_release_graphics(&drm_display_owner, 0);
+        return 0;
+    case DRM_NR_SET_MASTER:
     case DRM_NR_GET_MAGIC:
     case DRM_NR_AUTH_MAGIC: return 0;
     case DRM_NR_MODE_GETRESOURCES: return ioctl_get_resources(user_argument);
@@ -834,8 +861,29 @@ int64_t drm_device_mmap(struct vfs_node *node, struct file *file,
     return 0;
 }
 
+void drm_device_open(struct vfs_node *node) {
+    (void)node;
+    open_count++;
+}
+
+/*
+ * The last descriptor on the card is gone, so whoever was driving the display
+ * is gone with it: hand the scanout back and let the console redraw. Without
+ * this, a compositor that exits or crashes leaves its final frame frozen on
+ * screen with a live shell invisible underneath it.
+ */
+void drm_device_close(struct vfs_node *node) {
+    (void)node;
+    if (open_count) open_count--;
+    if (open_count) return;
+    active_fb_id = 0;
+    event_head = event_tail = event_count = 0;
+    (void)framebuffer_release_graphics(&drm_display_owner, 0);
+}
+
 void drm_file_close(struct file *file) {
     (void)file;
     /* Buffers outlive the descriptor deliberately: a mapping may still be in
-       use, and the pages are reference counted. Nothing to do here yet. */
+       use, and the pages are reference counted. Ownership of the display is
+       handled by drm_device_close(), which the VFS calls with the node. */
 }

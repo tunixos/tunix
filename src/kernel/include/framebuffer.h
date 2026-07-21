@@ -38,6 +38,14 @@ void framebuffer_fill_rgb(uint32_t rgb);
 /* Kernel-side view of the scanout, for software compositing (see drm.c). */
 uint8_t *framebuffer_scanout(void);
 void framebuffer_present(void);
+/*
+ * Display arbitration. Only one owner draws at a time; while there is one the
+ * text console holds off entirely. The owner is an opaque token compared by
+ * identity -- /dev/fb0 uses its open file description, DRM uses a token of its
+ * own -- so the two cannot end up painting over each other.
+ */
+int framebuffer_claim_graphics(const void *owner);
+int framebuffer_release_graphics(const void *owner, int fail_if_not_owner);
 const uint8_t *framebuffer_font(void);
 uint32_t framebuffer_font_width(void);
 uint32_t framebuffer_font_height(void);

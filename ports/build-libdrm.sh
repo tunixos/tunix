@@ -100,6 +100,7 @@ mkdir -p "$ROOT_DIR/usr/bin"
 "$CROSS_CC" -std=c11 -Wall -Wextra -O2 -fPIE -pie \
     -I"$GRAPHICS_SYSROOT/usr/include" \
     -I"$GRAPHICS_SYSROOT/usr/include/libdrm" \
+    -I"$ROOT/src/include" \
     "$ROOT/tools/drm-test.c" \
     -L"$GRAPHICS_SYSROOT/usr/lib" \
     -Wl,-rpath-link,"$GRAPHICS_SYSROOT/usr/lib" \

@@ -298,7 +298,7 @@ $(WESTON_STAMP): $(WAYLAND_STAMP) $(WAYLAND_PROTOCOLS_STAMP) $(PIXMAN_STAMP) \
 	@touch $@
 
 $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.sh \
-	tools/drm-test.c ports/src/libdrm/meson.build
+	tools/drm-test.c src/include/tunix/framebuffer.h ports/src/libdrm/meson.build
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libdrm.sh
 	@test -L $(LIBDRM_ROOT)/usr/lib/libdrm.so.2 || { echo "libdrm was not produced" >&2; exit 1; }
