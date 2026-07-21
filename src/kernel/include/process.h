@@ -74,6 +74,14 @@ struct process {
     uint64_t user_stack_top;
     uint64_t kernel_stack_base;
     uint64_t kernel_stack_top;
+    /*
+     * The x87/SSE register file, as FXSAVE lays it out. These registers are
+     * per-process just like the general ones, and nothing else saves them: the
+     * kernel is built with -mgeneral-regs-only so it never touches them, and
+     * they are swapped here on every context switch. 16-byte alignment is an
+     * FXSAVE requirement, not a preference.
+     */
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
     uint64_t brk_start;
     uint64_t brk_end;
     uint64_t mmap_base;

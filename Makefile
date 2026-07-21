@@ -116,7 +116,14 @@ TERMINAL_FONT_DATA := $(BUILD)/generated/terminal_font_data.inc
 COMMON_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector \
 	-fno-pic -fno-pie -fno-builtin -fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-mno-red-zone -m64 -Os -ffunction-sections -fdata-sections
-KERNEL_CFLAGS := $(COMMON_CFLAGS) -mcmodel=kernel -Isrc/kernel/include -Isrc/include -I$(BUILD)/generated
+# -mgeneral-regs-only keeps the kernel out of the FPU, SSE and MMX registers
+# entirely. Those registers belong to whichever process is running: the kernel
+# saves them only when it switches processes, so any use in between -- GCC will
+# happily reach for %xmm0 to copy a 16-byte struct -- corrupts user state on a
+# plain syscall, with no context switch in sight. That is not theoretical: it is
+# what produced NaNs in weston-smoke's simulation.
+KERNEL_CFLAGS := $(COMMON_CFLAGS) -mcmodel=kernel -mgeneral-regs-only \
+	-Isrc/kernel/include -Isrc/include -I$(BUILD)/generated
 KERNEL_LDFLAGS := -nostdlib -no-pie -Wl,-T,src/kernel/arch/x86_64/linker.ld \
 	-Wl,--gc-sections -Wl,--build-id=none -Wl,-z,max-page-size=0x1000
 USER_CFLAGS := $(COMMON_CFLAGS) -mcmodel=small -Isrc/libc/include -Isrc/include
@@ -571,6 +578,11 @@ $(BUILD)/process.o: src/kernel/include/process.h src/kernel/include/signal.h src
 # struct vfs_node is embedded across the whole kernel; a layout change must
 # rebuild every object or stale offsets corrupt the tree at runtime.
 $(KERNEL_OBJS): src/kernel/include/vfs.h
+# And so must a change to KERNEL_CFLAGS. Without this a flag that alters code
+# generation -- -mgeneral-regs-only, say -- applies only to the objects that
+# happen to be rebuilt for other reasons, and the result is a kernel that is
+# half compiled one way and half the other, with nothing to show for it.
+$(KERNEL_OBJS): Makefile
 $(BUILD)/vfs.o: src/kernel/include/vfs.h src/kernel/include/inotify.h
 $(BUILD)/ext2.o: src/kernel/include/ext2.h src/kernel/include/ata.h src/kernel/include/vfs.h src/kernel/include/heap.h src/kernel/include/time.h src/kernel/include/random.h src/kernel/include/kstring.h src/kernel/include/build_config.h
 $(BUILD)/random.o: src/kernel/include/random.h src/kernel/include/time.h src/kernel/include/spinlock.h

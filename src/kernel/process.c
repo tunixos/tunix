@@ -254,6 +254,10 @@ static void close_all_files(struct process *process) {
     }
 }
 
+/* Defined with the scheduler, below, but needed by process creation above it. */
+static void fpu_save(struct process *process);
+static void fpu_init_state(struct process *process);
+
 static int allocate_kernel_stack(struct process *process) {
     uint8_t *kernel_stack = (uint8_t *)kmalloc(KERNEL_STACK_SIZE);
     if (!kernel_stack) return -1;
@@ -388,6 +392,7 @@ struct process *process_create_from_path(const char *path) {
         return NULL;
     }
 
+    fpu_init_state(process);
     if (allocate_kernel_stack(process) != 0) {
         kprintf("process: kernel stack allocation failed for %s\n", path);
         memory_unref(process->memory);
@@ -493,7 +498,37 @@ static struct process *next_runnable(struct process *after) {
     return NULL;
 }
 
+static void fpu_save(struct process *process) {
+    if (process) __asm__ volatile("fxsave64 (%0)" : : "r"(process->fpu_state) : "memory");
+}
+
+static void fpu_restore(struct process *process) {
+    if (process) __asm__ volatile("fxrstor64 (%0)" : : "r"(process->fpu_state) : "memory");
+}
+
+/*
+ * The register state a process starts with: what FNINIT and a default MXCSR
+ * give. Built by hand rather than by running FNINIT, because doing that here
+ * would disturb the registers of whichever process is currently loaded.
+ */
+static void fpu_init_state(struct process *process) {
+    if (!process) return;
+    memset(process->fpu_state, 0, sizeof(process->fpu_state));
+    /* FCW: all exceptions masked, extended precision, round to nearest. */
+    process->fpu_state[0] = 0x7F;
+    process->fpu_state[1] = 0x03;
+    /* MXCSR at offset 24, likewise with every exception masked. */
+    process->fpu_state[24] = 0x80;
+    process->fpu_state[25] = 0x1F;
+    /* MXCSR_MASK at offset 28; the value every CPU since the PIII reports. */
+    process->fpu_state[28] = 0xFF;
+    process->fpu_state[29] = 0xFF;
+}
+
 static void activate_process(struct process *process) {
+    /* The outgoing process's registers have to be put away before the incoming
+       one's are loaded; `current` is still the outgoing process here. */
+    if (current && current != process) fpu_save(current);
     current = process;
     if (!process->time_slice_ticks)
         process->time_slice_ticks = PROCESS_DEFAULT_QUANTUM_TICKS;
@@ -503,6 +538,7 @@ static void activate_process(struct process *process) {
     syscall_set_kernel_stack(process->kernel_stack_top);
     vmm_activate(process->cr3);
     wrmsr(IA32_FS_BASE, process->fs_base);
+    fpu_restore(process);
 }
 
 static void save_interrupt_context(struct syscall_frame *destination,
@@ -913,6 +949,11 @@ int64_t process_fork_from_syscall(struct syscall_frame *frame) {
     /* Shared file mappings are inherited with the pages, so the records that
        describe them have to come along. */
     memory_copy_mappings(child->memory, parent->memory);
+    /* The child continues from where the parent is, x87/SSE registers included.
+       The parent is the running process, so its live registers have to be put
+       into its save area before they can be copied out of it. */
+    fpu_save(parent);
+    memcpy(child->fpu_state, parent->fpu_state, sizeof(child->fpu_state));
     child->entry = parent->entry;
     child->user_stack_top = parent->user_stack_top;
     child->brk_start = parent_brk_start;
@@ -985,6 +1026,10 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame,
     child->memory = parent->memory;
     memory_ref(child->memory);
     sync_memory_view(child);
+    /* A new thread starts with the creating thread's floating-point state, for
+       the same reason fork does. */
+    fpu_save(parent);
+    memcpy(child->fpu_state, parent->fpu_state, sizeof(child->fpu_state));
     child->entry = parent->entry;
     child->user_stack_top = child_stack;
     child->fs_base = (flags & 0x00080000ULL) ? tls : parent->fs_base;
@@ -1173,6 +1218,11 @@ int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
     current->tgid = current->pid;
     current->is_thread = 0;
     current->entry = image.entry;
+    /* A different program entirely: it must not inherit the old one's
+       floating-point registers, so reset them and load the reset state,
+       because these are the live registers of the running process. */
+    fpu_init_state(current);
+    fpu_restore(current);
     current->user_stack_top = image.user_stack_top;
     current->brk_start = image.brk_start;
     current->brk_end = image.brk_end;

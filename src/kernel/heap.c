@@ -17,12 +17,29 @@
 #define HEAP_PAGE_SIZE 4096ULL
 #define HEAP_MAGIC 0x1234ABCD
 
+/*
+ * Every allocation comes back 16-byte aligned.
+ *
+ * That is not a nicety: fxsave64 faults outright on a misaligned operand, and
+ * struct process embeds its 512-byte FPU save area. The header used to be 24
+ * bytes, so every pointer handed out was block+24 -- 8-aligned at best -- and
+ * an `__attribute__((aligned(16)))` member inside a kmalloc'd struct was a
+ * promise the allocator could not keep. Padding the header to a multiple of 16
+ * and rounding every request up to 16 keeps the invariant by induction from a
+ * page-aligned heap base.
+ */
+#define HEAP_ALIGN 16ULL
+
 typedef struct heap_block {
     uint32_t magic;
     uint32_t size;
     uint8_t is_free;
     struct heap_block* next;
+    uint64_t reserved;   /* padding only: keeps sizeof a multiple of HEAP_ALIGN */
 } heap_block_t;
+
+_Static_assert(sizeof(heap_block_t) % HEAP_ALIGN == 0,
+               "the heap header must not disturb the alignment of what follows it");
 
 static heap_block_t* head = NULL;
 static uint64_t heap_size = 0;
@@ -105,6 +122,8 @@ static int heap_grow(size_t min_size) {
 
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
+    /* Round up so the *next* block starts aligned too. */
+    size = (size + (HEAP_ALIGN - 1)) & ~(HEAP_ALIGN - 1);
 
     spinlock_acquire(&heap_lock);
 
