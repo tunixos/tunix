@@ -4,6 +4,7 @@
 #include "include/file.h"
 #include "include/framebuffer.h"
 #include "include/heap.h"
+#include "include/time.h"
 #include "include/kstring.h"
 #include "include/pmm.h"
 #include "include/usercopy.h"
@@ -17,6 +18,7 @@ extern void kprintf(const char *fmt, ...);
 #define ENOTTY 25
 #define EFAULT 14
 #define EPERM 1
+#define EAGAIN 11
 
 /*
  * See include/drm.h for what this is and is not. The ABI below is Linux's, from
@@ -247,6 +249,38 @@ struct drm_framebuffer {
     uint32_t pitch;
 };
 
+/*
+ * Completion events, read back off the device descriptor.
+ *
+ * A compositor flips with DRM_MODE_PAGE_FLIP_EVENT and then waits for the
+ * completion before drawing the next frame; weston does this every frame, so
+ * without a queue it stalls forever. Presentation here is synchronous -- the
+ * flip is a blit that has already finished by the time the ioctl returns -- so
+ * the event is queued immediately and the reader never actually waits.
+ */
+#define DRM_EVENT_FLIP_COMPLETE 0x02
+#define DRM_MAX_EVENTS 16
+
+struct drm_event {
+    uint32_t type;
+    uint32_t length;
+};
+
+struct drm_event_vblank {
+    struct drm_event base;
+    uint64_t user_data;
+    uint32_t tv_sec;
+    uint32_t tv_usec;
+    uint32_t sequence;
+    uint32_t crtc_id;
+};
+
+static struct drm_event_vblank events[DRM_MAX_EVENTS];
+static uint32_t event_head;
+static uint32_t event_tail;
+static uint32_t event_count;
+static uint32_t flip_sequence;
+
 static struct drm_dumb_buffer buffers[DRM_MAX_BUFFERS];
 static struct drm_framebuffer framebuffers[DRM_MAX_FRAMEBUFFERS];
 static uint32_t next_handle = 1;
@@ -262,6 +296,8 @@ void drm_init(void) {
     next_handle = 1;
     next_fb_id = 1;
     active_fb_id = 0;
+    event_head = event_tail = event_count = 0;
+    flip_sequence = 0;
     drm_ready = framebuffer_available();
 }
 
@@ -528,6 +564,59 @@ static int64_t ioctl_set_crtc(uint64_t user_argument) {
     return 0;
 }
 
+#define DRM_MODE_PAGE_FLIP_EVENT 0x01
+
+/* The flip has already been presented by the time this runs, so the completion
+   is reported with the current time and simply queued. */
+static void queue_flip_event(uint64_t user_data) {
+    if (event_count == DRM_MAX_EVENTS) {
+        /* A reader that never drains would otherwise block flips forever;
+           dropping the oldest keeps the newest frame's completion. */
+        event_head = (event_head + 1U) % DRM_MAX_EVENTS;
+        event_count--;
+    }
+    uint64_t now = time_uptime_ns();
+    struct drm_event_vblank *event = &events[event_tail];
+    memset(event, 0, sizeof(*event));
+    event->base.type = DRM_EVENT_FLIP_COMPLETE;
+    event->base.length = sizeof(*event);
+    event->user_data = user_data;
+    event->tv_sec = (uint32_t)(now / 1000000000ULL);
+    event->tv_usec = (uint32_t)((now % 1000000000ULL) / 1000ULL);
+    event->sequence = ++flip_sequence;
+    event->crtc_id = DRM_CRTC_ID;
+    event_tail = (event_tail + 1U) % DRM_MAX_EVENTS;
+    event_count++;
+}
+
+/*
+ * read() on the device hands back whole events, oldest first. Partial events
+ * are never returned: DRM's contract is that a reader with room for one event
+ * gets exactly one, and a reader with no room gets nothing.
+ */
+int64_t drm_device_read(struct vfs_node *node, uint64_t offset,
+                        size_t size, void *buffer) {
+    (void)node;
+    (void)offset;
+    if (!buffer) return -EINVAL;
+    size_t produced = 0;
+    uint8_t *out = (uint8_t *)buffer;
+    while (event_count && size - produced >= sizeof(struct drm_event_vblank)) {
+        memcpy(out + produced, &events[event_head], sizeof(struct drm_event_vblank));
+        event_head = (event_head + 1U) % DRM_MAX_EVENTS;
+        event_count--;
+        produced += sizeof(struct drm_event_vblank);
+    }
+    /* No events yet is "try again", not end of file: the caller is polling. */
+    if (!produced) return -EAGAIN;
+    return (int64_t)produced;
+}
+
+int drm_device_read_ready(struct vfs_node *node) {
+    (void)node;
+    return event_count != 0;
+}
+
 static int64_t ioctl_page_flip(uint64_t user_argument) {
     struct drm_mode_crtc_page_flip flip;
     if (copy_from_user(&flip, user_argument, sizeof(flip)) != 0) return -EFAULT;
@@ -535,10 +624,7 @@ static int64_t ioctl_page_flip(uint64_t user_argument) {
     int status = present_framebuffer(flip.fb_id);
     if (status != 0) return status;
     active_fb_id = flip.fb_id;
-    /* DRM_MODE_PAGE_FLIP_EVENT would queue a completion event on the fd. There
-       is no event queue here yet, so a caller that asks for one is refused
-       rather than left waiting for something that will never arrive. */
-    if (flip.flags & 1U) return -EINVAL;
+    if (flip.flags & DRM_MODE_PAGE_FLIP_EVENT) queue_flip_event(flip.user_data);
     return 0;
 }
 

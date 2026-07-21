@@ -1,6 +1,7 @@
 #ifndef TUNIX_DRM_H
 #define TUNIX_DRM_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct file;
@@ -33,6 +34,9 @@ int64_t drm_device_mmap(struct vfs_node *node, struct file *file,
                         uint64_t cr3, uint64_t virtual_address,
                         uint64_t length, uint64_t offset,
                         uint64_t page_flags);
+int64_t drm_device_read(struct vfs_node *node, uint64_t offset,
+                        size_t size, void *buffer);
+int drm_device_read_ready(struct vfs_node *node);
 void drm_file_close(struct file *file);
 
 #endif

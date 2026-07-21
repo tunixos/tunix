@@ -266,8 +266,11 @@ void devfs_init(void) {
     if (drm_available()) {
         struct vfs_node *dri = vfs_mkdir_p("/dev/dri");
         if (dri) {
+            /* read() delivers page-flip completions, so readiness is whether
+               any are queued rather than always. */
             struct vfs_node *card = attach_device(dri, "card0", VFS_CHARDEVICE,
-                                                  0660, NULL, NULL, always_ready);
+                                                  0660, drm_device_read, NULL,
+                                                  drm_device_read_ready);
             if (card) {
                 card->ioctl = drm_node_ioctl;
                 card->mmap = drm_device_mmap;

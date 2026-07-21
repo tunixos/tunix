@@ -38,6 +38,19 @@ static void check(int condition, const char *what) {
     }
 }
 
+/* A value with no meaning beyond being recognisable on the way back. */
+#define FLIP_COOKIE 0x1234ABCDUL
+
+static int flip_seen;
+static unsigned long flip_user_data;
+
+static void flip_handler(int fd, unsigned sequence, unsigned tv_sec,
+                         unsigned tv_usec, void *user_data) {
+    (void)fd; (void)sequence; (void)tv_sec; (void)tv_usec;
+    flip_seen = 1;
+    flip_user_data = (unsigned long)user_data;
+}
+
 int main(void) {
     int fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     check(fd >= 0, "open /dev/dri/card0");
@@ -115,6 +128,26 @@ int main(void) {
        compositor does every frame. */
     check(drmModePageFlip(fd, resources->crtcs[0], fb_id, 0, NULL) == 0,
           "drmModePageFlip");
+
+    /*
+     * The same flip again, but asking for a completion event -- which is how
+     * every compositor actually drives its frame loop. libdrm reads the event
+     * off the descriptor and calls back; a driver without an event queue would
+     * leave drmHandleEvent blocking here forever.
+     */
+    drmEventContext context = { .version = 2, .page_flip_handler = flip_handler };
+
+    flip_seen = 0;
+    flip_user_data = 0;
+    check(drmModePageFlip(fd, resources->crtcs[0], fb_id,
+                          DRM_MODE_PAGE_FLIP_EVENT,
+                          (void *)FLIP_COOKIE) == 0,
+          "drmModePageFlip with a completion event");
+    check(drmHandleEvent(fd, &context) == 0 && flip_seen,
+          "the completion event arrives and is dispatched");
+    /* The cookie must survive the round trip: it is how a compositor tells its
+       own outputs apart. */
+    check(flip_user_data == FLIP_COOKIE, "the event carries back its user data");
 
     drmModeRmFB(fd, fb_id);
     munmap(pixels, create.size);
