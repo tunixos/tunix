@@ -37,6 +37,13 @@ int64_t drm_device_mmap(struct vfs_node *node, struct file *file,
 int64_t drm_device_read(struct vfs_node *node, uint64_t offset,
                         size_t size, void *buffer);
 int drm_device_read_ready(struct vfs_node *node);
+/* Release a reference taken by a PRIME export; called when the descriptor is
+   closed, which may be after the buffer's handle is already gone. */
+void drm_buffer_put(uint32_t handle);
+/* Map a PRIME-exported buffer. The descriptor is the buffer, so the offset is
+   an offset into it rather than the fake handle token MAP_DUMB hands out. */
+int64_t drm_dmabuf_mmap(struct file *file, uint64_t cr3, uint64_t virtual_address,
+                        uint64_t length, uint64_t offset, uint64_t page_flags);
 void drm_device_open(struct vfs_node *node);
 void drm_device_close(struct vfs_node *node);
 void drm_file_close(struct file *file);

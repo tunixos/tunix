@@ -27,6 +27,7 @@
 #include "include/vmm.h"
 #include "include/unix_socket.h"
 #include "include/net/inet_socket.h"
+#include "include/drm.h"
 #include "include/net/netlink.h"
 #include "include/net/net.h"
 
@@ -2538,6 +2539,18 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
                Failing to record only costs the ability to grow, so the mapping
                itself still stands. */
             (void)process_record_file_mapping(base, length, file, offset);
+            if (advance_mmap_base) {
+                process->mmap_base = base + length + 4096;
+                if (process->memory) process->memory->mmap_base = process->mmap_base;
+            }
+            return (int64_t)base;
+        }
+        /* A PRIME descriptor is the buffer itself, so it maps without a node. */
+        if (file->kind == FILE_KIND_DMABUF) {
+            if (!(flags & MAP_SHARED)) return -EINVAL;
+            int64_t status = drm_dmabuf_mmap(file, process->cr3, base, length,
+                                             offset, page_flags | PAGE_SHARED);
+            if (status < 0) return status;
             if (advance_mmap_base) {
                 process->mmap_base = base + length + 4096;
                 if (process->memory) process->memory->mmap_base = process->mmap_base;

@@ -317,7 +317,7 @@ $(SEATD_STAMP): $(MUSL_CROSS_STAMP) ports/build-seatd.sh ports/lib/cross-port.sh
 # so it drives /dev/dri/card0 without needing a GPU.
 $(WESTON_STAMP): $(WAYLAND_STAMP) $(WAYLAND_PROTOCOLS_STAMP) $(PIXMAN_STAMP) \
 	$(LIBXKBCOMMON_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDRM_STAMP) \
-	$(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) \
+	$(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(MESA_STAMP) \
 	ports/build-weston.sh ports/lib/cross-port.sh \
 	ports/src/patches/weston/0001-shared-make-cairo-optional.patch \
 	ports/src/weston/meson.build
@@ -327,6 +327,7 @@ $(WESTON_STAMP): $(WAYLAND_STAMP) $(WAYLAND_PROTOCOLS_STAMP) $(PIXMAN_STAMP) \
 	@test -f $(WESTON_ROOT)/usr/lib/libweston-14/headless-backend.so || { echo "the headless backend was not produced" >&2; exit 1; }
 	@test -f $(WESTON_ROOT)/usr/lib/libweston-14/drm-backend.so || { echo "the drm backend was not produced" >&2; exit 1; }
 	@test -x $(WESTON_ROOT)/usr/bin/weston-terminal || { echo "weston-terminal was not produced" >&2; exit 1; }
+	@test -f $(WESTON_ROOT)/usr/lib/libweston-14/gl-renderer.so || { echo "the gl renderer was not produced" >&2; exit 1; }
 	@touch $@
 
 $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.sh \
@@ -338,7 +339,7 @@ $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.
 	@touch $@
 
 $(MESA_STAMP): $(LIBDRM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \
-	tools/tunix-gl-demo.c src/include/tunix/framebuffer.h \
+	tools/tunix-gl-demo.c tools/gbm-test.c src/include/tunix/framebuffer.h \
 	ports/src/mesa/meson.build
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-mesa.sh

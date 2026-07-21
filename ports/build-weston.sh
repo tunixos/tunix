@@ -17,11 +17,15 @@ set -euo pipefail
 #   libdisplay-info  required unconditionally; parses EDID we never supply.
 #   libudev          libudev-zero over the synthetic /sys, to find card0.
 #
+# The GL renderer is on. It composites through EGL on a GBM surface rather than
+# blitting every frame on the CPU with pixman. There is no GPU: mesa's GBM falls
+# back to kms_swrast, which allocates DRM dumb buffers and rasterises with
+# softpipe, so the drawing is still software -- but the frame is assembled once,
+# in a buffer the display can scan out, instead of being composited and then
+# copied. It also gives clients a real EGL to render into.
+#
 # Still off, and why:
 #
-#   renderer-gl      weston's pixman renderer composites on the CPU instead --
-#                    and with GL off, backend-drm does not need gbm, which is
-#                    inert on Tunix.
 #   xwayland         an X server is a project of its own
 #   image-jpeg/webp  decoders for backgrounds we do not ship
 #   demo-clients     several of them want pangocairo, which is not ported
@@ -110,7 +114,7 @@ meson setup "$BUILD/obj" "$BUILD/src" \
     -Dbackend-vnc=false \
     -Dbackend-wayland=false \
     -Dbackend-x11=false \
-    -Drenderer-gl=false \
+    -Drenderer-gl=true \
     -Dxwayland=false \
     -Dsystemd=false \
     -Dremoting=false \
@@ -139,6 +143,8 @@ DESTDIR="$ROOT_DIR" meson install -C "$BUILD/obj" --no-rebuild
     cross_port_fail "the drm backend module was not installed"
 [[ -x "$ROOT_DIR/usr/bin/weston-terminal" ]] || \
     cross_port_fail "weston-terminal was not produced"
+[[ -f "$ROOT_DIR/usr/lib/libweston-14/gl-renderer.so" ]] || \
+    cross_port_fail "the gl renderer module was not produced"
 
 interp=$("$READELF" -l "$ROOT_DIR/usr/bin/weston" | \
     sed -n 's/.*Requesting program interpreter: \([^]]*\).*/\1/p')
@@ -153,5 +159,5 @@ cross_port_finalize_root "$ROOT_DIR"
 "$CROSS_STRIP" --strip-all "$ROOT_DIR/usr/bin/weston" 2>/dev/null || true
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
-printf 'weston %s (drm + headless, pixman renderer) staged at %s (%s)\n' \
+printf 'weston %s (drm + headless, gl + pixman renderers) staged at %s (%s)\n' \
     "$version" "$ROOT_DIR" "$size"

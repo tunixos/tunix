@@ -7,6 +7,7 @@
 #include "include/time.h"
 #include "include/kstring.h"
 #include "include/pmm.h"
+#include "include/process.h"
 #include "include/usercopy.h"
 #include "include/vmm.h"
 
@@ -19,6 +20,11 @@ extern void kprintf(const char *fmt, ...);
 #define EFAULT 14
 #define EPERM 1
 #define EAGAIN 11
+#define EBADF 9
+#define EMFILE 24
+
+/* DRM_CLOEXEC in <drm/drm.h> is O_CLOEXEC by another name. */
+#define DRM_CLOEXEC 02000000
 
 /*
  * See include/drm.h for what this is and is not. The ABI below is Linux's, from
@@ -62,9 +68,13 @@ extern void kprintf(const char *fmt, ...);
 #define DRM_NR_MODE_SETPLANE 0xb7
 #define DRM_NR_MODE_OBJ_GETPROPERTIES 0xb9
 #define DRM_NR_MODE_OBJ_SETPROPERTY 0xba
+#define DRM_NR_PRIME_HANDLE_TO_FD 0x2d
+#define DRM_NR_PRIME_FD_TO_HANDLE 0x2e
 
 #define DRM_CAP_DUMB_BUFFER 0x1
 #define DRM_CAP_PRIME 0x5
+#define DRM_PRIME_CAP_IMPORT 0x1
+#define DRM_PRIME_CAP_EXPORT 0x2
 #define DRM_CAP_TIMESTAMP_MONOTONIC 0x6
 #define DRM_CAP_CURSOR_WIDTH 0x8
 #define DRM_CAP_CURSOR_HEIGHT 0x9
@@ -284,6 +294,12 @@ struct drm_mode_property_enum {
     char name[DRM_PROP_NAME_LEN];
 };
 
+struct drm_prime_handle {
+    uint32_t handle;
+    uint32_t flags;
+    int32_t fd;
+};
+
 struct drm_mode_obj_get_properties {
     uint64_t props_ptr;
     uint64_t prop_values_ptr;
@@ -315,6 +331,10 @@ struct drm_dumb_buffer {
     uint64_t size;        /* page-aligned byte count */
     uint64_t page_count;
     uint64_t *pages;      /* physical addresses */
+    /* Holders beyond the handle itself: every PRIME descriptor exported from
+       this buffer counts. DESTROY_DUMB drops the handle's reference, but the
+       pages stay until the last descriptor is closed. */
+    uint32_t refs;
 };
 
 struct drm_framebuffer {
@@ -409,8 +429,14 @@ static struct drm_framebuffer *framebuffer_find(uint32_t id) {
     return NULL;
 }
 
+/*
+ * Drop one reference. The buffer's memory goes away with the last one, which is
+ * not necessarily the handle: an exported PRIME descriptor keeps it alive after
+ * DESTROY_DUMB, which is the entire point of exporting it.
+ */
 static void buffer_release(struct drm_dumb_buffer *buffer) {
     if (!buffer || !buffer->handle) return;
+    if (buffer->refs > 1) { buffer->refs--; return; }
     for (uint64_t index = 0; index < buffer->page_count; index++) {
         if (buffer->pages[index]) pmm_free_page((void *)buffer->pages[index]);
     }
@@ -517,8 +543,14 @@ static int64_t ioctl_get_cap(uint64_t user_argument) {
        for a software one, and libdrm's callers expect *some* answer. */
     case DRM_CAP_CURSOR_WIDTH:
     case DRM_CAP_CURSOR_HEIGHT: cap.value = 64; break;
-    /* No buffer sharing between processes yet, so no PRIME and no modifiers. */
-    case DRM_CAP_PRIME:
+    /*
+     * Buffer sharing by descriptor, both directions. This is not decoration:
+     * mesa reads this exact capability to decide how GBM allocates. Reporting
+     * zero makes it fall back to a path whose buffers have no DRI image, and it
+     * then dereferences that NULL itself.
+     */
+    case DRM_CAP_PRIME: cap.value = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT; break;
+    /* One linear layout and nothing to negotiate. */
     case DRM_CAP_ADDFB2_MODIFIERS:
     default: cap.value = 0; break;
     }
@@ -614,6 +646,83 @@ static int64_t ioctl_get_crtc(uint64_t user_argument) {
  * DRM_CLIENT_CAP_UNIVERSAL_PLANES is not optional for weston: it enumerates
  * planes, and a plane whose "type" property it cannot read is a fatal error.
  */
+/* --- PRIME ---------------------------------------------------------------
+ *
+ * Exporting a buffer as a descriptor. There is no separate dma-buf object here:
+ * the descriptor simply names a dumb buffer and holds a reference to it, which
+ * is enough for what mesa does with it -- allocate through GBM, hand the buffer
+ * to another process or map it, and hand the handle back later.
+ *
+ * The handle namespace is per-device rather than per-file, so importing a
+ * descriptor gives back the handle it was exported from.
+ */
+void drm_buffer_put(uint32_t handle) {
+    struct drm_dumb_buffer *buffer = buffer_find(handle);
+    if (buffer) buffer_release(buffer);
+}
+
+static int64_t ioctl_prime_handle_to_fd(uint64_t user_argument) {
+    struct drm_prime_handle request;
+    if (copy_from_user(&request, user_argument, sizeof(request)) != 0) return -EFAULT;
+    struct drm_dumb_buffer *buffer = buffer_find(request.handle);
+    if (!buffer) return -ENOENT;
+    if (buffer->refs == 0xFFFFFFFFU) return -EMFILE;
+
+    buffer->refs++;
+    struct file *file = file_create_dmabuf(request.handle, 0);
+    if (!file) {
+        buffer_release(buffer);
+        return -ENOMEM;
+    }
+    int fd = process_install_file_flags(process_current(), file, 0,
+                                       (request.flags & DRM_CLOEXEC) ? PROCESS_FD_CLOEXEC : 0);
+    if (fd < 0) {
+        file_unref(file);   /* which gives the buffer reference back */
+        return -EMFILE;
+    }
+    request.fd = fd;
+    return copy_to_user(user_argument, &request, sizeof(request)) == 0 ? 0 : -EFAULT;
+}
+
+static int64_t ioctl_prime_fd_to_handle(uint64_t user_argument) {
+    struct drm_prime_handle request;
+    if (copy_from_user(&request, user_argument, sizeof(request)) != 0) return -EFAULT;
+    struct process *process = process_current();
+    if (!process || request.fd < 0 || request.fd >= PROCESS_MAX_FDS ||
+        !process->fds[request.fd]) return -EBADF;
+    struct file *file = process->fds[request.fd];
+    if (file->kind != FILE_KIND_DMABUF) return -EINVAL;
+    if (!buffer_find(file->dmabuf_handle)) return -ENOENT;
+    request.handle = file->dmabuf_handle;
+    return copy_to_user(user_argument, &request, sizeof(request)) == 0 ? 0 : -EFAULT;
+}
+
+int64_t drm_dmabuf_mmap(struct file *file, uint64_t cr3, uint64_t virtual_address,
+                        uint64_t length, uint64_t offset, uint64_t page_flags) {
+    if (!file || !length || (offset & 0xFFFULL)) return -EINVAL;
+    struct drm_dumb_buffer *buffer = buffer_find(file->dmabuf_handle);
+    if (!buffer) return -ENOENT;
+    if (offset >= buffer->size || length > buffer->size - offset) return -EINVAL;
+
+    uint64_t flags = page_flags | PAGE_USER | PAGE_PRESENT | PAGE_NX;
+    uint64_t mapped = 0;
+    for (; mapped < length; mapped += 4096ULL) {
+        uint64_t physical = buffer->pages[(offset + mapped) / 4096ULL];
+        /* Same contract as mapping through the card node: the mapping takes its
+           own page reference so it outlives the buffer's handle. */
+        if (pmm_page_ref(physical) != 0 ||
+            vmm_map_page_in(cr3, virtual_address + mapped, physical, flags) != 0) {
+            while (mapped) {
+                mapped -= 4096ULL;
+                (void)vmm_unmap_page_in(cr3, virtual_address + mapped);
+                pmm_free_page((void *)buffer->pages[(offset + mapped) / 4096ULL]);
+            }
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
 static int64_t ioctl_get_plane_resources(uint64_t user_argument) {
     struct drm_mode_get_plane_res res;
     if (copy_from_user(&res, user_argument, sizeof(res)) != 0) return -EFAULT;
@@ -863,6 +972,7 @@ static int64_t ioctl_create_dumb(uint64_t user_argument) {
     }
 
     slot->handle = next_handle++;
+    slot->refs = 1;               /* the handle itself */
     slot->width = request.width;
     slot->height = request.height;
     slot->pitch = (uint32_t)pitch;
@@ -984,6 +1094,8 @@ int64_t drm_file_ioctl(struct file *file, unsigned long request,
     case DRM_NR_SET_MASTER:
     case DRM_NR_GET_MAGIC:
     case DRM_NR_AUTH_MAGIC: return 0;
+    case DRM_NR_PRIME_HANDLE_TO_FD: return ioctl_prime_handle_to_fd(user_argument);
+    case DRM_NR_PRIME_FD_TO_HANDLE: return ioctl_prime_fd_to_handle(user_argument);
     case DRM_NR_MODE_GETPLANERESOURCES: return ioctl_get_plane_resources(user_argument);
     case DRM_NR_MODE_GETPLANE: return ioctl_get_plane(user_argument);
     case DRM_NR_MODE_GETPROPERTY: return ioctl_get_property(user_argument);

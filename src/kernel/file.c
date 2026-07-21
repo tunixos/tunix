@@ -3,6 +3,7 @@
 #include "include/file.h"
 #include "include/heap.h"
 #include "include/kstring.h"
+#include "include/drm.h"
 #include "include/framebuffer.h"
 #include "include/eventfd.h"
 #include "include/timerfd.h"
@@ -131,6 +132,13 @@ struct file *file_create_memfd(struct memfd_object *object, uint32_t flags) {
 struct file *file_create_signalfd(struct signalfd_context *context, uint32_t flags) {
     struct file *file = file_create_special(FILE_KIND_SIGNALFD, flags);
     if (file) file->signalfd = context;
+    return file;
+}
+
+/* The caller has already taken the buffer's reference; closing gives it back. */
+struct file *file_create_dmabuf(uint32_t handle, uint32_t flags) {
+    struct file *file = file_create_special(FILE_KIND_DMABUF, flags);
+    if (file) file->dmabuf_handle = handle;
     return file;
 }
 
@@ -263,6 +271,8 @@ void file_unref(struct file *file) {
         memfd_destroy(file->memfd);
     if (file->kind == FILE_KIND_SIGNALFD && file->signalfd)
         signalfd_destroy(file->signalfd);
+    if (file->kind == FILE_KIND_DMABUF)
+        drm_buffer_put(file->dmabuf_handle);
     if (file->kind == FILE_KIND_SOCKET && file->socket)
         unix_socket_unref(file->socket);
     if (file->kind == FILE_KIND_INET_SOCKET && file->inet_socket)

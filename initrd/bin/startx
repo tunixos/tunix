@@ -19,6 +19,12 @@ export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}
 export LIBSEAT_BACKEND=builtin
 export SEATD_VTBOUND=0
 
+# There is no GPU. Left to itself mesa probes for one -- drmGetDevice2 has no
+# PCI topology to report, so it warns and then tries kmsro, the driver for a
+# display-only device paired with a separate render node, which is not built.
+# Saying so up front takes the software path directly.
+export GBM_ALWAYS_SOFTWARE=1
+
 # No --no-config: /etc/xdg/weston/weston.ini is what tells weston-terminal --
 # including the one the panel launcher starts, which gets no arguments -- to use
 # JetBrains Mono.

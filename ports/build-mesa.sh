@@ -19,10 +19,10 @@ set -euo pipefail
 #                   OpenGL ES 2 through libEGL/libGLESv2. Desktop GL is still
 #                   compiled into gallium, it just has no shippable entrypoint
 #                   library until there is a window system.
-#   GBM             Built and shipped because it was asked for and because it
-#                   is the piece a future kernel DRM driver would plug into.
-#                   It is honestly non-functional right now: gbm_create_device
-#                   needs a /dev/dri file descriptor and Tunix has no such node.
+#   GBM             What weston's GL renderer allocates its scanout buffers
+#                   through. With no GPU, mesa falls back to kms_swrast: DRM
+#                   dumb buffers on /dev/dri/card0, rasterised by softpipe.
+#                   tools/gbm-test.c walks that path a call at a time.
 #
 # Deliberately off: LLVM, Vulkan, GLX, X11/Wayland, video codecs, and the
 # zlib/zstd/expat-backed features (shader cache and driconf), which would each
@@ -165,6 +165,18 @@ mkdir -p "$ROOT_DIR/usr/bin"
     -lEGL -lGLESv2 -lm \
     -o "$ROOT_DIR/usr/bin/tunix-gl-demo"
 
+# The GBM path, which is what a compositor's GL renderer actually uses. Weston
+# collapses the whole sequence into one function; this walks it a call at a time
+# so a failure names itself.
+"$CROSS_CC" -std=c11 -Wall -Wextra -O2 -fPIE -pie \
+    -I"$GRAPHICS_SYSROOT/usr/include" \
+    "$ROOT/tools/gbm-test.c" \
+    -L"$GRAPHICS_SYSROOT/usr/lib" \
+    -Wl,-rpath-link,"$GRAPHICS_SYSROOT/usr/lib" \
+    -lgbm -lEGL -lGLESv2 \
+    -o "$ROOT_DIR/usr/bin/gbm-test"
+# dladdr is in libc on musl, so nothing extra is linked for the address dump.
+
 interp=$("$READELF" -l "$ROOT_DIR/usr/bin/tunix-gl-demo" | \
     sed -n 's/.*Requesting program interpreter: \([^]]*\).*/\1/p')
 [[ "$interp" == "/lib/ld-musl-x86_64.so.1" ]] || \
@@ -201,7 +213,8 @@ rm -f "$ROOT_DIR/usr/lib/libEGL.so" "$ROOT_DIR/usr/lib/libGLESv2.so" \
       "$ROOT_DIR/usr/lib/libgbm.so"
 
 cross_port_finalize_root "$ROOT_DIR"
-"$CROSS_STRIP" --strip-all "$ROOT_DIR/usr/bin/tunix-gl-demo"
+"$CROSS_STRIP" --strip-all "$ROOT_DIR/usr/bin/tunix-gl-demo" \
+    "$ROOT_DIR/usr/bin/gbm-test"
 
 # Last: everything the image will contain is now staged, so check that the
 # graphics libraries can actually resolve each other on Tunix.

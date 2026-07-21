@@ -34,6 +34,9 @@ struct signalfd_context;
 #define FILE_KIND_NETLINK_SOCKET 14
 #define FILE_KIND_MEMFD       15
 #define FILE_KIND_SIGNALFD    16
+/* A DRM buffer exported by PRIME. The descriptor is the buffer: it can be
+   mapped, and it keeps the buffer alive after its handle is destroyed. */
+#define FILE_KIND_DMABUF      17
 
 struct file {
     int refs;
@@ -53,6 +56,8 @@ struct file {
     struct inotify_context *inotify;
     struct memfd_object *memfd;
     struct signalfd_context *signalfd;
+    /* PRIME export: which DRM buffer handle this descriptor stands for. */
+    uint32_t dmabuf_handle;
     /* LOCK_SH or LOCK_EX while this open file description holds an advisory
        lock on file->node, 0 otherwise. */
     int flock_type;
@@ -68,6 +73,7 @@ struct file *file_create_timerfd(struct timerfd_context *context, uint32_t flags
 struct file *file_create_epoll(struct epoll_context *context, uint32_t flags);
 struct file *file_create_memfd(struct memfd_object *object, uint32_t flags);
 struct file *file_create_signalfd(struct signalfd_context *context, uint32_t flags);
+struct file *file_create_dmabuf(uint32_t handle, uint32_t flags);
 struct file *file_create_inotify(struct inotify_context *context, uint32_t flags);
 struct file *file_create_pty_endpoint(struct pty_pair *pty, int master,
                                       struct vfs_node *node, uint32_t flags);
