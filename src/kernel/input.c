@@ -421,6 +421,13 @@ void input_init(void) {
     tty_reset_keyboard_state();
 }
 
+/* Has any open descriptor taken exclusive ownership of this device? */
+static int device_is_grabbed(unsigned device_id) {
+    for (struct input_reader *reader = input_readers; reader; reader = reader->next)
+        if (reader->device_id == device_id && reader->grabbed) return 1;
+    return 0;
+}
+
 static void input_drain_controller(void) {
     for (;;) {
         uint8_t status = inb(PS2_STATUS_PORT);
@@ -431,7 +438,11 @@ static void input_drain_controller(void) {
         } else {
             raw_push(value);
             int pass_to_tty = keyboard_handle_event_byte(value);
-            if (pass_to_tty) tty_handle_scancode(value);
+            /* A grabbed keyboard belongs to whoever grabbed it. Without this
+               every keystroke typed into a compositor would *also* be typed
+               into the shell sitting on the console underneath it. */
+            if (pass_to_tty && !device_is_grabbed(TUNIX_INPUT_DEVICE_KEYBOARD))
+                tty_handle_scancode(value);
         }
     }
 }
@@ -547,7 +558,11 @@ void input_reader_close(struct input_reader *reader) {
     struct input_reader **link = &input_readers;
     while (*link && *link != reader) link = &(*link)->next;
     if (*link == reader) *link = reader->next;
+    int was_grabbed = reader->grabbed;
     interrupt_restore(flags);
+    /* A compositor that exited or crashed while holding a grab hands the
+       keyboard back here; the console has been deaf since the grab. */
+    if (was_grabbed) tty_reset_keyboard_state();
     kfree(reader);
 }
 
@@ -747,7 +762,13 @@ int64_t input_reader_ioctl(struct input_reader *reader, unsigned device_id,
 
     if (nr == EVIOCGRAB_NR) {
         /* The argument is a flag, not a pointer: non-zero grabs. */
-        if (reader) reader->grabbed = user_argument != 0;
+        if (reader) {
+            reader->grabbed = user_argument != 0;
+            /* The console saw part of a key sequence before ownership changed
+               hands, or will have missed the release of a held modifier while
+               it was grabbed. Either way its idea of what is held is stale. */
+            tty_reset_keyboard_state();
+        }
         return 0;
     }
 

@@ -2386,9 +2386,26 @@ static int map_zero_pages(struct process *process, uint64_t start, uint64_t end,
  *
  * PAGE_SHARED keeps fork from turning them into copy-on-write pages.
  */
+/*
+ * Map a memfd's pages into a process.
+ *
+ * MAP_SHARED maps them writable and marked shared, which is the whole point of
+ * a memfd: two processes on the same physical pages. MAP_PRIVATE maps the same
+ * pages read-only and copy-on-write instead, so a reader sees the contents
+ * without a copy and only pays for one if it writes. Weston's keymap goes out
+ * to clients that way -- it reads a sealed memfd with MAP_PRIVATE and never
+ * writes to it.
+ */
 static int map_shared_object(struct process *process, uint64_t start,
                              uint64_t end, struct memfd_object *object,
-                             uint64_t file_offset, uint64_t flags) {
+                             uint64_t file_offset, uint64_t flags, int private) {
+    uint64_t extra = PAGE_SHARED;
+    if (private) {
+        /* Read-only either way; PAGE_COW only when the mapping is writable, so
+           that a write to a PROT_READ mapping still faults as it should. */
+        extra = (flags & PAGE_WRITE) ? PAGE_COW : 0;
+        flags &= ~PAGE_WRITE;
+    }
     for (uint64_t address = start; address < end; address += 4096) {
         uint64_t index = (file_offset + (address - start)) / 4096ULL;
         uint64_t physical = memfd_page(object, index);
@@ -2398,7 +2415,7 @@ static int map_shared_object(struct process *process, uint64_t start,
         if (vmm_translate(process->cr3, address, NULL, NULL) == 0) continue;
         if (pmm_page_ref(physical) != 0) return -1;
         if (vmm_map_page_in(process->cr3, address, physical,
-                            flags | PAGE_USER | PAGE_PRESENT | PAGE_SHARED) != 0) {
+                            flags | extra | PAGE_USER | PAGE_PRESENT) != 0) {
             pmm_free_page((void *)physical);
             return -1;
         }
@@ -2511,9 +2528,9 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
            end up on the same physical pages, so it bypasses the copy-the-file
            path below entirely. */
         if (file->kind == FILE_KIND_MEMFD) {
-            if (!(flags & MAP_SHARED)) return -EINVAL;
             if (map_shared_object(process, base, base + length, file->memfd,
-                                  offset, page_flags) != 0) {
+                                  offset, page_flags,
+                                  (flags & MAP_PRIVATE) != 0) != 0) {
                 unmap_pages(process, base, base + length);
                 return -ENOMEM;
             }
@@ -2660,7 +2677,7 @@ static int64_t sys_mremap(uint64_t address, uint64_t old_length,
             ok = map_shared_object(process, tail, tail + extra,
                                    mapping->file->memfd,
                                    mapping->offset + old_length,
-                                   PAGE_WRITE) == 0;
+                                   PAGE_WRITE, 0) == 0;
         } else if (!mapping) {
             ok = map_zero_pages(process, tail, tail + extra, PAGE_WRITE) == 0;
         } else {
@@ -2691,7 +2708,7 @@ static int64_t sys_mremap(uint64_t address, uint64_t old_length,
     struct file *file = mapping->file;
     uint64_t offset = mapping->offset;
     if (map_shared_object(process, destination, destination + new_length,
-                          file->memfd, offset, PAGE_WRITE) != 0) {
+                          file->memfd, offset, PAGE_WRITE, 0) != 0) {
         unmap_pages(process, destination, destination + new_length);
         return -ENOMEM;
     }
