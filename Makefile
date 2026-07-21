@@ -282,12 +282,17 @@ $(LIBINPUT_STAMP): $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) ports/build-libinput.
 	@test -L $(LIBINPUT_ROOT)/usr/lib/libinput.so.10 || { echo "libinput was not produced" >&2; exit 1; }
 	@touch $@
 
-# zlib, libpng, freetype and cairo, cross-built for the graphics sysroot.
+# zlib, libpng, freetype, expat, fontconfig and cairo, plus JetBrains Mono.
+# One rule because the chain is strictly ordered: fontconfig cannot be built
+# before freetype, and cairo cannot be built before fontconfig.
 $(CAIRO_STAMP): $(PIXMAN_STAMP) ports/build-cairo.sh ports/lib/cross-port.sh \
-	ports/src/cairo/meson.build ports/src/freetype/meson.build
+	ports/src/cairo/meson.build ports/src/freetype/meson.build \
+	ports/src/fontconfig/meson.build ports/src/libexpat/expat/CMakeLists.txt
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-cairo.sh
 	@test -L $(CAIRO_ROOT)/usr/lib/libcairo.so.2 || { echo "cairo was not produced" >&2; exit 1; }
+	@test -f $(CAIRO_ROOT)/usr/lib/libfontconfig.so.1 || { echo "fontconfig was not produced" >&2; exit 1; }
+	@test -f $(CAIRO_ROOT)/usr/share/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf || { echo "JetBrains Mono was not installed" >&2; exit 1; }
 	@touch $@
 
 # EDID parsing. Nothing on Tunix supplies an EDID, but weston's drm backend
@@ -767,6 +772,9 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -x $(ROOTFS)/usr/bin/weston || { echo "weston was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/libweston-14/headless-backend.so || { echo "the weston headless backend was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/libweston-14/drm-backend.so || { echo "the weston drm backend was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/etc/fonts/fonts.conf || { echo "fontconfig's configuration was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/share/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf || { echo "JetBrains Mono was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/etc/xdg/weston/weston.ini || { echo "weston.ini was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/libseat.so.1 || { echo "libseat was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libdisplay-info.so.2 || { echo "libdisplay-info was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libdrm.so.2 || { echo "libdrm was not installed into the rootfs" >&2; exit 1; }

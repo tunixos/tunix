@@ -19,4 +19,7 @@ export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}
 export LIBSEAT_BACKEND=builtin
 export SEATD_VTBOUND=0
 
-exec weston --backend=drm --no-config "$@"
+# No --no-config: /etc/xdg/weston/weston.ini is what tells weston-terminal --
+# including the one the panel launcher starts, which gets no arguments -- to use
+# JetBrains Mono.
+exec weston --backend=drm "$@"

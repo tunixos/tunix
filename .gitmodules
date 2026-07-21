@@ -130,3 +130,12 @@
 [submodule "ports/src/seatd"]
 	path = ports/src/seatd
 	url = https://git.sr.ht/~kennylevinsen/seatd
+[submodule "ports/src/libexpat"]
+	path = ports/src/libexpat
+	url = https://github.com/libexpat/libexpat.git
+[submodule "ports/src/fontconfig"]
+	path = ports/src/fontconfig
+	url = https://gitlab.freedesktop.org/fontconfig/fontconfig.git
+[submodule "ports/src/jetbrains-mono"]
+	path = ports/src/jetbrains-mono
+	url = https://github.com/JetBrains/JetBrainsMono.git

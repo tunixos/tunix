@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the cairo stack for Tunix: zlib, libpng, freetype and cairo.
+# Build the cairo stack for Tunix: zlib, libpng, freetype, expat, fontconfig
+# and cairo, plus the font they all exist to draw with.
 #
 # Weston needs cairo. That is not obvious from its options -- the demo clients
 # and the GL renderer are the visible consumers and both are off here -- but
 # libweston's headless backend itself includes gl-borders.h, which includes
 # cairo-util.h, which includes cairo.h. There is no build without it.
 #
-# The four are built together because nothing else wants them individually and
-# each is only a dependency of the next: zlib and libpng feed freetype and
-# cairo's PNG surface, freetype gives cairo a font backend. This mirrors
-# ports/build-image-codecs-shared.sh, which does the same for the musl-gcc
-# sysroot; these are the cross-toolchain builds, for the graphics sysroot.
+# They are built together, in this order, because each is only a dependency of
+# the next and nothing else wants them individually:
 #
-# Deliberately off: fontconfig (font *selection*, which a compositor drawing its
-# own window frames does not need), the X11 and quartz surfaces, glib, and the
-# test suites.
+#   zlib, libpng  feed freetype and cairo's PNG surface
+#   freetype      rasterises glyphs
+#   expat         parses fontconfig's XML configuration, and nothing else
+#   fontconfig    turns a family name into a face
+#   cairo         draws
+#
+# fontconfig is the link that is easy to skip and expensive to skip. Without it
+# cairo's FreeType backend reports every toy font face unsupported and falls
+# back to `twin`, the vector font compiled into cairo itself -- so every client
+# renders in the same hard-wired typeface whatever family it asks for, and
+# weston-terminal's --font option does nothing at all. It cannot be built
+# before freetype and cairo cannot be built before it, which is why the whole
+# chain lives in one script.
+#
+# The font is JetBrains Mono under the SIL Open Font License: four faces
+# (regular, bold, italic, bold italic) of the family's eighteen -- the rest are
+# weights nothing here asks for.
+#
+# Deliberately off: the X11 and quartz surfaces, glib, and the test suites.
 #
 # Output layout:
 #   $OUT/graphics-sysroot/usr/{include,lib}   headers + .pc for weston
-#   $OUT/cairo-root/usr/lib                   the four shared libraries
+#   $OUT/cairo-root/usr/lib                   the shared libraries
+#   $OUT/cairo-root/usr/share/fonts           the TTFs
+#   $OUT/cairo-root/etc/fonts                 fontconfig's configuration
 
 PORT_NAME=cairo
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,6 +48,9 @@ source "$ROOT/ports/lib/cross-port.sh"
 ZLIB_SOURCE="$ROOT/ports/src/zlib"
 LIBPNG_SOURCE="$ROOT/ports/src/libpng"
 FREETYPE_SOURCE="$ROOT/ports/src/freetype"
+EXPAT_SOURCE="$ROOT/ports/src/libexpat/expat"
+FONTCONFIG_SOURCE="$ROOT/ports/src/fontconfig"
+FONT_SOURCE="$ROOT/ports/src/jetbrains-mono"
 CAIRO_SOURCE="$ROOT/ports/src/cairo"
 
 BUILD="$OUT/cairo-build"
@@ -42,13 +61,19 @@ CMAKE_FILE="$OUT/tunix-cmake-cross.cmake"
 EXPECTED_CAIRO_VERSION=1.18.4
 
 for source in "$ZLIB_SOURCE/zlib.h" "$LIBPNG_SOURCE/png.h" \
-              "$FREETYPE_SOURCE/meson.build" "$CAIRO_SOURCE/meson.build"; do
+              "$FREETYPE_SOURCE/meson.build" "$EXPAT_SOURCE/CMakeLists.txt" \
+              "$FONTCONFIG_SOURCE/meson.build" "$CAIRO_SOURCE/meson.build"; do
     [[ -f "$source" ]] || cross_port_fail \
         "missing $source; run git submodule update --init --recursive"
 done
+[[ -d "$FONT_SOURCE/fonts/ttf" ]] || cross_port_fail \
+    "missing JetBrains Mono at $FONT_SOURCE; run git submodule update --init --recursive"
 
 cross_port_require_toolchain
-cross_port_require_tools meson ninja cmake make pkg-config python3 "$READELF"
+cross_port_require_tools meson ninja cmake make pkg-config gperf python3 "$READELF"
+
+EXPECTED_EXPAT_VERSION=2.8.2
+EXPECTED_FONTCONFIG_VERSION=2.18.2
 
 # cairo computes its version at configure time rather than writing a literal
 # into meson.build, so ask the same script meson does.
@@ -125,6 +150,71 @@ install_both "$BUILD/freetype" meson
 [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/freetype2.pc" ]] || \
     cross_port_fail "freetype2.pc was not installed"
 
+# --- expat ---------------------------------------------------------------
+# Only fontconfig wants it, and only to read its own configuration.
+cmake -S "$EXPAT_SOURCE" -B "$BUILD/expat" -G "Unix Makefiles" \
+    -DCMAKE_TOOLCHAIN_FILE="$CMAKE_FILE" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DEXPAT_BUILD_TOOLS=OFF -DEXPAT_BUILD_EXAMPLES=OFF \
+    -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_DOCS=OFF \
+    -DEXPAT_SHARED_LIBS=ON
+cmake --build "$BUILD/expat" --parallel "$JOBS"
+install_both "$BUILD/expat" cmake
+
+# Read the version back from what was installed: expat.h writes it as
+# `#  define`, and the .pc file is what fontconfig's own check consults.
+expat_version=$(sed -n 's/^Version:[[:space:]]*//p' \
+    "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/expat.pc" 2>/dev/null || true)
+[[ "$expat_version" == "$EXPECTED_EXPAT_VERSION" ]] || \
+    cross_port_fail "expected expat $EXPECTED_EXPAT_VERSION, found ${expat_version:-unknown}"
+
+# --- the font ------------------------------------------------------------
+# Installed before fontconfig is configured so the directory it is pointed at is
+# not empty, and so the licence travels with the files.
+FONT_DIR="$ROOT_DIR/usr/share/fonts/jetbrains-mono"
+mkdir -p "$FONT_DIR"
+for face in Regular Bold Italic BoldItalic; do
+    face_file="$FONT_SOURCE/fonts/ttf/JetBrainsMono-$face.ttf"
+    [[ -f "$face_file" ]] || cross_port_fail "JetBrains Mono $face is missing"
+    install -m 0644 "$face_file" "$FONT_DIR/"
+done
+install -m 0644 "$FONT_SOURCE/OFL.txt" "$FONT_DIR/LICENSE.txt"
+
+# --- fontconfig ----------------------------------------------------------
+# cache-build is off because it would run the freshly cross-built fc-cache on
+# the host. With no cache fontconfig scans the directory on first use, which for
+# four files is not worth solving.
+fontconfig_version=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([0-9.]*\)'.*/\1/p" \
+    "$FONTCONFIG_SOURCE/meson.build" | head -n1)
+[[ "$fontconfig_version" == "$EXPECTED_FONTCONFIG_VERSION" ]] || \
+    cross_port_fail "expected fontconfig $EXPECTED_FONTCONFIG_VERSION, found ${fontconfig_version:-unknown}"
+
+meson setup "$BUILD/fontconfig" "$FONTCONFIG_SOURCE" \
+    --cross-file "$CROSS_FILE" \
+    --prefix=/usr --libdir=lib --sysconfdir=/etc --localstatedir=/var \
+    --buildtype=release --default-library=shared \
+    -Dxml-backend=expat \
+    -Dcache-build=disabled \
+    -Ddoc=disabled \
+    -Dnls=disabled \
+    -Diconv=disabled \
+    -Dfontations=disabled \
+    -Dtests=disabled \
+    -Dtests-external-fonts=disabled \
+    -Dtools=enabled \
+    -Ddefault-fonts-dirs=/usr/share/fonts \
+    -Dadditional-fonts-dirs=/usr/local/share/fonts
+meson compile -C "$BUILD/fontconfig" -j "$JOBS"
+install_both "$BUILD/fontconfig" meson
+[[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/fontconfig.pc" ]] || \
+    cross_port_fail "fontconfig.pc was not installed"
+[[ -f "$ROOT_DIR/etc/fonts/fonts.conf" ]] || \
+    cross_port_fail "fontconfig's base configuration was not installed"
+# fontconfig writes its cache here at runtime; the directory has to exist.
+mkdir -p "$ROOT_DIR/var/cache/fontconfig"
+
 # --- cairo ---------------------------------------------------------------
 meson setup "$BUILD/cairo" "$CAIRO_SOURCE" \
     --cross-file "$CROSS_FILE" \
@@ -132,7 +222,7 @@ meson setup "$BUILD/cairo" "$CAIRO_SOURCE" \
     -Dfreetype=enabled \
     -Dpng=enabled \
     -Dzlib=enabled \
-    -Dfontconfig=disabled \
+    -Dfontconfig=enabled \
     -Dxlib=disabled \
     -Dxcb=disabled \
     -Dquartz=disabled \
@@ -151,7 +241,8 @@ install_both "$BUILD/cairo" meson
     cross_port_fail "cairo.pc was not installed into the graphics sysroot"
 
 for spec in "libz.so.1:libz.so.1" "libpng16.so.16:libpng16.so.16" \
-            "libfreetype.so.6:libfreetype.so.6" "libcairo.so.2:libcairo.so.2"; do
+            "libfreetype.so.6:libfreetype.so.6" "libexpat.so.1:libexpat.so.1" \
+            "libfontconfig.so.1:libfontconfig.so.1" "libcairo.so.2:libcairo.so.2"; do
     name=${spec%%:*}
     soname=${spec##*:}
     library=$(find "$ROOT_DIR/usr/lib" -maxdepth 1 -type f -name "$name*" -print -quit)
@@ -159,8 +250,14 @@ for spec in "libz.so.1:libz.so.1" "libpng16.so.16:libpng16.so.16" \
     cross_port_check_library "$library" "$soname"
 done
 
-rm -rf "$ROOT_DIR/usr/include" "$ROOT_DIR/usr/lib/pkgconfig" "$ROOT_DIR/usr/share" \
-       "$ROOT_DIR/usr/bin" "$ROOT_DIR/usr/lib/cmake"
+# usr/share is *not* wholesale removed here, unlike the other ports: it now
+# holds the fonts themselves and fontconfig's conf.avail, which the symlinks
+# under /etc/fonts/conf.d point at. usr/bin keeps fc-match and fc-list, which
+# are how a font problem gets diagnosed on the machine itself.
+rm -rf "$ROOT_DIR/usr/include" "$ROOT_DIR/usr/lib/pkgconfig" \
+       "$ROOT_DIR/usr/lib/cmake" "$ROOT_DIR/usr/share/man" \
+       "$ROOT_DIR/usr/share/doc" "$ROOT_DIR/usr/share/gettext" \
+       "$ROOT_DIR/usr/share/xml"
 find "$ROOT_DIR/usr/lib" -maxdepth 1 -name '*.a' -delete
 find "$ROOT_DIR/usr/lib" -maxdepth 1 -type l -name '*.so' -delete
 
@@ -168,5 +265,5 @@ cross_port_finalize_root "$ROOT_DIR"
 cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/pixman-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
-printf 'cairo stack (zlib, libpng, freetype %s) staged at %s (%s)\n' \
+printf 'cairo %s stack (zlib, libpng, freetype, expat, fontconfig, JetBrains Mono) staged at %s (%s)\n' \
     "$cairo_version" "$ROOT_DIR" "$size"
