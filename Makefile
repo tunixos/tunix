@@ -103,6 +103,17 @@ LIBDRM_ROOT := $(PORT_OUT)/libdrm-root
 LIBDRM_STAMP := $(PORT_OUT)/.libdrm-ready
 MESA_ROOT := $(PORT_OUT)/mesa-root
 MESA_STAMP := $(PORT_OUT)/.mesa-ready
+# The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
+# shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
+# shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
+GLIB_ROOT := $(PORT_OUT)/glib-root
+GLIB_STAMP := $(PORT_OUT)/.glib-ready
+PANGO_ROOT := $(PORT_OUT)/pango-root
+PANGO_STAMP := $(PORT_OUT)/.pango-ready
+GDK_PIXBUF_ROOT := $(PORT_OUT)/gdk-pixbuf-root
+GDK_PIXBUF_STAMP := $(PORT_OUT)/.gdk-pixbuf-ready
+GTK3_ROOT := $(PORT_OUT)/gtk3-root
+GTK3_STAMP := $(PORT_OUT)/.gtk3-ready
 BOOT_CONFIG_STAMP := $(BUILD)/.boot-config-ready
 MUSL_SHARED_STAMP := $(PORT_OUT)/.musl-shared-ready
 WALLPAPER_CONVERTER := $(PORT_OUT)/tunix-wallpaper
@@ -354,6 +365,50 @@ $(MESA_STAMP): $(LIBDRM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \
 	@test -L $(MESA_ROOT)/usr/lib/libGLESv2.so.2 || { echo "mesa libGLESv2 was not produced" >&2; exit 1; }
 	@test -L $(MESA_ROOT)/usr/lib/libgbm.so.1 || { echo "mesa libgbm was not produced" >&2; exit 1; }
 	@test -x $(MESA_ROOT)/usr/bin/tunix-gl-demo || { echo "the GL demo was not produced" >&2; exit 1; }
+	@touch $@
+
+# GLib sits on zlib (from the cairo chain) and libffi; pcre2 is built inside
+# the same script because GRegex is its only consumer.
+$(GLIB_STAMP): $(CAIRO_STAMP) $(LIBFFI_STAMP) ports/build-glib.sh \
+	ports/lib/cross-port.sh ports/src/glib/meson.build ports/src/pcre2/CMakeLists.txt
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-glib.sh
+	@test -e $(GLIB_ROOT)/usr/lib/libglib-2.0.so.0 || { echo "glib was not produced" >&2; exit 1; }
+	@test -e $(GLIB_ROOT)/usr/lib/libgio-2.0.so.0 || { echo "gio was not produced" >&2; exit 1; }
+	@touch $@
+
+# Text shaping for GTK: fribidi, harfbuzz and pango in one strictly ordered
+# chain, mirroring the cairo script's structure.
+$(PANGO_STAMP): $(GLIB_STAMP) $(CAIRO_STAMP) ports/build-pango.sh \
+	ports/lib/cross-port.sh ports/src/pango/meson.build \
+	ports/src/patches/pango/0001-pangofc-fontmap-include-fcfreetype.patch \
+	ports/src/harfbuzz/meson.build ports/src/fribidi/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-pango.sh
+	@test -e $(PANGO_ROOT)/usr/lib/libpangocairo-1.0.so.0 || { echo "pango was not produced" >&2; exit 1; }
+	@test -e $(PANGO_ROOT)/usr/lib/libharfbuzz.so.0 || { echo "harfbuzz was not produced" >&2; exit 1; }
+	@touch $@
+
+# gdk-pixbuf with builtin loaders, plus the shared libjpeg it decodes with.
+$(GDK_PIXBUF_STAMP): $(GLIB_STAMP) ports/build-gdk-pixbuf.sh \
+	ports/lib/cross-port.sh ports/src/gdk-pixbuf/meson.build \
+	ports/src/libjpeg-turbo/CMakeLists.txt
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-gdk-pixbuf.sh
+	@test -e $(GDK_PIXBUF_ROOT)/usr/lib/libgdk_pixbuf-2.0.so.0 || { echo "gdk-pixbuf was not produced" >&2; exit 1; }
+	@touch $@
+
+# GTK3 itself, wayland backend only. MESA_STAMP is here for libepoxy, which
+# needs egl.pc even though stock GTK3 apps never touch GL.
+$(GTK3_STAMP): $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(CAIRO_STAMP) \
+	$(WAYLAND_STAMP) $(WAYLAND_PROTOCOLS_STAMP) $(LIBXKBCOMMON_STAMP) $(MESA_STAMP) \
+	ports/build-gtk3.sh ports/lib/cross-port.sh ports/src/gtk/meson.build \
+	ports/src/atk/meson.build ports/src/libepoxy/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-gtk3.sh
+	@test -e $(GTK3_ROOT)/usr/lib/libgtk-3.so.0 || { echo "gtk3 was not produced" >&2; exit 1; }
+	@test -x $(GTK3_ROOT)/usr/bin/gtk3-widget-factory || { echo "gtk3-widget-factory was not produced" >&2; exit 1; }
+	@test -f $(GTK3_ROOT)/usr/share/glib-2.0/schemas/gschemas.compiled || { echo "gsettings schemas were not compiled" >&2; exit 1; }
 	@touch $@
 
 # Renders one offscreen frame on the build host, using the target loader. Proves
@@ -680,7 +735,7 @@ $(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -726,6 +781,10 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	cp -R $(WESTON_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBDRM_ROOT)/. $(ROOTFS)/
 	cp -R $(MESA_ROOT)/. $(ROOTFS)/
+	cp -R $(GLIB_ROOT)/. $(ROOTFS)/
+	cp -R $(PANGO_ROOT)/. $(ROOTFS)/
+	cp -R $(GDK_PIXBUF_ROOT)/. $(ROOTFS)/
+	cp -R $(GTK3_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -800,6 +859,12 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -L $(ROOTFS)/usr/lib/libstdc++.so.6 || { echo "the C++ runtime was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/libgcc_s.so.1 || { echo "the gcc unwinder was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/tunix-gl-demo || { echo "tunix-gl-demo was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libglib-2.0.so.0 || { echo "glib was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libpangocairo-1.0.so.0 || { echo "pango was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libgdk_pixbuf-2.0.so.0 || { echo "gdk-pixbuf was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libgtk-3.so.0 || { echo "gtk3 was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/gtk3-widget-factory || { echo "gtk3-widget-factory was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/share/glib-2.0/schemas/gschemas.compiled || { echo "gsettings schemas were not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch

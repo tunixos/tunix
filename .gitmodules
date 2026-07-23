@@ -139,3 +139,30 @@
 [submodule "ports/src/jetbrains-mono"]
 	path = ports/src/jetbrains-mono
 	url = https://github.com/JetBrains/JetBrainsMono.git
+[submodule "ports/src/pcre2"]
+	path = ports/src/pcre2
+	url = https://github.com/PCRE2Project/pcre2.git
+[submodule "ports/src/glib"]
+	path = ports/src/glib
+	url = https://gitlab.gnome.org/GNOME/glib.git
+[submodule "ports/src/fribidi"]
+	path = ports/src/fribidi
+	url = https://github.com/fribidi/fribidi.git
+[submodule "ports/src/harfbuzz"]
+	path = ports/src/harfbuzz
+	url = https://github.com/harfbuzz/harfbuzz.git
+[submodule "ports/src/pango"]
+	path = ports/src/pango
+	url = https://gitlab.gnome.org/GNOME/pango.git
+[submodule "ports/src/gdk-pixbuf"]
+	path = ports/src/gdk-pixbuf
+	url = https://gitlab.gnome.org/GNOME/gdk-pixbuf.git
+[submodule "ports/src/atk"]
+	path = ports/src/atk
+	url = https://gitlab.gnome.org/GNOME/atk.git
+[submodule "ports/src/libepoxy"]
+	path = ports/src/libepoxy
+	url = https://github.com/anholt/libepoxy.git
+[submodule "ports/src/gtk"]
+	path = ports/src/gtk
+	url = https://gitlab.gnome.org/GNOME/gtk.git
