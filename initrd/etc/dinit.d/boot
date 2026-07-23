@@ -1,0 +1,7 @@
+# Root of the service graph. dinit (PID 1) starts "boot" and everything else
+# hangs off it. waits-for rather than depends-on: a failed unit should leave
+# the rest of the system up rather than take boot down with it.
+type = internal
+waits-for = rcS
+waits-for = keymap
+waits-for = startx

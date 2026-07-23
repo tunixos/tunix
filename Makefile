@@ -114,6 +114,10 @@ GDK_PIXBUF_ROOT := $(PORT_OUT)/gdk-pixbuf-root
 GDK_PIXBUF_STAMP := $(PORT_OUT)/.gdk-pixbuf-ready
 GTK3_ROOT := $(PORT_OUT)/gtk3-root
 GTK3_STAMP := $(PORT_OUT)/.gtk3-ready
+# The init system: dinit is PID 1 (via the /sbin/init symlink), linked
+# statically so init can never break on a missing loader or libstdc++.
+DINIT_ROOT := $(PORT_OUT)/dinit-root
+DINIT_STAMP := $(PORT_OUT)/.dinit-ready
 BOOT_CONFIG_STAMP := $(BUILD)/.boot-config-ready
 MUSL_SHARED_STAMP := $(PORT_OUT)/.musl-shared-ready
 WALLPAPER_CONVERTER := $(PORT_OUT)/tunix-wallpaper
@@ -155,7 +159,6 @@ KERNEL_OBJS := \
 	$(BUILD)/pci.o $(BUILD)/rtl8139.o $(BUILD)/net.o $(BUILD)/inet_socket.o $(BUILD)/netlink.o
 
 USER_RUNTIME := $(BUILD)/user/crt0.o $(BUILD)/user/libc.o $(BUILD)/user/sigreturn.o
-INIT := $(BUILD)/user/init
 PROCUTIL := $(BUILD)/user/procutil.o
 LOADKEYS := $(BUILD)/user/loadkeys
 SLEEP := $(BUILD)/user/sleep
@@ -320,6 +323,16 @@ $(LIBDISPLAY_INFO_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdisplay-info.sh \
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libdisplay-info.sh
 	@test -L $(LIBDISPLAY_INFO_ROOT)/usr/lib/libdisplay-info.so.2 || { echo "libdisplay-info was not produced" >&2; exit 1; }
+	@touch $@
+
+# The init system. dinit builds with only the cross toolchain (static, no
+# libraries), so it does not depend on any other port.
+$(DINIT_STAMP): $(MUSL_CROSS_STAMP) ports/build-dinit.sh ports/lib/cross-port.sh \
+	ports/src/patches/dinit/0001-control-socket-chmod-enoent.patch \
+	ports/src/dinit/configure
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-dinit.sh
+	@test -x $(DINIT_ROOT)/usr/bin/dinit || { echo "dinit was not produced" >&2; exit 1; }
 	@touch $@
 
 # Session management. weston 14 has no launcher other than libseat, so the drm
@@ -685,9 +698,6 @@ $(BUILD)/user/libc.o: src/libc/libc.c src/libc/include/tunix_libc.h src/include/
 $(BUILD)/user/sigreturn.o: src/libc/sigreturn.S | $(BUILD)/user
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 
-$(BUILD)/user/init.o: src/userspace/init.c src/libc/include/tunix_libc.h | $(BUILD)/user
-	$(CC) $(USER_CFLAGS) -c $< -o $@
-
 $(BUILD)/user/procutil.o: src/userspace/procutil.c src/userspace/procutil.h src/libc/include/tunix_libc.h | $(BUILD)/user
 	$(CC) $(USER_CFLAGS) -Isrc/userspace -c $< -o $@
 
@@ -731,11 +741,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INIT): $(BUILD)/user/init.o $(USER_RUNTIME) src/userspace/linker.ld
-	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/init.o
-	$(STRIP) --strip-all $@
-
-$(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -745,7 +751,8 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 		$(ROOTFS)/home/root/.config $(ROOTFS)/home/root/.cache
 	ln -sfn ../run $(ROOTFS)/var/run
 	cp -R initrd/. $(ROOTFS)/
-	cp $(INIT) $(ROOTFS)/sbin/init
+	cp -R $(DINIT_ROOT)/. $(ROOTFS)/
+	ln -sfn ../usr/bin/dinit $(ROOTFS)/sbin/init
 	cp $(BASH) $(ROOTFS)/bin/bash
 	cp $(NANO) $(ROOTFS)/bin/nano
 	cp $(TTY_CLOCK) $(ROOTFS)/bin/tty-clock
@@ -874,7 +881,11 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	for tool in as ld ar nm ranlib objcopy objdump readelf size strings strip addr2line; do \
 		ln -sfn ../usr/bin/$$tool $(ROOTFS)/bin/$$tool; \
 	done
-	chmod 0755 $(ROOTFS)/sbin/init $(ROOTFS)/bin/bash $(ROOTFS)/bin/nano \
+	chmod 0755 $(ROOTFS)/usr/bin/dinit $(ROOTFS)/usr/bin/dinitctl \
+		$(ROOTFS)/usr/bin/dinit-check $(ROOTFS)/usr/bin/dinit-monitor \
+		$(ROOTFS)/sbin/shutdown \
+		$(ROOTFS)/etc/rc.d/rcS $(ROOTFS)/etc/rc.d/rc.keymap \
+		$(ROOTFS)/bin/bash $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/tty-clock $(ROOTFS)/bin/tty-tetris $(ROOTFS)/bin/htop \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/startx $(ROOTFS)/bin/fb-shot $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
 		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test \
@@ -900,6 +911,7 @@ $(INITRAMFS): $(INIT) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAM
 	@test -x $(ROOTFS)/bin/input-test || { echo "input event test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/fb-test || { echo "framebuffer test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/glib-compat-test || { echo "GLib compatibility test was not installed" >&2; exit 1; }
+	@test -L $(ROOTFS)/sbin/init || { echo "/sbin/init is not the dinit symlink" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .
 

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Early boot setup, run once by the rcS service before anything that needs a
+# writable filesystem. Everything here is idempotent: the image ships most of
+# these directories, but an initramfs boot starts from whatever the tar holds.
+
+umask 0
+mkdir -p /tmp /run/dbus /run/user/0 /var/tmp /var/log \
+    /home/root/.config /home/root/.cache
+chmod 1777 /tmp /var/tmp
+chmod 0700 /run/user/0 /home/root /home/root/.config /home/root/.cache
+umask 022
+
+# The CI smoke test watches the serial log for this marker; service stdout goes
+# to dinit's log, so aim it at the console explicitly.
+echo TUNIX_CI_BOOT_OK > /dev/console
