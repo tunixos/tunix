@@ -102,6 +102,14 @@ c_link_args = ['-L$GRAPHICS_SYSROOT/usr/lib', '-Wl,-rpath-link,$GRAPHICS_SYSROOT
 cpp_link_args = ['-L$GRAPHICS_SYSROOT/usr/lib', '-Wl,-rpath-link,$GRAPHICS_SYSROOT/usr/lib']
 
 [properties]
+# Without this meson notices build and host are both linux/x86_64 and runs
+# run-checks *directly*, skipping the exe_wrapper -- and a musl binary run on
+# the glibc host dies with ENOENT for its missing /lib/ld-musl loader, which
+# meson's log then reports as the check binary itself not existing. glib is
+# where this finally bit: its gnulib probes are run checks, and every one of
+# them "DID NOT COMPILE" until the wrapper was actually used.
+needs_exe_wrapper = true
+
 # meson uses both of these for pkg-config on the *host* machine only: the search
 # path, and PKG_CONFIG_SYSROOT_DIR to rewrite the -I/-L prefixes in .pc files
 # that were installed with prefix=/usr. Setting them here rather than exporting
