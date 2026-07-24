@@ -93,6 +93,12 @@ build_autotools xcbproto no
 # --- libxcb: the X C binding + per-extension libraries ---
 build_autotools libxcb yes --without-doxygen --disable-devel-docs
 
+# libtool .la files staged in the sysroot record libdir=/usr/lib and absolute
+# dependency_libs; a later cross libtool link (libX11, the Xext libs) follows
+# them to the *host* /usr/lib and fails. Drop them so downstream links resolve
+# through the .pc files instead (the webkit trap-4 fix, generalised to the X libs).
+find "$GRAPHICS_SYSROOT/usr/lib" -name '*.la' -delete
+
 # xtrans is arch-independent so its .pc lands in share/pkgconfig; the libraries'
 # .pc files are in lib/pkgconfig.
 [[ -f "$GRAPHICS_SYSROOT/usr/share/pkgconfig/xtrans.pc" ]] || cross_port_fail \

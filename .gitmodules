@@ -203,3 +203,6 @@
 [submodule "ports/src/libxcb"]
 	path = ports/src/libxcb
 	url = https://gitlab.freedesktop.org/xorg/lib/libxcb.git
+[submodule "ports/src/libX11"]
+	path = ports/src/libX11
+	url = https://gitlab.freedesktop.org/xorg/lib/libx11.git
