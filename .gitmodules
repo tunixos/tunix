@@ -169,3 +169,6 @@
 [submodule "ports/src/dinit"]
 	path = ports/src/dinit
 	url = https://github.com/davmac314/dinit.git
+[submodule "ports/src/libxfce4util"]
+	path = ports/src/libxfce4util
+	url = https://gitlab.xfce.org/xfce/libxfce4util.git

@@ -114,6 +114,10 @@ GDK_PIXBUF_ROOT := $(PORT_OUT)/gdk-pixbuf-root
 GDK_PIXBUF_STAMP := $(PORT_OUT)/.gdk-pixbuf-ready
 GTK3_ROOT := $(PORT_OUT)/gtk3-root
 GTK3_STAMP := $(PORT_OUT)/.gtk3-ready
+# The Xfce stack, layered on the GTK3 sysroot, leading up to the Thunar file
+# manager: libxfce4util (base utilities) is the first rung.
+LIBXFCE4UTIL_ROOT := $(PORT_OUT)/libxfce4util-root
+LIBXFCE4UTIL_STAMP := $(PORT_OUT)/.libxfce4util-ready
 # The init system: dinit is PID 1 (via the /sbin/init symlink), linked
 # statically so init can never break on a missing loader or libstdc++.
 DINIT_ROOT := $(PORT_OUT)/dinit-root
@@ -422,6 +426,16 @@ $(GTK3_STAMP): $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(CAIRO_STAMP) \
 	@test -e $(GTK3_ROOT)/usr/lib/libgtk-3.so.0 || { echo "gtk3 was not produced" >&2; exit 1; }
 	@test -x $(GTK3_ROOT)/usr/bin/gtk3-widget-factory || { echo "gtk3-widget-factory was not produced" >&2; exit 1; }
 	@test -f $(GTK3_ROOT)/usr/share/glib-2.0/schemas/gschemas.compiled || { echo "gsettings schemas were not compiled" >&2; exit 1; }
+	@touch $@
+
+# libxfce4util: the base Xfce utility library. A pure GLib consumer, so it needs
+# only the glib stamp; it stages libxfce4util.so.7 for the image and its headers
+# and .pc into the graphics sysroot for the Xfce ports above it.
+$(LIBXFCE4UTIL_STAMP): $(GLIB_STAMP) ports/build-libxfce4util.sh ports/lib/cross-port.sh \
+	ports/src/libxfce4util/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxfce4util.sh
+	@test -e $(LIBXFCE4UTIL_ROOT)/usr/lib/libxfce4util.so.7 || { echo "libxfce4util was not produced" >&2; exit 1; }
 	@touch $@
 
 # Renders one offscreen frame on the build host, using the target loader. Proves
@@ -741,7 +755,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -792,6 +806,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(PANGO_ROOT)/. $(ROOTFS)/
 	cp -R $(GDK_PIXBUF_ROOT)/. $(ROOTFS)/
 	cp -R $(GTK3_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBXFCE4UTIL_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -872,6 +887,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -e $(ROOTFS)/usr/lib/libgtk-3.so.0 || { echo "gtk3 was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/gtk3-widget-factory || { echo "gtk3-widget-factory was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/share/glib-2.0/schemas/gschemas.compiled || { echo "gsettings schemas were not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libxfce4util.so.7 || { echo "libxfce4util was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
