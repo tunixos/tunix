@@ -127,6 +127,10 @@ XEXT_STAMP := $(PORT_OUT)/.xext-ready
 # (freetype-backed). The server loads fonts through libXfont2.
 FONTSTACK_ROOT := $(PORT_OUT)/fontstack-root
 FONTSTACK_STAMP := $(PORT_OUT)/.fontstack-ready
+# The Xorg X server (with libxcvt + libpciaccess bundled): Xorg (modesetting DDX,
+# software shadow fb) + Xvfb, on the X libraries below. SHA1 from libgcrypt.
+XSERVER_ROOT := $(PORT_OUT)/xserver-root
+XSERVER_STAMP := $(PORT_OUT)/.xserver-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -464,6 +468,19 @@ $(FONTSTACK_STAMP): $(XORGPROTO_STAMP) $(CAIRO_STAMP) ports/build-fontstack.sh \
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-fontstack.sh
 	@test -e $(FONTSTACK_ROOT)/usr/lib/libXfont2.so.2 || { echo "the font stack was not produced" >&2; exit 1; }
+	@touch $@
+
+# The Xorg server. Builds libxcvt + libpciaccess (bundled) then the server with
+# the modesetting DDX; links libXfont2 (font stack), libXau/libXdmcp (xcb),
+# pixman/libdrm/libudev and libgcrypt (in the sysroot). Xorg still needs the
+# VT-less bring-up work before it can run -- see the notes in build-xserver.sh.
+$(XSERVER_STAMP): $(FONTSTACK_STAMP) $(XCB_STAMP) $(LIBDRM_STAMP) $(LIBUDEV_ZERO_STAMP) \
+	ports/build-xserver.sh ports/lib/cross-port.sh ports/src/xserver/meson.build \
+	ports/src/libxcvt/meson.build ports/src/libpciaccess/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xserver.sh
+	@test -x $(XSERVER_ROOT)/usr/bin/Xorg || { echo "Xorg was not produced" >&2; exit 1; }
+	@test -x $(XSERVER_ROOT)/usr/bin/Xvfb || { echo "Xvfb was not produced" >&2; exit 1; }
 	@touch $@
 
 $(MESA_STAMP): $(LIBDRM_STAMP) $(LLVM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \

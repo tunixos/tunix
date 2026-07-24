@@ -254,3 +254,12 @@
 [submodule "ports/src/libXfont2"]
 	path = ports/src/libXfont2
 	url = https://gitlab.freedesktop.org/xorg/lib/libxfont.git
+[submodule "ports/src/xserver"]
+	path = ports/src/xserver
+	url = https://gitlab.freedesktop.org/xorg/xserver.git
+[submodule "ports/src/libxcvt"]
+	path = ports/src/libxcvt
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcvt.git
+[submodule "ports/src/libpciaccess"]
+	path = ports/src/libpciaccess
+	url = https://gitlab.freedesktop.org/xorg/lib/libpciaccess.git
