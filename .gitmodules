@@ -178,3 +178,6 @@
 [submodule "ports/src/libxfce4ui"]
 	path = ports/src/libxfce4ui
 	url = https://gitlab.xfce.org/xfce/libxfce4ui.git
+[submodule "ports/src/thunar"]
+	path = ports/src/thunar
+	url = https://gitlab.xfce.org/xfce/thunar.git

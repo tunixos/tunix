@@ -126,6 +126,9 @@ XFCONF_STAMP := $(PORT_OUT)/.xfconf-ready
 # keyboard library. The last dependency below Thunar.
 LIBXFCE4UI_ROOT := $(PORT_OUT)/libxfce4ui-root
 LIBXFCE4UI_STAMP := $(PORT_OUT)/.libxfce4ui-ready
+# Thunar: the Xfce file manager, the top of the stack.
+THUNAR_ROOT := $(PORT_OUT)/thunar-root
+THUNAR_STAMP := $(PORT_OUT)/.thunar-ready
 # The init system: dinit is PID 1 (via the /sbin/init symlink), linked
 # statically so init can never break on a missing loader or libstdc++.
 DINIT_ROOT := $(PORT_OUT)/dinit-root
@@ -466,6 +469,17 @@ $(LIBXFCE4UI_STAMP): $(XFCONF_STAMP) $(GTK3_STAMP) ports/build-libxfce4ui.sh \
 	@test -e $(LIBXFCE4UI_ROOT)/usr/lib/libxfce4kbd-private-3.so.0 || { echo "libxfce4kbd-private was not produced" >&2; exit 1; }
 	@touch $@
 
+# Thunar: the file manager. Links the whole stack below it; wayland GTK3
+# backend, x11 off. One patch drops the case-insensitive Thunar->thunar symlink.
+$(THUNAR_STAMP): $(LIBXFCE4UI_STAMP) ports/build-thunar.sh ports/lib/cross-port.sh \
+	ports/src/patches/thunar/0001-drop-uppercase-Thunar-symlink.patch \
+	ports/src/thunar/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-thunar.sh
+	@test -x $(THUNAR_ROOT)/usr/bin/thunar || { echo "thunar was not produced" >&2; exit 1; }
+	@test -e $(THUNAR_ROOT)/usr/lib/libthunarx-3.so.0 || { echo "libthunarx was not produced" >&2; exit 1; }
+	@touch $@
+
 # Renders one offscreen frame on the build host, using the target loader. Proves
 # the shipped libraries initialise a softpipe context without needing to boot.
 gl-check: $(MESA_STAMP)
@@ -783,7 +797,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -837,6 +851,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(LIBXFCE4UTIL_ROOT)/. $(ROOTFS)/
 	cp -R $(XFCONF_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBXFCE4UI_ROOT)/. $(ROOTFS)/
+	cp -R $(THUNAR_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -921,6 +936,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -e $(ROOTFS)/usr/lib/libxfconf-0.so.3 || { echo "xfconf was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxfce4ui-2.so.0 || { echo "libxfce4ui was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxfce4kbd-private-3.so.0 || { echo "libxfce4kbd-private was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/thunar || { echo "thunar was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libthunarx-3.so.0 || { echo "libthunarx was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
