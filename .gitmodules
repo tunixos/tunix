@@ -185,3 +185,6 @@
 	path = ports/src/llvm-project
 	url = https://github.com/llvm/llvm-project.git
 	shallow = true
+[submodule "ports/src/xorgproto"]
+	path = ports/src/xorgproto
+	url = https://gitlab.freedesktop.org/xorg/proto/xorgproto.git

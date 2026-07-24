@@ -107,6 +107,10 @@ MESA_STAMP := $(PORT_OUT)/.mesa-ready
 # mesa's llvmpipe rasteriser. The compile is long, so it builds in /var/tmp.
 LLVM_ROOT := $(PORT_OUT)/llvm-root
 LLVM_STAMP := $(PORT_OUT)/.llvm-ready
+# The X11 / Xorg foundation, toward a native Xfce desktop. xorgproto is the
+# protocol headers everything else in the X stack builds against; it stages only
+# headers and pkg-config data into the sysroot, no image payload.
+XORGPROTO_STAMP := $(PORT_OUT)/.xorgproto-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -397,6 +401,16 @@ $(LLVM_STAMP): $(MUSL_CROSS_STAMP) ports/build-llvm.sh ports/lib/cross-port.sh \
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-llvm.sh
 	@test -f $(LLVM_ROOT)/usr/lib/libLLVM.so || { echo "libLLVM was not produced" >&2; exit 1; }
 	@test -x $(PORT_OUT)/llvm-config-wrapper/llvm-config || { echo "the llvm-config wrapper was not produced" >&2; exit 1; }
+	@touch $@
+
+# xorgproto: the X11 protocol headers, the base of the Xorg foundation. Data
+# only (headers + .pc into the sysroot), so it needs no toolchain and ships
+# nothing to the image; the X libraries above it consume it at build time.
+$(XORGPROTO_STAMP): ports/build-xorgproto.sh ports/lib/cross-port.sh \
+	ports/src/xorgproto/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xorgproto.sh
+	@test -f $(GRAPHICS_SYSROOT)/usr/share/pkgconfig/xproto.pc || { echo "xorgproto was not produced" >&2; exit 1; }
 	@touch $@
 
 $(MESA_STAMP): $(LIBDRM_STAMP) $(LLVM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \
