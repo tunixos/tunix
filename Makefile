@@ -103,6 +103,10 @@ LIBDRM_ROOT := $(PORT_OUT)/libdrm-root
 LIBDRM_STAMP := $(PORT_OUT)/.libdrm-ready
 MESA_ROOT := $(PORT_OUT)/mesa-root
 MESA_STAMP := $(PORT_OUT)/.mesa-ready
+# LLVM (musl cross-build), just the X86 codegen + JIT in one libLLVM.so, for
+# mesa's llvmpipe rasteriser. The compile is long, so it builds in /var/tmp.
+LLVM_ROOT := $(PORT_OUT)/llvm-root
+LLVM_STAMP := $(PORT_OUT)/.llvm-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -384,7 +388,18 @@ $(LIBDRM_STAMP): $(MUSL_CROSS_STAMP) ports/build-libdrm.sh ports/lib/cross-port.
 	@test -f $(GRAPHICS_SYSROOT)/usr/lib/pkgconfig/libdrm.pc || { echo "libdrm was not installed into the graphics sysroot" >&2; exit 1; }
 	@touch $@
 
-$(MESA_STAMP): $(LIBDRM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \
+# LLVM for llvmpipe. Depends only on the cross toolchain; the host llvm-tblgen
+# (same 22.1.8) bootstraps the cross build. Stages libLLVM.so and a host
+# llvm-config wrapper the mesa build consumes.
+$(LLVM_STAMP): $(MUSL_CROSS_STAMP) ports/build-llvm.sh ports/lib/cross-port.sh \
+	ports/src/llvm-project/llvm/CMakeLists.txt
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-llvm.sh
+	@test -f $(LLVM_ROOT)/usr/lib/libLLVM.so || { echo "libLLVM was not produced" >&2; exit 1; }
+	@test -x $(PORT_OUT)/llvm-config-wrapper/llvm-config || { echo "the llvm-config wrapper was not produced" >&2; exit 1; }
+	@touch $@
+
+$(MESA_STAMP): $(LIBDRM_STAMP) $(LLVM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \
 	tools/tunix-gl-demo.c tools/gbm-test.c src/include/tunix/framebuffer.h \
 	ports/src/mesa/meson.build
 	@mkdir -p $(PORT_OUT)
@@ -797,7 +812,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -844,6 +859,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(WESTON_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBDRM_ROOT)/. $(ROOTFS)/
 	cp -R $(MESA_ROOT)/. $(ROOTFS)/
+	cp -R $(LLVM_ROOT)/. $(ROOTFS)/
 	cp -R $(GLIB_ROOT)/. $(ROOTFS)/
 	cp -R $(PANGO_ROOT)/. $(ROOTFS)/
 	cp -R $(GDK_PIXBUF_ROOT)/. $(ROOTFS)/
@@ -922,6 +938,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -L $(ROOTFS)/usr/lib/libGLESv2.so.2 || { echo "mesa libGLESv2 was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libgbm.so.1 || { echo "mesa libgbm was not installed into the rootfs" >&2; exit 1; }
 	@test -n "$$(ls $(ROOTFS)/usr/lib/libgallium-*.so 2>/dev/null)" || { echo "the gallium megadriver was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/lib/libLLVM.so || { echo "libLLVM (llvmpipe) was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/gbm/dri_gbm.so || { echo "the GBM backend was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libstdc++.so.6 || { echo "the C++ runtime was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/libgcc_s.so.1 || { echo "the gcc unwinder was not installed into the rootfs" >&2; exit 1; }

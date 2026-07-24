@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build Mesa for Tunix: EGL + OpenGL ES on the softpipe software rasteriser.
+# Build Mesa for Tunix: EGL + OpenGL ES on the llvmpipe software rasteriser.
 #
 # What this configuration is, and why:
 #
-#   softpipe        Tunix has no GPU driver, so rendering has to happen on the
-#                   CPU. softpipe is gallium's reference rasteriser: pure C,
-#                   no dependencies. The faster alternative, llvmpipe, would
-#                   drag in a musl cross-build of LLVM.
+#   llvmpipe        Tunix has no usable GPU here (no /dev/dri render node for
+#                   QEMU's virgl to bridge to, so virtio-gpu accel is off), so
+#                   rendering is on the CPU. llvmpipe JIT-compiles the raster/
+#                   shader pipeline with LLVM and is multithreaded, far faster
+#                   than softpipe's plain-C interpreter. It needs a musl
+#                   cross-build of LLVM -- see ports/build-llvm.sh. softpipe is
+#                   still built as a dependency-free fallback.
 #   EGL surfaceless The EGL surfaceless platform needs no window system and no
 #                   DRM device -- it renders into framebuffer objects -- which
 #                   is exactly what Tunix can offer today. Everything reaches
@@ -55,6 +58,16 @@ EXPECTED_VERSION_PREFIX=26.2
 
 cross_port_require_toolchain
 cross_port_require_tools meson ninja pkg-config python3 flex bison "$READELF"
+
+# llvmpipe needs a target LLVM. build-llvm.sh cross-built libLLVM.so into the
+# graphics sysroot and left a host llvm-config wrapper that reports target paths;
+# meson's llvm dependency runs it on the build machine, so it goes first on PATH.
+LLVM_WRAPPER_DIR="$OUT/llvm-config-wrapper"
+[[ -x "$LLVM_WRAPPER_DIR/llvm-config" ]] || cross_port_fail \
+    "the llvm-config wrapper is missing; run ports/build-llvm.sh first"
+[[ -f "$GRAPHICS_SYSROOT/usr/lib/libLLVM.so" ]] || cross_port_fail \
+    "libLLVM.so is not in the graphics sysroot; run ports/build-llvm.sh first"
+export PATH="$LLVM_WRAPPER_DIR:$PATH"
 # Mesa generates a large part of its source from Mako templates, and drives some
 # of that generation from YAML descriptions.
 cross_port_require_python_module mako "pacman -S python-mako, or pip install mako"
@@ -78,6 +91,10 @@ rm -rf "$BUILD" "$ROOT_DIR"
 mkdir -p "$BUILD" "$ROOT_DIR"
 
 cross_port_write_meson_cross "$CROSS_FILE"
+# meson resolves a cross dependency's config tool through the cross file's
+# [binaries], not the host PATH, so the llvm-config wrapper has to be named
+# there or meson reports "llvm-config found: NO" and llvmpipe is dropped.
+sed -i "/^\[binaries\]/a llvm-config = '$LLVM_WRAPPER_DIR/llvm-config'" "$CROSS_FILE"
 cross_port_export_pkg_config
 
 meson setup "$BUILD" "$SOURCE" \
@@ -86,7 +103,8 @@ meson setup "$BUILD" "$SOURCE" \
     --libdir=lib \
     --buildtype=release \
     --default-library=shared \
-    -Dgallium-drivers=softpipe \
+    -Dcpp_rtti=false \
+    -Dgallium-drivers=softpipe,llvmpipe \
     -Dvulkan-drivers= \
     -Dplatforms= \
     -Degl=enabled \
@@ -98,8 +116,8 @@ meson setup "$BUILD" "$SOURCE" \
     -Dgles2=enabled \
     -Dshared-glapi=enabled \
     -Dglvnd=disabled \
-    -Dllvm=disabled \
-    -Ddraw-use-llvm=false \
+    -Dllvm=enabled \
+    -Ddraw-use-llvm=true \
     -Dgallium-rusticl=false \
     -Dshader-cache=disabled \
     -Dzlib=disabled \
@@ -200,8 +218,8 @@ probe_output=$("$CROSS_LOADER" \
     --library-path "$CROSS_SYSROOT/lib:$ROOT_DIR/usr/lib:$GRAPHICS_SYSROOT/usr/lib" \
     "$ROOT_DIR/usr/bin/tunix-gl-demo" --probe)
 printf '%s\n' "$probe_output"
-grep -q 'softpipe' <<<"$probe_output" || \
-    cross_port_fail "the GL renderer is not softpipe: $probe_output"
+grep -q 'llvmpipe' <<<"$probe_output" || \
+    cross_port_fail "the GL renderer is not llvmpipe: $probe_output"
 
 # Development-only files never reach the image. The unversioned .so symlinks go
 # too: they exist for the linker, and everything at runtime resolves either by
@@ -217,8 +235,9 @@ cross_port_finalize_root "$ROOT_DIR"
     "$ROOT_DIR/usr/bin/gbm-test"
 
 # Last: everything the image will contain is now staged, so check that the
-# graphics libraries can actually resolve each other on Tunix.
-cross_port_check_runtime_closure "$ROOT_DIR" "$LIBDRM_ROOT"
+# graphics libraries can actually resolve each other on Tunix. llvm-root is here
+# because the gallium megadriver now NEEDs libLLVM.so, which ships from there.
+cross_port_check_runtime_closure "$ROOT_DIR" "$LIBDRM_ROOT" "$OUT/llvm-root"
 
-printf 'mesa %s (softpipe, EGL surfaceless, GLES2, GBM) staged at %s\n' \
+printf 'mesa %s (llvmpipe+softpipe, EGL surfaceless, GLES2, GBM) staged at %s\n' \
     "$version" "$ROOT_DIR"

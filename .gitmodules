@@ -181,3 +181,7 @@
 [submodule "ports/src/thunar"]
 	path = ports/src/thunar
 	url = https://gitlab.xfce.org/xfce/thunar.git
+[submodule "ports/src/llvm-project"]
+	path = ports/src/llvm-project
+	url = https://github.com/llvm/llvm-project.git
+	shallow = true
