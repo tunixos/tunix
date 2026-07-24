@@ -242,3 +242,15 @@
 [submodule "ports/src/libXkbfile"]
 	path = ports/src/libXkbfile
 	url = https://gitlab.freedesktop.org/xorg/lib/libxkbfile.git
+[submodule "ports/src/font-util"]
+	path = ports/src/font-util
+	url = https://gitlab.freedesktop.org/xorg/font/util.git
+[submodule "ports/src/encodings"]
+	path = ports/src/encodings
+	url = https://gitlab.freedesktop.org/xorg/font/encodings.git
+[submodule "ports/src/libfontenc"]
+	path = ports/src/libfontenc
+	url = https://gitlab.freedesktop.org/xorg/lib/libfontenc.git
+[submodule "ports/src/libXfont2"]
+	path = ports/src/libXfont2
+	url = https://gitlab.freedesktop.org/xorg/lib/libxfont.git

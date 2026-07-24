@@ -123,6 +123,10 @@ LIBX11_STAMP := $(PORT_OUT)/.libX11-ready
 # Xrandr, Xi, Xcursor, Xtst, XRes, Xinerama, Xkbfile) X clients link.
 XEXT_ROOT := $(PORT_OUT)/xext-root
 XEXT_STAMP := $(PORT_OUT)/.xext-ready
+# The Xorg server's font stack: font-util, encodings, libfontenc, libXfont2
+# (freetype-backed). The server loads fonts through libXfont2.
+FONTSTACK_ROOT := $(PORT_OUT)/fontstack-root
+FONTSTACK_STAMP := $(PORT_OUT)/.fontstack-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -451,6 +455,15 @@ $(XEXT_STAMP): $(LIBX11_STAMP) ports/build-xext.sh ports/lib/cross-port.sh \
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-xext.sh
 	@test -e $(XEXT_ROOT)/usr/lib/libXext.so.6 || { echo "the X extension libs were not produced" >&2; exit 1; }
+	@touch $@
+
+# The font stack for the Xorg server. font-util (autotools) + encodings/libfontenc
+# (meson) + libXfont2 (autotools); links freetype from the cairo chain.
+$(FONTSTACK_STAMP): $(XORGPROTO_STAMP) $(CAIRO_STAMP) ports/build-fontstack.sh \
+	ports/lib/cross-port.sh ports/src/libXfont2/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-fontstack.sh
+	@test -e $(FONTSTACK_ROOT)/usr/lib/libXfont2.so.2 || { echo "the font stack was not produced" >&2; exit 1; }
 	@touch $@
 
 $(MESA_STAMP): $(LIBDRM_STAMP) $(LLVM_STAMP) ports/build-mesa.sh ports/lib/cross-port.sh \
@@ -866,7 +879,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -925,6 +938,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(XCB_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBX11_ROOT)/. $(ROOTFS)/
 	cp -R $(XEXT_ROOT)/. $(ROOTFS)/
+	cp -R $(FONTSTACK_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -1016,6 +1030,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -e $(ROOTFS)/usr/lib/libX11.so.6 || { echo "libX11 was not installed into the rootfs" >&2; exit 1; }
 	@test -d $(ROOTFS)/usr/share/X11/locale || { echo "the X11 locale data was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libXext.so.6 || { echo "the X extension libs were not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libXfont2.so.2 || { echo "libXfont2 was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
