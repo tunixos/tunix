@@ -206,3 +206,39 @@
 [submodule "ports/src/libX11"]
 	path = ports/src/libX11
 	url = https://gitlab.freedesktop.org/xorg/lib/libx11.git
+[submodule "ports/src/libXext"]
+	path = ports/src/libXext
+	url = https://gitlab.freedesktop.org/xorg/lib/libxext.git
+[submodule "ports/src/libXrender"]
+	path = ports/src/libXrender
+	url = https://gitlab.freedesktop.org/xorg/lib/libxrender.git
+[submodule "ports/src/libXfixes"]
+	path = ports/src/libXfixes
+	url = https://gitlab.freedesktop.org/xorg/lib/libxfixes.git
+[submodule "ports/src/libXdamage"]
+	path = ports/src/libXdamage
+	url = https://gitlab.freedesktop.org/xorg/lib/libxdamage.git
+[submodule "ports/src/libXcomposite"]
+	path = ports/src/libXcomposite
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcomposite.git
+[submodule "ports/src/libXrandr"]
+	path = ports/src/libXrandr
+	url = https://gitlab.freedesktop.org/xorg/lib/libxrandr.git
+[submodule "ports/src/libXi"]
+	path = ports/src/libXi
+	url = https://gitlab.freedesktop.org/xorg/lib/libxi.git
+[submodule "ports/src/libXcursor"]
+	path = ports/src/libXcursor
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcursor.git
+[submodule "ports/src/libXtst"]
+	path = ports/src/libXtst
+	url = https://gitlab.freedesktop.org/xorg/lib/libxtst.git
+[submodule "ports/src/libXres"]
+	path = ports/src/libXres
+	url = https://gitlab.freedesktop.org/xorg/lib/libxres.git
+[submodule "ports/src/libXinerama"]
+	path = ports/src/libXinerama
+	url = https://gitlab.freedesktop.org/xorg/lib/libxinerama.git
+[submodule "ports/src/libXkbfile"]
+	path = ports/src/libXkbfile
+	url = https://gitlab.freedesktop.org/xorg/lib/libxkbfile.git
