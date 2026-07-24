@@ -167,6 +167,46 @@ cross_port_export_pkg_config() {
     unset PKG_CONFIG_PATH
 }
 
+# The autotools equivalent of the meson cross file, for the X libraries and
+# other configure-based ports that must link against the graphics sysroot with
+# the musl cross toolchain (not the static musl-gcc/desktop-sysroot path the GNU
+# userland uses). Exports the toolchain, sysroot include/lib flags, and a
+# pkg-config pointed at the sysroot with sysroot-dir rewriting so .pc files that
+# record prefix=/usr resolve into the sysroot. Also installs the ld-musl shim so
+# any target probe binary a configure script runs can execute here.
+#   cross_port_autotools_setup
+CROSS_RANLIB="$CROSS_DIR/bin/$CROSS_TARGET-ranlib"
+cross_port_autotools_setup() {
+    export CC="$CROSS_CC" CXX="$CROSS_CXX" AR="$CROSS_AR" \
+           RANLIB="$CROSS_RANLIB" STRIP="$CROSS_STRIP"
+    export CFLAGS="-O2 -fPIC -I$GRAPHICS_SYSROOT/usr/include"
+    export CPPFLAGS="-I$GRAPHICS_SYSROOT/usr/include"
+    export CXXFLAGS="$CFLAGS"
+    # The cross musl lib dir goes first: libtool's generated link line inherits
+    # the *host* sys_lib_search_path (glibc /usr/lib) from the host libtoolize,
+    # and without musl's own dir ahead of it a bare -lc in libtool's postdeps
+    # resolves to the host libc.so (SONAME libc.so.6) instead of musl's libc.so.
+    export LDFLAGS="-L$CROSS_SYSROOT/lib -L$GRAPHICS_SYSROOT/usr/lib -Wl,-rpath-link,$GRAPHICS_SYSROOT/usr/lib"
+    # pkg-config for the target: search the sysroot, and rewrite the -I/-L
+    # prefixes of .pc files installed with prefix=/usr into the sysroot.
+    export PKG_CONFIG_LIBDIR="$GRAPHICS_SYSROOT/usr/lib/pkgconfig:$GRAPHICS_SYSROOT/usr/share/pkgconfig"
+    export PKG_CONFIG_SYSROOT_DIR="$GRAPHICS_SYSROOT"
+    ln -sf "$CROSS_LOADER" /lib/ld-musl-x86_64.so.1 2>/dev/null || true
+}
+
+# The standard configure line for a cross autotools port. --host makes autoconf
+# cross-compile (cache run-tests instead of executing), --build is the real host
+# triple. Pass extra --enable/--disable flags as arguments.
+#   cross_port_configure <srcdir> <builddir> [extra configure args...]
+cross_port_configure() {
+    local src="$1" build="$2"; shift 2
+    local build_triple
+    build_triple=$(gcc -dumpmachine 2>/dev/null || echo x86_64-pc-linux-gnu)
+    ( cd "$build" && "$src/configure" \
+        --host="$CROSS_TARGET" --build="$build_triple" \
+        --prefix=/usr --disable-static --enable-shared "$@" )
+}
+
 # Assert a shared object we built is actually a target object with a SONAME,
 # and that it did not accidentally pick up a host dependency.
 #   cross_port_check_library <path> <expected-soname>

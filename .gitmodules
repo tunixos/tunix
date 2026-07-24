@@ -188,3 +188,18 @@
 [submodule "ports/src/xorgproto"]
 	path = ports/src/xorgproto
 	url = https://gitlab.freedesktop.org/xorg/proto/xorgproto.git
+[submodule "ports/src/libxtrans"]
+	path = ports/src/libxtrans
+	url = https://gitlab.freedesktop.org/xorg/lib/libxtrans.git
+[submodule "ports/src/libXau"]
+	path = ports/src/libXau
+	url = https://gitlab.freedesktop.org/xorg/lib/libxau.git
+[submodule "ports/src/libXdmcp"]
+	path = ports/src/libXdmcp
+	url = https://gitlab.freedesktop.org/xorg/lib/libxdmcp.git
+[submodule "ports/src/xcbproto"]
+	path = ports/src/xcbproto
+	url = https://gitlab.freedesktop.org/xorg/proto/xcbproto.git
+[submodule "ports/src/libxcb"]
+	path = ports/src/libxcb
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcb.git
