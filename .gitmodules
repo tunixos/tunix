@@ -172,3 +172,9 @@
 [submodule "ports/src/libxfce4util"]
 	path = ports/src/libxfce4util
 	url = https://gitlab.xfce.org/xfce/libxfce4util.git
+[submodule "ports/src/xfconf"]
+	path = ports/src/xfconf
+	url = https://gitlab.xfce.org/xfce/xfconf.git
+[submodule "ports/src/libxfce4ui"]
+	path = ports/src/libxfce4ui
+	url = https://gitlab.xfce.org/xfce/libxfce4ui.git

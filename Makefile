@@ -118,6 +118,14 @@ GTK3_STAMP := $(PORT_OUT)/.gtk3-ready
 # manager: libxfce4util (base utilities) is the first rung.
 LIBXFCE4UTIL_ROOT := $(PORT_OUT)/libxfce4util-root
 LIBXFCE4UTIL_STAMP := $(PORT_OUT)/.libxfce4util-ready
+# xfconf: the Xfce configuration store. Talks GDBus (no libdbus needed);
+# libxfce4ui and Thunar link its client library libxfconf.
+XFCONF_ROOT := $(PORT_OUT)/xfconf-root
+XFCONF_STAMP := $(PORT_OUT)/.xfconf-ready
+# libxfce4ui: the Xfce GTK widget library (wayland backend), plus the private
+# keyboard library. The last dependency below Thunar.
+LIBXFCE4UI_ROOT := $(PORT_OUT)/libxfce4ui-root
+LIBXFCE4UI_STAMP := $(PORT_OUT)/.libxfce4ui-ready
 # The init system: dinit is PID 1 (via the /sbin/init symlink), linked
 # statically so init can never break on a missing loader or libstdc++.
 DINIT_ROOT := $(PORT_OUT)/dinit-root
@@ -438,6 +446,26 @@ $(LIBXFCE4UTIL_STAMP): $(GLIB_STAMP) ports/build-libxfce4util.sh ports/lib/cross
 	@test -e $(LIBXFCE4UTIL_ROOT)/usr/lib/libxfce4util.so.7 || { echo "libxfce4util was not produced" >&2; exit 1; }
 	@touch $@
 
+# xfconf: the configuration store. Links glib and libxfce4util only (GDBus, not
+# libdbus), staging libxfconf plus the xfconfd daemon and xfconf-query.
+$(XFCONF_STAMP): $(LIBXFCE4UTIL_STAMP) ports/build-xfconf.sh ports/lib/cross-port.sh \
+	ports/src/xfconf/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfconf.sh
+	@test -e $(XFCONF_ROOT)/usr/lib/libxfconf-0.so.3 || { echo "xfconf was not produced" >&2; exit 1; }
+	@touch $@
+
+# libxfce4ui: the Xfce widget library. Links the GTK3 stack, libxfce4util and
+# libxfconf; wayland backend, x11 off. Stages libxfce4ui-2 and the private
+# keyboard library that Thunar's accelerators need.
+$(LIBXFCE4UI_STAMP): $(XFCONF_STAMP) $(GTK3_STAMP) ports/build-libxfce4ui.sh \
+	ports/lib/cross-port.sh ports/src/libxfce4ui/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxfce4ui.sh
+	@test -e $(LIBXFCE4UI_ROOT)/usr/lib/libxfce4ui-2.so.0 || { echo "libxfce4ui was not produced" >&2; exit 1; }
+	@test -e $(LIBXFCE4UI_ROOT)/usr/lib/libxfce4kbd-private-3.so.0 || { echo "libxfce4kbd-private was not produced" >&2; exit 1; }
+	@touch $@
+
 # Renders one offscreen frame on the build host, using the target loader. Proves
 # the shipped libraries initialise a softpipe context without needing to boot.
 gl-check: $(MESA_STAMP)
@@ -755,7 +783,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -807,6 +835,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(GDK_PIXBUF_ROOT)/. $(ROOTFS)/
 	cp -R $(GTK3_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBXFCE4UTIL_ROOT)/. $(ROOTFS)/
+	cp -R $(XFCONF_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBXFCE4UI_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -888,6 +918,9 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/gtk3-widget-factory || { echo "gtk3-widget-factory was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/share/glib-2.0/schemas/gschemas.compiled || { echo "gsettings schemas were not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxfce4util.so.7 || { echo "libxfce4util was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libxfconf-0.so.3 || { echo "xfconf was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libxfce4ui-2.so.0 || { echo "libxfce4ui was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libxfce4kbd-private-3.so.0 || { echo "libxfce4kbd-private was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
