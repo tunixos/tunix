@@ -188,6 +188,16 @@ int unix_socket_get_name(struct unix_socket *socket, int peer,
     }
     memset(address, 0, sizeof(*address));
     address->family = TUNIX_AF_UNIX;
+    /* Abstract sockets are stored with the '\x01' marker (see copy_path); report
+     * them the Linux way -- a leading NUL followed by the name, no trailing NUL. */
+    if (path && path[0] == '\x01') {
+        size_t name_length = strlen(path + 1);
+        if (name_length > sizeof(address->path) - 1) name_length = sizeof(address->path) - 1;
+        address->path[0] = '\0';
+        memcpy(address->path + 1, path + 1, name_length);
+        *length = sizeof(address->family) + 1U + name_length;
+        return 0;
+    }
     size_t path_length = path && path[0] ? strlen(path) + 1U : 0U;
     if (path_length > sizeof(address->path)) path_length = sizeof(address->path);
     if (path_length) memcpy(address->path, path, path_length);
@@ -270,12 +280,26 @@ static int copy_path(char destination[108], const struct tunix_sockaddr_un *addr
         address->family != TUNIX_AF_UNIX) return -EAFNOSUPPORT;
     size_t maximum = length - sizeof(address->family);
     if (maximum > sizeof(address->path)) maximum = sizeof(address->path);
-    size_t path_length = 0;
+    /* Abstract socket: sun_path[0] == '\0' and the name follows, living in an
+     * in-kernel namespace rather than the filesystem. Xorg/Xlib (and D-Bus) bind
+     * their sockets this way. The registry is keyed by C string, so map the
+     * leading NUL to a reserved marker byte '\x01' that a real filesystem path
+     * can never begin with; get_name reverses it. The name is scanned up to the
+     * next NUL, which is how X and D-Bus form their abstract names. */
+    int abstract = (address->path[0] == '\0');
+    size_t start = abstract ? 1 : 0;
+    size_t path_length = start;
     while (path_length < maximum && address->path[path_length]) path_length++;
-    if (path_length == 0) return -EINVAL;
+    if (path_length == start) return -EINVAL;
     if (path_length >= sizeof(address->path)) return -ENAMETOOLONG;
-    memcpy(destination, address->path, path_length);
-    destination[path_length] = '\0';
+    if (abstract) {
+        destination[0] = '\x01';
+        memcpy(destination + 1, address->path + 1, path_length - 1);
+        destination[path_length] = '\0';
+    } else {
+        memcpy(destination, address->path, path_length);
+        destination[path_length] = '\0';
+    }
     return 0;
 }
 

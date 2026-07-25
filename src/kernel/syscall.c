@@ -1240,6 +1240,24 @@ static int64_t sys_sendto(int fd, uint64_t user_data, size_t length, int flags,
 
 static int64_t sys_recvfrom(int fd, uint64_t user_data, size_t length, int flags,
                             uint64_t user_address, uint64_t user_address_length) {
+    /* recv()/recvfrom() on a unix socket: libxcb reads the X setup reply this way
+       (read_block -> recv), so a stream read has to work here, not just recvmsg.
+       recv() carries no ancillary data, so read plain bytes and leave any pending
+       SCM_RIGHTS in place for a later recvmsg. */
+    struct unix_socket *unix_value = socket_from_fd(fd);
+    if (unix_value) {
+        (void)flags;
+        if (length > 4096U) length = 4096U;
+        uint8_t data[4096];
+        int64_t result = unix_socket_read(unix_value, length, data);
+        if (result < 0) return result;
+        if (result && copy_to_user(user_data, data, (size_t)result) != 0) return -EFAULT;
+        if (user_address_length) {
+            uint32_t zero = 0;
+            if (copy_to_user(user_address_length, &zero, sizeof(zero)) != 0) return -EFAULT;
+        }
+        return result;
+    }
     struct netlink_socket *netlink = netlink_socket_from_fd(fd);
     if (netlink) {
         if (length > 4096U) length = 4096U;

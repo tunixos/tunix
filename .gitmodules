@@ -269,3 +269,21 @@
 [submodule "ports/src/xf86-input-libinput"]
 	path = ports/src/xf86-input-libinput
 	url = https://gitlab.freedesktop.org/xorg/driver/xf86-input-libinput.git
+[submodule "ports/src/xfwm4"]
+	path = ports/src/xfwm4
+	url = https://gitlab.xfce.org/xfce/xfwm4.git
+[submodule "ports/src/libwnck"]
+	path = ports/src/libwnck
+	url = https://gitlab.gnome.org/GNOME/libwnck.git
+[submodule "ports/src/startup-notification"]
+	path = ports/src/startup-notification
+	url = https://gitlab.freedesktop.org/xdg/startup-notification.git
+[submodule "ports/src/xcb-util"]
+	path = ports/src/xcb-util
+	url = https://gitlab.freedesktop.org/xorg/lib/libxcb-util.git
+[submodule "ports/src/libICE"]
+	path = ports/src/libICE
+	url = https://gitlab.freedesktop.org/xorg/lib/libice.git
+[submodule "ports/src/libSM"]
+	path = ports/src/libSM
+	url = https://gitlab.freedesktop.org/xorg/lib/libsm.git
