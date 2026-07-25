@@ -57,6 +57,7 @@ extern void kprintf(const char *fmt, ...);
 #define DRM_NR_MODE_ADDFB 0xae
 #define DRM_NR_MODE_RMFB 0xaf
 #define DRM_NR_MODE_PAGE_FLIP 0xb0
+#define DRM_NR_MODE_DIRTYFB 0xb1
 #define DRM_NR_MODE_CREATE_DUMB 0xb2
 #define DRM_NR_MODE_MAP_DUMB 0xb3
 #define DRM_NR_MODE_DESTROY_DUMB 0xb4
@@ -874,6 +875,27 @@ static int64_t ioctl_set_crtc(uint64_t user_argument) {
     return 0;
 }
 
+struct drm_mode_fb_dirty_cmd {
+    uint32_t fb_id;
+    uint32_t flags;
+    uint32_t color;
+    uint32_t num_clips;
+    uint64_t clips_ptr;
+};
+
+/*
+ * DIRTYFB flushes a framebuffer whose contents userspace changed in place.
+ * Drivers that scan out the buffer directly need do nothing, but this display
+ * is a copy, so a dirty flush means re-presenting. The Xorg modesetting DDX
+ * (no glamor, no ShadowFB) draws straight into its dumb buffer and relies on
+ * this to reach the screen; the clip rectangles are only a hint, so copy whole.
+ */
+static int64_t ioctl_dirty_fb(uint64_t user_argument) {
+    struct drm_mode_fb_dirty_cmd cmd;
+    if (copy_from_user(&cmd, user_argument, sizeof(cmd)) != 0) return -EFAULT;
+    return present_framebuffer(cmd.fb_id);
+}
+
 #define DRM_MODE_PAGE_FLIP_EVENT 0x01
 
 /* The flip has already been presented by the time this runs, so the completion
@@ -1112,6 +1134,7 @@ int64_t drm_file_ioctl(struct file *file, unsigned long request,
     case DRM_NR_MODE_GETCRTC: return ioctl_get_crtc(user_argument);
     case DRM_NR_MODE_SETCRTC: return ioctl_set_crtc(user_argument);
     case DRM_NR_MODE_PAGE_FLIP: return ioctl_page_flip(user_argument);
+    case DRM_NR_MODE_DIRTYFB: return ioctl_dirty_fb(user_argument);
     case DRM_NR_MODE_CREATE_DUMB: return ioctl_create_dumb(user_argument);
     case DRM_NR_MODE_MAP_DUMB: return ioctl_map_dumb(user_argument);
     case DRM_NR_MODE_DESTROY_DUMB: return ioctl_destroy_dumb(user_argument);

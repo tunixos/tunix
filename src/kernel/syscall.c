@@ -3253,9 +3253,14 @@ static int64_t sys_get_robust_list(int pid, uint64_t user_head_pointer,
     return copy_to_user(user_length_pointer, &length, sizeof(length)) == 0 ? 0 : -EFAULT;
 }
 
-static int64_t sys_prlimit(uint64_t user_old_limit) {
+#define RLIMIT_NOFILE 7
+static int64_t sys_prlimit(uint64_t resource, uint64_t user_old_limit) {
     if (!user_old_limit) return 0;
-    struct linux_rlimit value = {UINT64_MAX, UINT64_MAX};
+    /* Report the real fd ceiling for NOFILE: an infinite value makes musl's
+     * sysconf(_SC_OPEN_MAX) return -1, which trips Xtrans's fd-range guard and
+     * blocks the X server from opening its listening sockets. */
+    uint64_t lim = (resource == RLIMIT_NOFILE) ? PROCESS_MAX_FDS : UINT64_MAX;
+    struct linux_rlimit value = {lim, lim};
     return copy_to_user(user_old_limit, &value, sizeof(value)) == 0 ? 0 : -EFAULT;
 }
 
@@ -3485,7 +3490,10 @@ static int64_t sys_epoll_ctl(int epoll_fd, int operation, int target_fd,
 
 static int64_t sys_epoll_wait_once(int epoll_fd, uint64_t user_events,
                                    int maximum, int commit_empty) {
-    if (!user_events || maximum <= 0 || maximum > 128) return -EINVAL;
+    if (!user_events || maximum <= 0) return -EINVAL;
+    /* Clamp to our on-stack batch rather than rejecting: epoll_wait may return
+     * fewer than maxevents, and the caller loops.  Xorg's ospoll asks for 256. */
+    if (maximum > 128) maximum = 128;
     struct file *file = file_from_fd(epoll_fd);
     if (!file || file->kind != FILE_KIND_EPOLL) return -EBADF;
     struct tunix_epoll_event events[128];
@@ -4048,7 +4056,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_FCHOWNAT: frame->rax = (uint64_t)sys_chown_at((int)frame->rdi, frame->rsi, (int)frame->r8); break;
         case SYS_UMASK: frame->rax = process_set_umask((uint32_t)frame->rdi); break;
         case SYS_GETTIMEOFDAY: frame->rax = (uint64_t)sys_gettimeofday(frame->rdi); break;
-        case SYS_GETRLIMIT: frame->rax = (uint64_t)sys_prlimit(frame->rsi); break;
+        case SYS_GETRLIMIT: frame->rax = (uint64_t)sys_prlimit(frame->rdi, frame->rsi); break;
         case SYS_GETRUSAGE: {
             uint8_t zero[144]; memset(zero, 0, sizeof(zero));
             frame->rax = copy_to_user(frame->rsi, zero, sizeof(zero)) == 0 ? 0 : (uint64_t)-(int64_t)EFAULT;
@@ -4237,7 +4245,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_GET_ROBUST_LIST: frame->rax = (uint64_t)sys_get_robust_list((int)frame->rdi, frame->rsi, frame->rdx); break;
         case SYS_ACCEPT4: frame->rax = (uint64_t)sys_accept((int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10); break;
         case SYS_PIPE2: frame->rax = (uint64_t)sys_pipe(frame->rdi, (int)frame->rsi); break;
-        case SYS_PRLIMIT64: frame->rax = (uint64_t)sys_prlimit(frame->r10); break;
+        case SYS_PRLIMIT64: frame->rax = (uint64_t)sys_prlimit(frame->rsi, frame->r10); break;
         case SYS_RENAMEAT2: frame->rax = (uint64_t)sys_rename_at((int)frame->rdi, frame->rsi, (int)frame->rdx, frame->r10, (unsigned)frame->r8); break;
         case SYS_GETRANDOM: frame->rax = (uint64_t)sys_getrandom(frame->rdi, (size_t)frame->rsi, (unsigned)frame->rdx); break;
         case SYS_GETDENTS64: frame->rax = (uint64_t)sys_getdents64((int)frame->rdi, frame->rsi, (size_t)frame->rdx); break;
