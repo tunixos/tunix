@@ -51,6 +51,7 @@ CAIRO_SOURCE="$ROOT/ports/src/cairo"
 ATK_SOURCE="$ROOT/ports/src/atk"
 EPOXY_SOURCE="$ROOT/ports/src/libepoxy"
 GTK_SOURCE="$ROOT/ports/src/gtk"
+GTK_PATCH_DIR="$ROOT/ports/src/patches/gtk"
 
 BUILD="$OUT/gtk3-build"
 ROOT_DIR="$OUT/gtk3-root"
@@ -75,10 +76,14 @@ gtk_version=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([0-9.]*\
 [[ "$gtk_version" == "$EXPECTED_GTK_VERSION" ]] || \
     cross_port_fail "expected gtk $EXPECTED_GTK_VERSION, found ${gtk_version:-unknown}"
 
-# Everything GTK3's wayland build reaches for.
+# Everything GTK3's wayland and x11 backends reach for. The x11 set (x11 .. xi and
+# cairo-xlib) is what lets Xfce run under Xorg as well as weston -- one libgtk-3.so
+# with both backends, chosen at runtime by DISPLAY vs WAYLAND_DISPLAY.
 for module in glib-2.0 gobject-2.0 gio-2.0 pango pangocairo cairo gdk-pixbuf-2.0 \
               harfbuzz fribidi wayland-client wayland-cursor wayland-egl xkbcommon \
-              egl fontconfig freetype2; do
+              egl fontconfig freetype2 \
+              x11 xext xrender xrandr xcursor xcomposite xdamage xfixes xinerama \
+              xi cairo-xlib; do
     [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/$module.pc" ]] || cross_port_fail \
         "$module is not in the graphics sysroot; build its port first"
 done
@@ -113,7 +118,7 @@ meson setup "$BUILD/cairo-gobject" "$CAIRO_SOURCE" \
     --prefix=/usr --libdir=lib --buildtype=release --default-library=shared \
     -Dfreetype=enabled -Dpng=enabled -Dzlib=enabled -Dfontconfig=enabled \
     -Dglib=enabled \
-    -Dxlib=disabled -Dxcb=disabled -Dquartz=disabled -Dtee=disabled \
+    -Dxlib=enabled -Dxcb=disabled -Dquartz=disabled -Dtee=disabled \
     -Dspectre=disabled -Dsymbol-lookup=disabled -Dtests=disabled \
     -Dgtk2-utils=disabled
 meson compile -C "$BUILD/cairo-gobject" -j "$JOBS"
@@ -143,21 +148,34 @@ epoxy_version=$(meson_version "$EPOXY_SOURCE")
 meson setup "$BUILD/libepoxy" "$EPOXY_SOURCE" \
     --cross-file "$CROSS_FILE" \
     --prefix=/usr --libdir=lib --buildtype=release --default-library=shared \
-    -Dglx=no -Degl=yes -Dx11=false -Dtests=false
+    -Dglx=yes -Degl=yes -Dx11=true -Dtests=false
 meson compile -C "$BUILD/libepoxy" -j "$JOBS"
 install_both "$BUILD/libepoxy"
 [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/epoxy.pc" ]] || \
     cross_port_fail "epoxy.pc was not installed"
 
 # --- gtk3 ----------------------------------------------------------------
+# Patch a copy, never ports/src: one Tunix patch makes the x11 backend's
+# atk-bridge-2.0 (the AT-SPI accessibility bridge, which would drag in D-Bus)
+# optional, so GTK3 builds with the x11 backend that Xfce-on-Xorg needs.
+GTK_SRC="$BUILD/gtk-src"
+mkdir -p "$GTK_SRC"
+tar -C "$GTK_SOURCE" --exclude=.git -cf - . | tar -C "$GTK_SRC" -xf -
+gtk_patches=("$GTK_PATCH_DIR"/*.patch)
+[[ -e "${gtk_patches[0]}" ]] || cross_port_fail "no patches found in $GTK_PATCH_DIR"
+for patch in "${gtk_patches[@]}"; do
+    patch -p1 -d "$GTK_SRC" --fuzz=0 --forward < "$patch" ||
+        cross_port_fail "failed to apply $(basename "$patch")"
+done
+
 # print_backends=file: the option does not accept an empty list, and the file
 # backend has no dependencies. colord/cups/cloudproviders are daemons and
 # services Tunix does not run.
-meson setup "$BUILD/gtk" "$GTK_SOURCE" \
+meson setup "$BUILD/gtk" "$GTK_SRC" \
     --cross-file "$CROSS_FILE" \
     --prefix=/usr --libdir=lib --buildtype=release --default-library=shared \
     -Dwayland_backend=true \
-    -Dx11_backend=false \
+    -Dx11_backend=true \
     -Dbroadway_backend=false \
     -Dwin32_backend=false \
     -Dquartz_backend=false \
@@ -281,7 +299,8 @@ cross_port_finalize_root "$ROOT_DIR"
 cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/glib-root" "$OUT/pango-root" \
     "$OUT/gdk-pixbuf-root" "$OUT/cairo-root" "$OUT/wayland-root" \
     "$OUT/libxkbcommon-root" "$OUT/mesa-root" "$OUT/libdrm-root" \
-    "$OUT/pixman-root" "$OUT/libffi-root"
+    "$OUT/pixman-root" "$OUT/libffi-root" \
+    "$OUT/libX11-root" "$OUT/xext-root" "$OUT/xcb-root" "$OUT/icu-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
 printf 'gtk %s (atk %s, libepoxy %s, cairo-gobject) staged at %s (%s)\n' \

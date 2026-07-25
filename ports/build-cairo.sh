@@ -223,7 +223,7 @@ meson setup "$BUILD/cairo" "$CAIRO_SOURCE" \
     -Dpng=enabled \
     -Dzlib=enabled \
     -Dfontconfig=enabled \
-    -Dxlib=disabled \
+    -Dxlib=enabled \
     -Dxcb=disabled \
     -Dquartz=disabled \
     -Dtee=disabled \
@@ -262,7 +262,10 @@ find "$ROOT_DIR/usr/lib" -maxdepth 1 -name '*.a' -delete
 find "$ROOT_DIR/usr/lib" -maxdepth 1 -type l -name '*.so' -delete
 
 cross_port_finalize_root "$ROOT_DIR"
-cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/pixman-root"
+# The xlib backend (cairo-xlib, for GTK3's X11 backend) pulls libX11/libXrender/
+# libXext and their libxcb chain into libcairo.so.2's NEEDED set.
+cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/pixman-root" \
+    "$OUT/libX11-root" "$OUT/xext-root" "$OUT/xcb-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
 printf 'cairo %s stack (zlib, libpng, freetype, expat, fontconfig, JetBrains Mono) staged at %s (%s)\n' \
