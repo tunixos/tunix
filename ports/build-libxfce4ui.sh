@@ -46,8 +46,9 @@ version=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([0-9.]*\)'.*
 [[ "$version" == "$EXPECTED_VERSION" ]] || \
     cross_port_fail "expected libxfce4ui $EXPECTED_VERSION, found ${version:-unknown}"
 
-for module in gtk+-3.0 gdk-pixbuf-2.0 gdk-wayland-3.0 glib-2.0 gio-2.0 gthread-2.0 \
-              libxfce4util-1.0 libxfconf-0; do
+for module in gtk+-3.0 gdk-pixbuf-2.0 gdk-wayland-3.0 gdk-x11-3.0 glib-2.0 gio-2.0 \
+              gthread-2.0 libxfce4util-1.0 libxfconf-0 sm ice \
+              libstartup-notification-1.0; do
     [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/$module.pc" ]] || cross_port_fail \
         "$module is not in the graphics sysroot; build its port first"
 done
@@ -65,10 +66,10 @@ meson setup "$BUILD" "$SOURCE" \
     -Dvala=disabled \
     -Dgtk-doc=false \
     -Dkeyboard-library=true \
-    -Dx11=disabled \
+    -Dx11=enabled \
     -Dwayland=enabled \
-    -Dsession-management=disabled \
-    -Dstartup-notification=disabled \
+    -Dsession-management=enabled \
+    -Dstartup-notification=enabled \
     -Dlibgtop=disabled \
     -Depoxy=disabled \
     -Dgudev=disabled
@@ -110,7 +111,9 @@ cross_port_finalize_root "$ROOT_DIR"
 cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/glib-root" "$OUT/pango-root" \
     "$OUT/gdk-pixbuf-root" "$OUT/cairo-root" "$OUT/gtk3-root" "$OUT/wayland-root" \
     "$OUT/libxkbcommon-root" "$OUT/mesa-root" "$OUT/libdrm-root" "$OUT/pixman-root" \
-    "$OUT/libffi-root" "$OUT/libxfce4util-root" "$OUT/xfconf-root" "$OUT/icu-root"
+    "$OUT/libffi-root" "$OUT/libxfce4util-root" "$OUT/xfconf-root" "$OUT/icu-root" \
+    "$OUT/libX11-root" "$OUT/xext-root" "$OUT/xcb-root" "$OUT/xcb-util-root" \
+    "$OUT/libsm-root" "$OUT/startup-notification-root" "$OUT/llvm-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
 printf 'libxfce4ui %s staged at %s (%s)\n' "$version" "$ROOT_DIR" "$size"
