@@ -98,10 +98,41 @@ if [[ "${XSERVER_CONFIGURE_ONLY:-0}" == "1" ]]; then
 fi
 
 meson compile -C "$BUILD/obj" -j "$JOBS"
+# Install to the image root AND the sysroot -- the sysroot gets the server SDK
+# (xorg-server.pc + xorg/*.h) the input driver builds against.
+DESTDIR="$GRAPHICS_SYSROOT" meson install -C "$BUILD/obj" --no-rebuild
 DESTDIR="$ROOT_DIR" meson install -C "$BUILD/obj" --no-rebuild
+find "$GRAPHICS_SYSROOT/usr/lib" -name '*.la' -delete
 
 [[ -x "$ROOT_DIR/usr/bin/Xvfb" ]] || cross_port_fail "Xvfb was not produced"
 [[ -x "$ROOT_DIR/usr/bin/Xorg" ]] || cross_port_fail "Xorg was not produced"
+[[ -f "$ROOT_DIR/usr/lib/xorg/modules/drivers/modesetting_drv.so" ]] || \
+    cross_port_fail "the modesetting DDX was not produced"
 
-printf 'xserver 21.1.24 (Xorg + Xvfb, modesetting DDX, software shadow fb) staged at %s\n' \
+# xkbcomp: the server compiles keymaps with it at runtime -- keyboard init is a
+# FATAL error without it. Its data comes from the xkeyboard-config port.
+meson setup "$BUILD/xkbcomp" "$ROOT/ports/src/xkbcomp" --cross-file "$CROSS_FILE" \
+    --prefix=/usr --libdir=lib --buildtype=release
+meson compile -C "$BUILD/xkbcomp" -j "$JOBS"
+DESTDIR="$ROOT_DIR" meson install -C "$BUILD/xkbcomp" --no-rebuild
+[[ -x "$ROOT_DIR/usr/bin/xkbcomp" ]] || cross_port_fail "xkbcomp was not produced"
+
+# xf86-input-libinput: the Xorg input driver, built against the server SDK. Its
+# meson takes the module dir from xorg-server.pc, which the cross pkg-config
+# rewrites to a sysroot-absolute path -- so the module installs under a doubled
+# prefix; relocate it to the real /usr.
+meson setup "$BUILD/xinput" "$ROOT/ports/src/xf86-input-libinput" --cross-file "$CROSS_FILE" \
+    --prefix=/usr --libdir=lib --buildtype=release
+meson compile -C "$BUILD/xinput" -j "$JOBS"
+DESTDIR="$ROOT_DIR" meson install -C "$BUILD/xinput" --no-rebuild
+doubled="$ROOT_DIR${GRAPHICS_SYSROOT}"
+if [[ -d "$doubled" ]]; then
+    cp -a "$doubled/usr/." "$ROOT_DIR/usr/"
+    rm -rf "$ROOT_DIR/mnt" "$ROOT_DIR/$(echo "$GRAPHICS_SYSROOT" | cut -d/ -f2)"
+fi
+[[ -f "$ROOT_DIR/usr/lib/xorg/modules/input/libinput_drv.so" ]] || \
+    cross_port_fail "the libinput input driver was not produced"
+
+find "$ROOT_DIR/usr/lib" -name '*.la' -delete
+printf 'xserver 21.1.24 (Xorg + Xvfb + modesetting DDX + xkbcomp + libinput driver) staged at %s\n' \
     "$ROOT_DIR"

@@ -263,3 +263,9 @@
 [submodule "ports/src/libpciaccess"]
 	path = ports/src/libpciaccess
 	url = https://gitlab.freedesktop.org/xorg/lib/libpciaccess.git
+[submodule "ports/src/xkbcomp"]
+	path = ports/src/xkbcomp
+	url = https://gitlab.freedesktop.org/xorg/app/xkbcomp.git
+[submodule "ports/src/xf86-input-libinput"]
+	path = ports/src/xf86-input-libinput
+	url = https://gitlab.freedesktop.org/xorg/driver/xf86-input-libinput.git
