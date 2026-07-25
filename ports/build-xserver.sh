@@ -32,6 +32,7 @@ OUT=${OUT:-$ROOT/ports/out}
 source "$ROOT/ports/lib/cross-port.sh"
 
 SOURCE="$ROOT/ports/src/xserver"
+PATCH_DIR="$ROOT/ports/src/patches/xserver"
 BUILD="$OUT/xserver-build"
 ROOT_DIR="$OUT/xserver-root"
 CROSS_FILE="$OUT/tunix-meson-cross.ini"
@@ -71,7 +72,18 @@ DESTDIR="$GRAPHICS_SYSROOT" meson install -C "$BUILD/libpciaccess" --no-rebuild
 DESTDIR="$ROOT_DIR" meson install -C "$BUILD/libpciaccess" --no-rebuild
 find "$GRAPHICS_SYSROOT/usr/lib" -name '*.la' -delete
 
-meson setup "$BUILD/obj" "$SOURCE" \
+# Patch a copy, never ports/src: two Tunix patches make the server run without a
+# VT (XORG_NO_VT) and tolerate a kernel with no link(2) in LockServer.
+mkdir -p "$BUILD/src"
+tar -C "$SOURCE" --exclude=.git -cf - . | tar -C "$BUILD/src" -xf -
+patches=("$PATCH_DIR"/*.patch)
+[[ -e "${patches[0]}" ]] || cross_port_fail "no patches found in $PATCH_DIR"
+for patch in "${patches[@]}"; do
+    patch -p1 -d "$BUILD/src" --fuzz=0 --forward < "$patch" ||
+        cross_port_fail "failed to apply $(basename "$patch")"
+done
+
+meson setup "$BUILD/obj" "$BUILD/src" \
     --cross-file "$CROSS_FILE" \
     --prefix=/usr --libdir=lib --buildtype=release \
     -Dxorg=true \
