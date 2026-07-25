@@ -85,8 +85,12 @@ shared=$(find "$ROOT_DIR/usr/lib" -maxdepth 1 -type f -name 'libinput.so.10*' -p
 [[ -n "$shared" ]] || cross_port_fail "libinput shared library was not installed"
 cross_port_check_library "$shared" libinput.so.10
 
-rm -rf "$ROOT_DIR/usr/include" "$ROOT_DIR/usr/lib/pkgconfig" "$ROOT_DIR/usr/share" \
+rm -rf "$ROOT_DIR/usr/include" "$ROOT_DIR/usr/lib/pkgconfig" \
        "$ROOT_DIR/usr/bin" "$ROOT_DIR/usr/libexec"
+# Keep the device-quirks data: the Xorg xf86-input-libinput driver errors out
+# ("failed to find data files") without /usr/share/libinput, so drop only the
+# rest of share (man pages, etc.).
+find "$ROOT_DIR/usr/share" -mindepth 1 -maxdepth 1 ! -name libinput -exec rm -rf {} +
 find "$ROOT_DIR/usr/lib" -maxdepth 1 -name '*.a' -delete
 find "$ROOT_DIR/usr/lib" -maxdepth 1 -type l -name '*.so' -delete
 
