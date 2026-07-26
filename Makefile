@@ -156,6 +156,23 @@ XFWM4_STAMP := $(PORT_OUT)/.xfwm4-ready
 # GDBus is only the client side and still needs this daemon.
 DBUS_ROOT := $(PORT_OUT)/dbus-root
 DBUS_STAMP := $(PORT_OUT)/.dbus-ready
+# garcon: the freedesktop menu library (libgarcon-1 + libgarcon-gtk3-1), used by
+# the panel and xfdesktop for the applications menu.
+GARCON_ROOT := $(PORT_OUT)/garcon-root
+GARCON_STAMP := $(PORT_OUT)/.garcon-ready
+# libxfce4windowing: Xfce's windowing abstraction (x11 backend), needed by the
+# panel, xfdesktop and the session manager.
+LIBXFCE4WINDOWING_ROOT := $(PORT_OUT)/libxfce4windowing-root
+LIBXFCE4WINDOWING_STAMP := $(PORT_OUT)/.libxfce4windowing-ready
+# xfce4-panel: the Xfce panel (taskbar), the most visible session component.
+XFCE4_PANEL_ROOT := $(PORT_OUT)/xfce4-panel-root
+XFCE4_PANEL_STAMP := $(PORT_OUT)/.xfce4-panel-ready
+# xfce4-session: the session manager (xfce4-session + startxfce4), on libSM/libICE.
+XFCE4_SESSION_ROOT := $(PORT_OUT)/xfce4-session-root
+XFCE4_SESSION_STAMP := $(PORT_OUT)/.xfce4-session-ready
+# xfdesktop: the desktop manager (wallpaper + desktop menu).
+XFDESKTOP_ROOT := $(PORT_OUT)/xfdesktop-root
+XFDESKTOP_STAMP := $(PORT_OUT)/.xfdesktop-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -663,6 +680,48 @@ $(DBUS_STAMP): $(CAIRO_STAMP) ports/build-dbus.sh ports/lib/cross-port.sh \
 	@test -x $(DBUS_ROOT)/usr/bin/dbus-daemon || { echo "dbus-daemon was not produced" >&2; exit 1; }
 	@touch $@
 
+# garcon: the freedesktop menu library, on the GTK3 + libxfce4ui stack.
+$(GARCON_STAMP): $(LIBXFCE4UI_STAMP) ports/build-garcon.sh ports/lib/cross-port.sh \
+	ports/src/garcon/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-garcon.sh
+	@test -e $(GARCON_ROOT)/usr/lib/libgarcon-1.so.0 || { echo "garcon was not produced" >&2; exit 1; }
+	@touch $@
+
+# libxfce4windowing: Xfce's windowing abstraction (x11 backend); reads monitor
+# info through libdisplay-info and tracks windows through libwnck.
+$(LIBXFCE4WINDOWING_STAMP): $(GTK3_STAMP) $(LIBWNCK_STAMP) $(LIBDISPLAY_INFO_STAMP) \
+	ports/build-libxfce4windowing.sh ports/lib/cross-port.sh \
+	ports/src/libxfce4windowing/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxfce4windowing.sh
+	@test -e $(LIBXFCE4WINDOWING_ROOT)/usr/lib/libxfce4windowing-0.so.0 || { echo "libxfce4windowing was not produced" >&2; exit 1; }
+	@touch $@
+
+# xfce4-panel: the panel. Links garcon, libwnck + libxfce4windowing, libxfce4ui.
+$(XFCE4_PANEL_STAMP): $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) \
+	ports/build-xfce4-panel.sh ports/lib/cross-port.sh ports/src/xfce4-panel/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfce4-panel.sh
+	@test -x $(XFCE4_PANEL_ROOT)/usr/bin/xfce4-panel || { echo "xfce4-panel was not produced" >&2; exit 1; }
+	@touch $@
+
+# xfce4-session: the session manager (xfce4-session + startxfce4).
+$(XFCE4_SESSION_STAMP): $(LIBXFCE4WINDOWING_STAMP) $(LIBSM_STAMP) \
+	ports/build-xfce4-session.sh ports/lib/cross-port.sh ports/src/xfce4-session/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfce4-session.sh
+	@test -x $(XFCE4_SESSION_ROOT)/usr/bin/xfce4-session || { echo "xfce4-session was not produced" >&2; exit 1; }
+	@touch $@
+
+# xfdesktop: the desktop manager (wallpaper + menu); links garcon + libxfce4windowing.
+$(XFDESKTOP_STAMP): $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) \
+	ports/build-xfdesktop.sh ports/lib/cross-port.sh ports/src/xfdesktop/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfdesktop.sh
+	@test -x $(XFDESKTOP_ROOT)/usr/bin/xfdesktop || { echo "xfdesktop was not produced" >&2; exit 1; }
+	@touch $@
+
 # Renders one offscreen frame on the build host, using the target loader. Proves
 # the shipped libraries initialise a softpipe context without needing to boot.
 gl-check: $(MESA_STAMP)
@@ -980,7 +1039,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1048,6 +1107,11 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(LIBWNCK_ROOT)/. $(ROOTFS)/
 	cp -R $(XFWM4_ROOT)/. $(ROOTFS)/
 	cp -R $(DBUS_ROOT)/. $(ROOTFS)/
+	cp -R $(GARCON_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBXFCE4WINDOWING_ROOT)/. $(ROOTFS)/
+	cp -R $(XFCE4_PANEL_ROOT)/. $(ROOTFS)/
+	cp -R $(XFCE4_SESSION_ROOT)/. $(ROOTFS)/
+	cp -R $(XFDESKTOP_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -1146,6 +1210,10 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -e $(ROOTFS)/usr/lib/libgcrypt.so.20 || { echo "libgcrypt was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfwm4 || { echo "xfwm4 was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/dbus-daemon || { echo "dbus-daemon was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xfce4-panel || { echo "xfce4-panel was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xfce4-session || { echo "xfce4-session was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xfdesktop || { echo "xfdesktop was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libgarcon-1.so.0 || { echo "garcon was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libSM.so.6 || { echo "libSM was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libstartup-notification-1.so.0 || { echo "startup-notification was not installed into the rootfs" >&2; exit 1; }

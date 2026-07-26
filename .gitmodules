@@ -290,3 +290,24 @@
 [submodule "ports/src/dbus"]
 	path = ports/src/dbus
 	url = https://gitlab.freedesktop.org/dbus/dbus.git
+[submodule "ports/src/garcon"]
+	path = ports/src/garcon
+	url = https://gitlab.xfce.org/xfce/garcon.git
+[submodule "ports/src/exo"]
+	path = ports/src/exo
+	url = https://gitlab.xfce.org/xfce/exo.git
+[submodule "ports/src/xfce4-settings"]
+	path = ports/src/xfce4-settings
+	url = https://gitlab.xfce.org/xfce/xfce4-settings.git
+[submodule "ports/src/xfce4-panel"]
+	path = ports/src/xfce4-panel
+	url = https://gitlab.xfce.org/xfce/xfce4-panel.git
+[submodule "ports/src/xfdesktop"]
+	path = ports/src/xfdesktop
+	url = https://gitlab.xfce.org/xfce/xfdesktop.git
+[submodule "ports/src/xfce4-session"]
+	path = ports/src/xfce4-session
+	url = https://gitlab.xfce.org/xfce/xfce4-session.git
+[submodule "ports/src/libxfce4windowing"]
+	path = ports/src/libxfce4windowing
+	url = https://gitlab.xfce.org/xfce/libxfce4windowing.git
