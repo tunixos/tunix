@@ -311,3 +311,6 @@
 [submodule "ports/src/libxfce4windowing"]
 	path = ports/src/libxfce4windowing
 	url = https://gitlab.xfce.org/xfce/libxfce4windowing.git
+[submodule "ports/src/libxml2"]
+	path = ports/src/libxml2
+	url = https://gitlab.gnome.org/GNOME/libxml2.git

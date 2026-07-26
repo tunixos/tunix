@@ -173,6 +173,14 @@ XFCE4_SESSION_STAMP := $(PORT_OUT)/.xfce4-session-ready
 # xfdesktop: the desktop manager (wallpaper + desktop menu).
 XFDESKTOP_ROOT := $(PORT_OUT)/xfdesktop-root
 XFDESKTOP_STAMP := $(PORT_OUT)/.xfdesktop-ready
+# libxml2: the GNOME XML library. Only libxkbcommon's libxkbregistry wants it
+# (built minimal), which xfce4-settings' keyboard support needs.
+LIBXML2_ROOT := $(PORT_OUT)/libxml2-root
+LIBXML2_STAMP := $(PORT_OUT)/.libxml2-ready
+# xfce4-settings: the settings daemon (xfsettingsd) + the settings dialogs.
+# xfsettingsd applies the GTK theme/font/cursor/keyboard from xfconf.
+XFCE4_SETTINGS_ROOT := $(PORT_OUT)/xfce4-settings-root
+XFCE4_SETTINGS_STAMP := $(PORT_OUT)/.xfce4-settings-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -342,7 +350,7 @@ $(PIXMAN_STAMP): $(MUSL_CROSS_STAMP) ports/build-pixman.sh ports/lib/cross-port.
 	@test -L $(PIXMAN_ROOT)/usr/lib/libpixman-1.so.0 || { echo "pixman was not produced" >&2; exit 1; }
 	@touch $@
 
-$(LIBXKBCOMMON_STAMP): $(MUSL_CROSS_STAMP) ports/build-libxkbcommon.sh \
+$(LIBXKBCOMMON_STAMP): $(MUSL_CROSS_STAMP) $(LIBXML2_STAMP) ports/build-libxkbcommon.sh \
 	ports/lib/cross-port.sh tools/xkb-test.c ports/src/libxkbcommon/meson.build
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxkbcommon.sh
@@ -722,6 +730,25 @@ $(XFDESKTOP_STAMP): $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) \
 	@test -x $(XFDESKTOP_ROOT)/usr/bin/xfdesktop || { echo "xfdesktop was not produced" >&2; exit 1; }
 	@touch $@
 
+# libxml2: minimal (no python/http/icu), on zlib, for libxkbcommon's xkbregistry.
+$(LIBXML2_STAMP): $(CAIRO_STAMP) ports/build-libxml2.sh ports/lib/cross-port.sh \
+	ports/src/libxml2/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxml2.sh
+	@test -e $(LIBXML2_ROOT)/usr/lib/libxml2.so.16 || { echo "libxml2 was not produced" >&2; exit 1; }
+	@touch $@
+
+# xfce4-settings: the settings daemon + dialogs. Links garcon and the X input
+# extensions; xfsettingsd applies the session's appearance from xfconf. Needs
+# libxkbregistry, hence LIBXML2_STAMP is pulled in through LIBXKBCOMMON below.
+$(XFCE4_SETTINGS_STAMP): $(GARCON_STAMP) $(LIBXKBCOMMON_STAMP) \
+	ports/build-xfce4-settings.sh ports/lib/cross-port.sh \
+	ports/src/xfce4-settings/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfce4-settings.sh
+	@test -x $(XFCE4_SETTINGS_ROOT)/usr/bin/xfsettingsd || { echo "xfsettingsd was not produced" >&2; exit 1; }
+	@touch $@
+
 # Renders one offscreen frame on the build host, using the target loader. Proves
 # the shipped libraries initialise a softpipe context without needing to boot.
 gl-check: $(MESA_STAMP)
@@ -1039,7 +1066,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1112,6 +1139,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(XFCE4_PANEL_ROOT)/. $(ROOTFS)/
 	cp -R $(XFCE4_SESSION_ROOT)/. $(ROOTFS)/
 	cp -R $(XFDESKTOP_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBXML2_ROOT)/. $(ROOTFS)/
+	cp -R $(XFCE4_SETTINGS_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -1213,6 +1242,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/xfce4-panel || { echo "xfce4-panel was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfce4-session || { echo "xfce4-session was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfdesktop || { echo "xfdesktop was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xfsettingsd || { echo "xfsettingsd was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/xfce-session || { echo "the xfce-session launcher was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libgarcon-1.so.0 || { echo "garcon was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libSM.so.6 || { echo "libSM was not installed into the rootfs" >&2; exit 1; }

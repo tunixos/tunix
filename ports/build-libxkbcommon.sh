@@ -67,7 +67,7 @@ meson setup "$BUILD" "$SOURCE" \
     -Denable-wayland=false \
     -Denable-tools=false \
     -Denable-docs=false \
-    -Denable-xkbregistry=false \
+    -Denable-xkbregistry=true \
     -Dxkb-config-root="$XKB_CONFIG_ROOT"
 
 meson compile -C "$BUILD" -j "$JOBS"
@@ -107,6 +107,8 @@ find "$ROOT_DIR/usr/lib" -maxdepth 1 -name '*.a' -delete
 find "$ROOT_DIR/usr/lib" -maxdepth 1 -type l -name '*.so' -delete
 
 cross_port_finalize_root "$ROOT_DIR"
-cross_port_check_runtime_closure "$ROOT_DIR"
+# libxkbregistry (the keyboard-layout registry, enabled for xfce4-settings)
+# links libxml2, shipped from libxml2-root.
+cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/libxml2-root" "$OUT/cairo-root"
 
 printf 'libxkbcommon %s staged at %s\n' "$version" "$ROOT_DIR"
