@@ -9,19 +9,6 @@
 #define MAX_CONSOLE_COLS 224
 #define MAX_CONSOLE_ROWS 80
 #define CELL_BG_EXPLICIT 0x01U
-#define WALLPAPER_MAGIC 0x4C415754U
-#define WALLPAPER_VERSION 1U
-#define WALLPAPER_RGB565 1U
-
-struct wallpaper_header {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t format;
-    uint32_t width;
-    uint32_t height;
-    uint32_t stride;
-    uint32_t data_size;
-} __attribute__((packed));
 
 struct console_cell {
     uint32_t codepoint;
@@ -96,36 +83,6 @@ static uint32_t shade_rgb(uint32_t color, uint32_t numerator, uint32_t denominat
     return (red << 16) | (green << 8) | blue;
 }
 
-static int rounded_contains(int x, int y, int width, int height, int radius,
-                            int pixel_x, int pixel_y) {
-    if (pixel_x < x || pixel_y < y || pixel_x >= x + width || pixel_y >= y + height)
-        return 0;
-    if (pixel_x >= x + radius && pixel_x < x + width - radius) return 1;
-    if (pixel_y >= y + radius && pixel_y < y + height - radius) return 1;
-    int center_x = pixel_x < x + radius ? x + radius : x + width - radius - 1;
-    int center_y = pixel_y < y + radius ? y + radius : y + height - radius - 1;
-    int dx = pixel_x - center_x;
-    int dy = pixel_y - center_y;
-    return dx * dx + dy * dy <= radius * radius;
-}
-
-static void backing_blend_rounded(int x, int y, int width, int height, int radius,
-                                  uint32_t color, uint8_t alpha) {
-    int start_x = x < 0 ? 0 : x;
-    int start_y = y < 0 ? 0 : y;
-    int end_x = x + width;
-    int end_y = y + height;
-    if (end_x > (int)layout.screen_width) end_x = (int)layout.screen_width;
-    if (end_y > (int)layout.screen_height) end_y = (int)layout.screen_height;
-    for (int py = start_y; py < end_y; py++) {
-        for (int px = start_x; px < end_x; px++) {
-            if (!rounded_contains(x, y, width, height, radius, px, py)) continue;
-            size_t index = (size_t)py * layout.screen_width + (uint32_t)px;
-            wallpaper_backing[index] = blend_rgb(wallpaper_backing[index], color, alpha);
-        }
-    }
-}
-
 static void copy_backing_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
     uint32_t end_x = x + width;
     uint32_t end_y = y + height;
@@ -138,72 +95,23 @@ static void copy_backing_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t h
     }
 }
 
-static uint32_t rgb565_to_rgb(uint16_t pixel) {
-    uint32_t red = ((pixel >> 11) & 0x1FU) * 255U / 31U;
-    uint32_t green = ((pixel >> 5) & 0x3FU) * 255U / 63U;
-    uint32_t blue = (pixel & 0x1FU) * 255U / 31U;
-    return (red << 16) | (green << 8) | blue;
-}
-
-static uint32_t sample_wallpaper(const struct wallpaper_header *header,
-                                 const uint16_t *pixels, uint32_t x, uint32_t y) {
-    uint64_t screen_ratio_left = (uint64_t)layout.screen_width * header->height;
-    uint64_t screen_ratio_right = (uint64_t)layout.screen_height * header->width;
-    uint32_t source_x;
-    uint32_t source_y;
-    if (screen_ratio_left > screen_ratio_right) {
-        uint32_t visible_height = (uint32_t)((uint64_t)header->width * layout.screen_height /
-                                             layout.screen_width);
-        uint32_t top = (header->height - visible_height) / 2U;
-        source_x = (uint32_t)((uint64_t)x * header->width / layout.screen_width);
-        source_y = top + (uint32_t)((uint64_t)y * visible_height / layout.screen_height);
-    } else {
-        uint32_t visible_width = (uint32_t)((uint64_t)header->height * layout.screen_width /
-                                            layout.screen_height);
-        uint32_t left = (header->width - visible_width) / 2U;
-        source_x = left + (uint32_t)((uint64_t)x * visible_width / layout.screen_width);
-        source_y = (uint32_t)((uint64_t)y * header->height / layout.screen_height);
-    }
-    if (source_x >= header->width) source_x = header->width - 1U;
-    if (source_y >= header->height) source_y = header->height - 1U;
-    return rgb565_to_rgb(pixels[(size_t)source_y * header->stride + source_x]);
-}
-
-static void render_wallpaper(const struct wallpaper_header *header,
-                             const uint16_t *pixels) {
-    for (uint32_t y = 0; y < layout.screen_height; y++) {
-        for (uint32_t x = 0; x < layout.screen_width; x++) {
-            uint32_t color = sample_wallpaper(header, pixels, x, y);
-            uint32_t edge_x = x < layout.screen_width - 1U - x ? x : layout.screen_width - 1U - x;
-            uint32_t edge_y = y < layout.screen_height - 1U - y ? y : layout.screen_height - 1U - y;
-            uint32_t horizontal = layout.screen_width > 1U ? edge_x * 96U / (layout.screen_width / 2U) : 0U;
-            uint32_t vertical = layout.screen_height > 1U ? edge_y * 64U / (layout.screen_height / 2U) : 0U;
-            if (horizontal > 96U) horizontal = 96U;
-            if (vertical > 64U) vertical = 64U;
-            color = shade_rgb(color, 145U + horizontal + vertical / 2U, 255U);
-            color = blend_rgb(color, 0x03101BU, 38U);
-            wallpaper_backing[(size_t)y * layout.screen_width + x] = color;
-        }
-    }
-}
-
 static void calculate_layout(void) {
+    /* Plain full-screen text console (VGA-text style): no floating window, no
+       margins beyond a small edge gap, text fills the whole framebuffer. */
     layout.screen_width = framebuffer_width();
     layout.screen_height = framebuffer_height();
-    uint32_t margin = layout.screen_width >= 1200U ? 44U : 28U;
-    layout.terminal_x = margin;
-    layout.terminal_y = layout.screen_height >= 700U ? 58U : 50U;
-    layout.terminal_width = layout.screen_width - margin * 2U;
-    layout.terminal_height = layout.screen_height - layout.terminal_y - margin;
+    uint32_t margin = 8U;
+    layout.terminal_x = 0U;
+    layout.terminal_y = 0U;
+    layout.terminal_width = layout.screen_width;
+    layout.terminal_height = layout.screen_height;
     layout.title_height = 0U;
-    layout.content_x = layout.terminal_x + 20U;
-    layout.content_y = layout.terminal_y + 20U;
+    layout.content_x = margin;
+    layout.content_y = margin;
     layout.cell_width = TUNIX_TERMINAL_FONT_WIDTH;
     layout.cell_height = TUNIX_TERMINAL_FONT_HEIGHT;
-    uint32_t content_width = layout.terminal_width - 40U;
-    uint32_t content_height = layout.terminal_height - 40U;
-    uint32_t columns = content_width / layout.cell_width;
-    uint32_t rows = content_height / layout.cell_height;
+    uint32_t columns = (layout.screen_width - margin * 2U) / layout.cell_width;
+    uint32_t rows = (layout.screen_height - margin * 2U) / layout.cell_height;
     if (columns > MAX_CONSOLE_COLS) columns = MAX_CONSOLE_COLS;
     if (rows > MAX_CONSOLE_ROWS) rows = MAX_CONSOLE_ROWS;
     if (columns < 40U) columns = 40U;
@@ -212,24 +120,13 @@ static void calculate_layout(void) {
     layout.rows = (uint16_t)rows;
 }
 
-static void render_chrome(void) {
-    int tx = (int)layout.terminal_x;
-    int ty = (int)layout.terminal_y;
-    int tw = (int)layout.terminal_width;
-    int th = (int)layout.terminal_height;
-
-    backing_blend_rounded(tx - 12, ty + 10, tw + 24, th + 24, 26, 0x000000U, 88U);
-    backing_blend_rounded(tx, ty, tw, th, 18, 0x000000U, 170U);
-    backing_blend_rounded(tx + 1, ty + 1, tw - 2, th - 2, 17, 0x07111CU, 210U);
-}
-
 static struct console_cell *cell_at(int row, int col) {
     return &console_cells[(size_t)row * layout.columns + (size_t)col];
 }
 
 static void reset_attributes(void) {
     current_foreground = 0xD8DEE9U;
-    current_background = 0x07111CU;
+    current_background = 0x000000U;
     current_background_explicit = 0;
     current_bold = 0;
     current_reverse = 0;
@@ -420,20 +317,14 @@ static uint32_t xterm_256_color(unsigned index) {
     return (gray << 16) | (gray << 8) | gray;
 }
 
-int terminal_init(const char *wallpaper_path) {
-    if (!framebuffer_available() || !wallpaper_path) return -1;
-    struct vfs_node *node = vfs_lookup(wallpaper_path);
-    if (!node || !node->data || node->length < sizeof(struct wallpaper_header)) return -1;
-    const struct wallpaper_header *header = (const struct wallpaper_header *)node->data;
-    uint64_t expected = (uint64_t)header->stride * header->height * sizeof(uint16_t);
-    if (header->magic != WALLPAPER_MAGIC || header->version != WALLPAPER_VERSION ||
-        header->format != WALLPAPER_RGB565 || !header->width || !header->height ||
-        header->stride < header->width || header->data_size != expected ||
-        sizeof(*header) + expected > node->length) return -1;
+int terminal_init(void) {
+    if (!framebuffer_available()) return -1;
 
     calculate_layout();
-    render_wallpaper(header, (const uint16_t *)(header + 1));
-    render_chrome();
+    /* Plain solid-black background across the whole framebuffer; text renders on
+       top and unset cell backgrounds sample from here. No wallpaper, no chrome. */
+    size_t pixel_count = (size_t)layout.screen_width * layout.screen_height;
+    for (size_t i = 0; i < pixel_count; i++) wallpaper_backing[i] = 0x000000U;
     copy_backing_rect(0, 0, layout.screen_width, layout.screen_height);
     clear_cell_model();
     reset_attributes();
@@ -491,7 +382,7 @@ void terminal_put_codepoint(uint32_t codepoint) {
         uint8_t explicit_background = current_background_explicit;
         if (current_reverse) {
             uint32_t temporary = foreground;
-            foreground = explicit_background ? background : 0x07111CU;
+            foreground = explicit_background ? background : 0x000000U;
             background = temporary;
             explicit_background = 1;
         }
@@ -544,7 +435,7 @@ void terminal_set_sgr_sequence(const unsigned *codes, unsigned count) {
             current_background = ansi_palette[8U + code - 100U];
             current_background_explicit = 1;
         } else if (code == 49U) {
-            current_background = 0x07111CU;
+            current_background = 0x000000U;
             current_background_explicit = 0;
         } else if ((code == 38U || code == 48U) && i + 1U < count) {
             uint32_t color = 0;

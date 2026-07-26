@@ -160,7 +160,7 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
     boot_log_stage(root_on_disk ? "ext2 root load" : "initramfs VFS indexing + ext2 seed",
                    &stage_started);
 #endif
-    if (terminal_init("/usr/share/tunix/wallpaper.twl") != 0)
+    if (terminal_init() != 0)
         panic("framebuffer terminal initialization failed");
 #if TUNIX_BOOT_TIMINGS
     boot_log_stage("terminal initialization", &stage_started);

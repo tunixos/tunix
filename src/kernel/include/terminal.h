@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-int terminal_init(const char *wallpaper_path);
+int terminal_init(void);
 void terminal_clear(void);
 void terminal_redraw(void);
 void terminal_print(const char *text);

@@ -163,7 +163,7 @@ int framebuffer_init(const struct boot_framebuffer_info *boot_info) {
     framebuffer.font_height = boot_info->font_height;
     framebuffer.graphics_owner = NULL;
     framebuffer.ready = 1;
-    framebuffer_fill_rgb(0x060B12U);
+    framebuffer_fill_rgb(0x000000U);
     return 0;
 }
 
