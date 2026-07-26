@@ -421,10 +421,15 @@ void input_init(void) {
     tty_reset_keyboard_state();
 }
 
-/* Has any open descriptor taken exclusive ownership of this device? */
-static int device_is_grabbed(unsigned device_id) {
+/* Is any descriptor reading this device? A userspace input stack that has the
+   keyboard open owns it -- Xorg's libinput driver (VT-less, so it never
+   EVIOCGRABs) as much as a Wayland compositor (which does grab). Either way the
+   kernel console must stop cooking the same keystrokes, or Ctrl+C typed into a
+   terminal under X fires a console SIGINT at the whole session. So gate on an
+   open reader, not just an exclusive grab. */
+static int device_has_reader(unsigned device_id) {
     for (struct input_reader *reader = input_readers; reader; reader = reader->next)
-        if (reader->device_id == device_id && reader->grabbed) return 1;
+        if (reader->device_id == device_id) return 1;
     return 0;
 }
 
@@ -438,10 +443,12 @@ static void input_drain_controller(void) {
         } else {
             raw_push(value);
             int pass_to_tty = keyboard_handle_event_byte(value);
-            /* A grabbed keyboard belongs to whoever grabbed it. Without this
-               every keystroke typed into a compositor would *also* be typed
-               into the shell sitting on the console underneath it. */
-            if (pass_to_tty && !device_is_grabbed(TUNIX_INPUT_DEVICE_KEYBOARD))
+            /* When an input stack (Xorg/libinput, a Wayland compositor) has the
+               keyboard open, it owns the keystrokes; the console must not also
+               cook them, or a keystroke typed into a window under X would also
+               hit the shell on the console underneath -- and Ctrl+C would fire a
+               console SIGINT that tears the whole session down. */
+            if (pass_to_tty && !device_has_reader(TUNIX_INPUT_DEVICE_KEYBOARD))
                 tty_handle_scancode(value);
         }
     }
