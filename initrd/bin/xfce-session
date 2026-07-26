@@ -1,0 +1,60 @@
+#!/bin/bash
+# The Xfce desktop session on Tunix's Xorg server. dinit's "xfce" service runs
+# this; it stays in the foreground (waiting on Xorg) so dinit can restart the
+# whole session if the X server dies.
+#
+# The pieces, in order:
+#   Xorg          VT-less on /dev/dri/card0 (XORG_NO_VT is the SEATD_VTBOUND=0
+#                 analogue; the modesetting DDX drives the DRM display).
+#   dbus-daemon   the session message bus. xfconfd (the config store) and the
+#                 Xfce components activate over it; GDBus is only the client side.
+#   xfsettingsd   applies the GTK theme, fonts, cursor and keyboard from xfconf.
+#   xfwm4         the window manager (Xrender compositor off -- no GLX here).
+#   xfce4-panel   the panel / taskbar.
+#   xfdesktop     the desktop background and menu.
+set -u
+
+export HOME=/root
+export DISPLAY=:0
+export XORG_NO_VT=1
+export XKB_BINDIR=/usr/bin
+export GDK_BACKEND=x11
+export XDG_RUNTIME_DIR=/run/user/0
+export XDG_CONFIG_DIRS=/etc/xdg
+export XDG_DATA_DIRS=/usr/share
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/0/bus"
+
+mkdir -p /tmp/.X11-unix /var/log /run/user/0 /var/lib/dbus
+chmod 1777 /tmp/.X11-unix
+chmod 0700 /run/user/0
+
+# GTK apps need compiled GSettings schemas, and D-Bus needs a machine id.
+glib-compile-schemas /usr/share/glib-2.0/schemas 2>/dev/null || true
+dbus-uuidgen --ensure=/var/lib/dbus/machine-id 2>/dev/null || \
+    dbus-uuidgen > /etc/machine-id 2>/dev/null || true
+
+Xorg :0 -config /etc/X11/xorg.conf -logfile /var/log/Xorg.0.log -nolisten tcp &
+XORG_PID=$!
+
+# Wait for the X server's socket before starting any client.
+for i in $(seq 1 40); do
+    [ -e /tmp/.X11-unix/X0 ] && break
+    kill -0 "$XORG_PID" 2>/dev/null || break
+    sleep 0.25
+done
+sleep 1
+
+# The session message bus, then the config store + settings daemon.
+dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
+sleep 1
+xfsettingsd --daemon 2>/dev/null || xfsettingsd &
+sleep 1
+
+# The desktop: window manager, panel, background.
+xfwm4 --compositor=off &
+sleep 1
+xfce4-panel &
+xfdesktop &
+
+# Keep the service in the foreground for dinit; when X exits, so does the session.
+wait "$XORG_PID"

@@ -1,0 +1,11 @@
+# The graphical session: the Xfce desktop on the Tunix Xorg server, via
+# /bin/xfce-session (which brings up Xorg, the D-Bus session bus, xfsettingsd,
+# xfwm4, xfce4-panel and xfdesktop). Needs rcS for /run/user/0 and /var/log.
+#
+# restart = true: if the X server or session dies the desktop comes back by
+# itself; dinit's built-in restart rate limiting stops a crash loop.
+type = process
+command = /bin/xfce-session
+depends-on = rcS
+restart = true
+logfile = /var/log/xfce.log

@@ -4,4 +4,6 @@
 type = internal
 waits-for = rcS
 waits-for = keymap
-waits-for = startx
+# The graphical session. The Xfce desktop on Xorg is the default; the weston
+# (Wayland) session is still available as the "startx" service.
+waits-for = xfce
