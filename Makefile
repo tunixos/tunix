@@ -131,6 +131,26 @@ FONTSTACK_STAMP := $(PORT_OUT)/.fontstack-ready
 # software shadow fb) + Xvfb, on the X libraries below. SHA1 from libgcrypt.
 XSERVER_ROOT := $(PORT_OUT)/xserver-root
 XSERVER_STAMP := $(PORT_OUT)/.xserver-ready
+# xcb-util: the small XCB utility library (xcb-aux/xcb-event/xcb-atom); nothing in
+# the weston stack wanted it, but startup-notification below needs it.
+XCB_UTIL_ROOT := $(PORT_OUT)/xcb-util-root
+XCB_UTIL_STAMP := $(PORT_OUT)/.xcb-util-ready
+# startup-notification: the freedesktop launch-feedback library, a libwnck (and
+# later xfce4-panel) dependency; links libxcb + xcb-util + x11-xcb.
+STARTUP_NOTIFICATION_ROOT := $(PORT_OUT)/startup-notification-root
+STARTUP_NOTIFICATION_STAMP := $(PORT_OUT)/.startup-notification-ready
+# libICE + libSM: X11 Inter-Client Exchange + Session Management, for
+# libxfce4ui's XfceSMClient (xfwm4 / xfce4-session save-and-restore).
+LIBSM_ROOT := $(PORT_OUT)/libsm-root
+LIBSM_STAMP := $(PORT_OUT)/.libsm-ready
+# libwnck-3: the window-list / pager / tasklist library, the first GTK3 consumer
+# that needs the x11 backend and a hard xfwm4 dependency.
+LIBWNCK_ROOT := $(PORT_OUT)/libwnck-root
+LIBWNCK_STAMP := $(PORT_OUT)/.libwnck-ready
+# xfwm4: the Xfce window manager, the first real Xfce X11 component on the Tunix
+# Xorg server (an ordinary X client with an Xrender compositor).
+XFWM4_ROOT := $(PORT_OUT)/xfwm4-root
+XFWM4_STAMP := $(PORT_OUT)/.xfwm4-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -349,7 +369,9 @@ $(LIBINPUT_STAMP): $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) ports/build-libinput.
 # zlib, libpng, freetype, expat, fontconfig and cairo, plus JetBrains Mono.
 # One rule because the chain is strictly ordered: fontconfig cannot be built
 # before freetype, and cairo cannot be built before fontconfig.
-$(CAIRO_STAMP): $(PIXMAN_STAMP) ports/build-cairo.sh ports/lib/cross-port.sh \
+# XEXT_STAMP: cairo builds its xlib backend (cairo-xlib, for GTK3's x11 backend),
+# so the X libraries have to be in the sysroot first.
+$(CAIRO_STAMP): $(PIXMAN_STAMP) $(XEXT_STAMP) ports/build-cairo.sh ports/lib/cross-port.sh \
 	ports/src/cairo/meson.build ports/src/freetype/meson.build \
 	ports/src/fontconfig/meson.build ports/src/libexpat/expat/CMakeLists.txt
 	@mkdir -p $(PORT_OUT)
@@ -525,11 +547,13 @@ $(GDK_PIXBUF_STAMP): $(GLIB_STAMP) ports/build-gdk-pixbuf.sh \
 	@test -e $(GDK_PIXBUF_ROOT)/usr/lib/libgdk_pixbuf-2.0.so.0 || { echo "gdk-pixbuf was not produced" >&2; exit 1; }
 	@touch $@
 
-# GTK3 itself, wayland backend only. MESA_STAMP is here for libepoxy, which
-# needs egl.pc even though stock GTK3 apps never touch GL.
+# GTK3 with both the wayland and x11 backends (the x11 one lets Xfce run under
+# Xorg as well as weston). MESA_STAMP is here for libepoxy; XEXT_STAMP for the
+# x11 backend's X libraries. One patch makes atk-bridge (AT-SPI/D-Bus) optional.
 $(GTK3_STAMP): $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(CAIRO_STAMP) \
 	$(WAYLAND_STAMP) $(WAYLAND_PROTOCOLS_STAMP) $(LIBXKBCOMMON_STAMP) $(MESA_STAMP) \
-	ports/build-gtk3.sh ports/lib/cross-port.sh ports/src/gtk/meson.build \
+	$(XEXT_STAMP) ports/build-gtk3.sh ports/lib/cross-port.sh ports/src/gtk/meson.build \
+	ports/src/patches/gtk/0001-make-atk-bridge-optional.patch \
 	ports/src/atk/meson.build ports/src/libepoxy/meson.build
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-gtk3.sh
@@ -558,9 +582,10 @@ $(XFCONF_STAMP): $(LIBXFCE4UTIL_STAMP) ports/build-xfconf.sh ports/lib/cross-por
 	@touch $@
 
 # libxfce4ui: the Xfce widget library. Links the GTK3 stack, libxfce4util and
-# libxfconf; wayland backend, x11 off. Stages libxfce4ui-2 and the private
-# keyboard library that Thunar's accelerators need.
-$(LIBXFCE4UI_STAMP): $(XFCONF_STAMP) $(GTK3_STAMP) ports/build-libxfce4ui.sh \
+# libxfconf; both the x11 and wayland backends, with session-management
+# (XfceSMClient, on libSM/libICE) and startup-notification enabled for xfwm4.
+$(LIBXFCE4UI_STAMP): $(XFCONF_STAMP) $(GTK3_STAMP) $(LIBSM_STAMP) \
+	$(STARTUP_NOTIFICATION_STAMP) $(XEXT_STAMP) ports/build-libxfce4ui.sh \
 	ports/lib/cross-port.sh ports/src/libxfce4ui/meson.build
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxfce4ui.sh
@@ -577,6 +602,49 @@ $(THUNAR_STAMP): $(LIBXFCE4UI_STAMP) ports/build-thunar.sh ports/lib/cross-port.
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-thunar.sh
 	@test -x $(THUNAR_ROOT)/usr/bin/thunar || { echo "thunar was not produced" >&2; exit 1; }
 	@test -e $(THUNAR_ROOT)/usr/lib/libthunarx-3.so.0 || { echo "libthunarx was not produced" >&2; exit 1; }
+	@touch $@
+
+# xcb-util: xcb-aux/xcb-event/xcb-atom on libxcb, needed by startup-notification.
+$(XCB_UTIL_STAMP): $(XCB_STAMP) ports/build-xcb-util.sh ports/lib/cross-port.sh \
+	ports/src/xcb-util/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xcb-util.sh
+	@test -e $(XCB_UTIL_ROOT)/usr/lib/libxcb-util.so.1 || { echo "xcb-util was not produced" >&2; exit 1; }
+	@touch $@
+
+# startup-notification: launch feedback on libxcb + xcb-util + x11-xcb.
+$(STARTUP_NOTIFICATION_STAMP): $(XCB_UTIL_STAMP) $(LIBX11_STAMP) \
+	ports/build-startup-notification.sh ports/lib/cross-port.sh \
+	ports/src/startup-notification/configure.in
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-startup-notification.sh
+	@test -e $(STARTUP_NOTIFICATION_ROOT)/usr/lib/libstartup-notification-1.so.0 || { echo "startup-notification was not produced" >&2; exit 1; }
+	@touch $@
+
+# libICE + libSM: X11 session management for libxfce4ui's XfceSMClient.
+$(LIBSM_STAMP): $(XCB_STAMP) ports/build-libsm.sh ports/lib/cross-port.sh \
+	ports/src/libICE/configure.ac ports/src/libSM/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libsm.sh
+	@test -e $(LIBSM_ROOT)/usr/lib/libSM.so.6 || { echo "libSM was not produced" >&2; exit 1; }
+	@touch $@
+
+# libwnck-3: the window-list/pager library, a hard xfwm4 dependency. The first
+# GTK3 consumer that needs the x11 backend (GTK3_STAMP) plus startup-notification.
+$(LIBWNCK_STAMP): $(GTK3_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(XEXT_STAMP) \
+	ports/build-libwnck.sh ports/lib/cross-port.sh ports/src/libwnck/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libwnck.sh
+	@test -e $(LIBWNCK_ROOT)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not produced" >&2; exit 1; }
+	@touch $@
+
+# xfwm4: the Xfce window manager. Links libwnck, libxfce4ui and the X libraries;
+# the Xrender compositor is on, GLX/epoxy off. Needs a running xfconfd at runtime.
+$(XFWM4_STAMP): $(LIBWNCK_STAMP) $(LIBXFCE4UI_STAMP) ports/build-xfwm4.sh \
+	ports/lib/cross-port.sh ports/src/xfwm4/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfwm4.sh
+	@test -x $(XFWM4_ROOT)/usr/bin/xfwm4 || { echo "xfwm4 was not produced" >&2; exit 1; }
 	@touch $@
 
 # Renders one offscreen frame on the build host, using the target loader. Proves
@@ -896,7 +964,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -958,6 +1026,11 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(FONTSTACK_ROOT)/. $(ROOTFS)/
 	cp -R $(XSERVER_ROOT)/. $(ROOTFS)/
 	cp -R $(PORT_OUT)/libgcrypt-root/. $(ROOTFS)/
+	cp -R $(XCB_UTIL_ROOT)/. $(ROOTFS)/
+	cp -R $(STARTUP_NOTIFICATION_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBSM_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBWNCK_ROOT)/. $(ROOTFS)/
+	cp -R $(XFWM4_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -1054,6 +1127,10 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/xkbcomp || { echo "xkbcomp was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/lib/xorg/modules/drivers/modesetting_drv.so || { echo "the modesetting DDX was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libgcrypt.so.20 || { echo "libgcrypt was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xfwm4 || { echo "xfwm4 was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libSM.so.6 || { echo "libSM was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libstartup-notification-1.so.0 || { echo "startup-notification was not installed into the rootfs" >&2; exit 1; }
 	ln -sfn ../usr/bin/tcc $(ROOTFS)/bin/tcc
 	ln -sfn ../usr/bin/lua $(ROOTFS)/bin/lua
 	ln -sfn ../usr/bin/fastfetch $(ROOTFS)/bin/fastfetch
