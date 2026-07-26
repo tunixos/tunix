@@ -7,7 +7,11 @@
 #include "include/vmm.h"
 #include "../include/tunix/framebuffer.h"
 
-#define FRAMEBUFFER_VIRTUAL_BASE 0xFFFFFFFFD0000000ULL
+/* Must sit ABOVE the kernel heap window, or the heap collides with it as it
+   grows and stops early. The heap is [HEAP_START, HEAP_START+HEAP_MAX_SIZE) =
+   [0xFFFFFFFFC0000000, 0xFFFFFFFFF0000000) (768 MiB); this is the first address
+   past it, leaving 256 MiB up to the top of the address space for the display. */
+#define FRAMEBUFFER_VIRTUAL_BASE 0xFFFFFFFFF0000000ULL
 
 #define EACCES 13
 #define EBUSY 16
