@@ -181,6 +181,10 @@ LIBXML2_STAMP := $(PORT_OUT)/.libxml2-ready
 # xfsettingsd applies the GTK theme/font/cursor/keyboard from xfconf.
 XFCE4_SETTINGS_ROOT := $(PORT_OUT)/xfce4-settings-root
 XFCE4_SETTINGS_STAMP := $(PORT_OUT)/.xfce4-settings-ready
+# ICU (prebuilt root, from the graphics bring-up): libvte links libicuuc for
+# Unicode, so the image needs its shared libraries even though no Makefile stamp
+# rule builds it.
+ICU_ROOT := $(PORT_OUT)/icu-root
 # VTE: the GNOME terminal widget (libvte-2.91), pinned to 0.72 to avoid the fmt/
 # simdutf/fast_float deps newer VTE needs. The engine behind xfce4-terminal.
 VTE_ROOT := $(PORT_OUT)/vte-root
@@ -1165,6 +1169,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(XFDESKTOP_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBXML2_ROOT)/. $(ROOTFS)/
 	cp -R $(XFCE4_SETTINGS_ROOT)/. $(ROOTFS)/
+	cp -R $(ICU_ROOT)/usr/lib/. $(ROOTFS)/usr/lib/
 	cp -R $(VTE_ROOT)/. $(ROOTFS)/
 	cp -R $(XFCE4_TERMINAL_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
@@ -1272,6 +1277,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/bin/xfce-session || { echo "the xfce-session launcher was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfce4-terminal || { echo "xfce4-terminal was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libvte-2.91.so.0 || { echo "vte was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libicuuc.so.77 || { echo "ICU (libvte's Unicode dependency) was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/share/backgrounds/tunix-wallpaper.png || { echo "the wallpaper was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libgarcon-1.so.0 || { echo "garcon was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
