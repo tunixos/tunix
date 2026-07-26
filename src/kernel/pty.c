@@ -23,7 +23,13 @@
 #define TIOCSPTLCK  0x40045431UL
 #define TIOCGPTLCK  0x80045439UL
 #define TIOCSWINSZ  0x5414UL
+#define TIOCPKT     0x5420UL
 #define FIONREAD    0x541BUL
+
+/* Packet-mode status byte prefixed to master reads once TIOCPKT is on. We only
+ * ever report ordinary data; the control flags (flush/stop/start/ioctl) are
+ * optional and readers such as VTE tolerate never seeing them. */
+#define TIOCPKT_DATA 0x00
 
 #define PTY_QUEUE_CAPACITY 8192U
 #define PTY_CANON_CAPACITY 1024U
@@ -49,6 +55,7 @@ struct pty_pair {
     int number;
     int allocated;
     int locked;
+    int packet_mode;
     int master_files;
     int slave_files;
     int slave_ever_opened;
@@ -110,6 +117,7 @@ static void initialize_termios(struct tunix_termios *termios) {
 
 static void reset_pair(struct pty_pair *pty) {
     pty->locked = 1;
+    pty->packet_mode = 0;
     pty->master_files = 0;
     pty->slave_files = 0;
     pty->slave_ever_opened = 0;
@@ -328,6 +336,18 @@ int64_t pty_read(struct pty_pair *pty, int master, size_t size, void *buffer) {
     }
     uint8_t *out = (uint8_t *)buffer;
     size_t completed = 0;
+    if (master && pty->packet_mode) {
+        /* Packet mode: emit a leading status byte, then the data. The reader
+         * (VTE) does read(fd, bp-1, rem+1) and strips one header per read, so a
+         * single read() must carry exactly one packet -- keep the total under
+         * `size` so sys_read's short-read check stops after this one call
+         * instead of concatenating a second header mid-stream. */
+        if (size < 2) return -EAGAIN;
+        out[completed++] = TIOCPKT_DATA;
+        while (completed + 1 < size && queue->count)
+            out[completed++] = (uint8_t)queue_pop(queue);
+        return (int64_t)completed;
+    }
     while (completed < size && queue->count) out[completed++] = (uint8_t)queue_pop(queue);
     return (int64_t)completed;
 }
@@ -435,6 +455,12 @@ int64_t pty_ioctl(struct pty_pair *pty, int master, unsigned long request,
     if (request == FIONREAD) {
         int available = (int)(master ? pty->to_master.count : pty->to_slave.count);
         return copy_to_user(user_argument, &available, sizeof(available)) == 0 ? 0 : -EFAULT;
+    }
+    if (request == TIOCPKT && master) {
+        int enable;
+        if (copy_from_user(&enable, user_argument, sizeof(enable)) != 0) return -EFAULT;
+        pty->packet_mode = enable != 0;
+        return 0;
     }
     return -ENOTTY;
 }
