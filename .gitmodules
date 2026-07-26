@@ -314,3 +314,9 @@
 [submodule "ports/src/libxml2"]
 	path = ports/src/libxml2
 	url = https://gitlab.gnome.org/GNOME/libxml2.git
+[submodule "ports/src/vte"]
+	path = ports/src/vte
+	url = https://gitlab.gnome.org/GNOME/vte.git
+[submodule "ports/src/xfce4-terminal"]
+	path = ports/src/xfce4-terminal
+	url = https://gitlab.xfce.org/apps/xfce4-terminal.git

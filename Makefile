@@ -181,6 +181,13 @@ LIBXML2_STAMP := $(PORT_OUT)/.libxml2-ready
 # xfsettingsd applies the GTK theme/font/cursor/keyboard from xfconf.
 XFCE4_SETTINGS_ROOT := $(PORT_OUT)/xfce4-settings-root
 XFCE4_SETTINGS_STAMP := $(PORT_OUT)/.xfce4-settings-ready
+# VTE: the GNOME terminal widget (libvte-2.91), pinned to 0.72 to avoid the fmt/
+# simdutf/fast_float deps newer VTE needs. The engine behind xfce4-terminal.
+VTE_ROOT := $(PORT_OUT)/vte-root
+VTE_STAMP := $(PORT_OUT)/.vte-ready
+# xfce4-terminal: the Xfce terminal emulator, on VTE.
+XFCE4_TERMINAL_ROOT := $(PORT_OUT)/xfce4-terminal-root
+XFCE4_TERMINAL_STAMP := $(PORT_OUT)/.xfce4-terminal-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -749,6 +756,23 @@ $(XFCE4_SETTINGS_STAMP): $(GARCON_STAMP) $(LIBXKBCOMMON_STAMP) \
 	@test -x $(XFCE4_SETTINGS_ROOT)/usr/bin/xfsettingsd || { echo "xfsettingsd was not produced" >&2; exit 1; }
 	@touch $@
 
+# VTE: the terminal widget (C++), on the GTK3 stack + pcre2/fribidi/icu. One
+# patch defines W_EXITCODE, a glibc macro musl omits.
+$(VTE_STAMP): $(GTK3_STAMP) ports/build-vte.sh ports/lib/cross-port.sh \
+	ports/src/vte/meson.build ports/src/patches/vte/0001-define-W_EXITCODE-for-musl.patch
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-vte.sh
+	@test -e $(VTE_ROOT)/usr/lib/libvte-2.91.so.0 || { echo "vte was not produced" >&2; exit 1; }
+	@touch $@
+
+# xfce4-terminal: the terminal emulator, on VTE + the Xfce widget stack.
+$(XFCE4_TERMINAL_STAMP): $(VTE_STAMP) $(LIBXFCE4UI_STAMP) ports/build-xfce4-terminal.sh \
+	ports/lib/cross-port.sh ports/src/xfce4-terminal/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-xfce4-terminal.sh
+	@test -x $(XFCE4_TERMINAL_ROOT)/usr/bin/xfce4-terminal || { echo "xfce4-terminal was not produced" >&2; exit 1; }
+	@touch $@
+
 # Renders one offscreen frame on the build host, using the target loader. Proves
 # the shipped libraries initialise a softpipe context without needing to boot.
 gl-check: $(MESA_STAMP)
@@ -1066,7 +1090,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1141,6 +1165,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(XFDESKTOP_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBXML2_ROOT)/. $(ROOTFS)/
 	cp -R $(XFCE4_SETTINGS_ROOT)/. $(ROOTFS)/
+	cp -R $(VTE_ROOT)/. $(ROOTFS)/
+	cp -R $(XFCE4_TERMINAL_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -1244,6 +1270,9 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/xfdesktop || { echo "xfdesktop was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfsettingsd || { echo "xfsettingsd was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/xfce-session || { echo "the xfce-session launcher was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/xfce4-terminal || { echo "xfce4-terminal was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libvte-2.91.so.0 || { echo "vte was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/share/backgrounds/tunix-wallpaper.png || { echo "the wallpaper was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libgarcon-1.so.0 || { echo "garcon was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libSM.so.6 || { echo "libSM was not installed into the rootfs" >&2; exit 1; }
