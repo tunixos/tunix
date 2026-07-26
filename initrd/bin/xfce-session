@@ -22,11 +22,19 @@ export GDK_BACKEND=x11
 export XDG_RUNTIME_DIR=/run/user/0
 export XDG_CONFIG_DIRS=/etc/xdg
 export XDG_DATA_DIRS=/usr/share
+export XDG_CONFIG_HOME=$HOME/.config
+export XDG_CACHE_HOME=$HOME/.cache
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/0/bus"
+# What the Xfce xinitrc would export: makes garcon build the applications menu
+# (xfce- prefixed .menu) and tells apps they are in an Xfce session.
+export XDG_MENU_PREFIX=xfce-
+export XDG_CURRENT_DESKTOP=XFCE
+export DESKTOP_SESSION=xfce
 # Use the default panel layout (clock, menu, window buttons, systray) instead of
 # prompting on first run -- there is nobody to answer the "one empty panel or the
 # default?" dialog on a fresh boot.
 export XFCE_PANEL_MIGRATE_DEFAULT=1
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
 
 mkdir -p /tmp/.X11-unix /var/log /run/user/0 /var/lib/dbus
 chmod 1777 /tmp/.X11-unix
@@ -54,20 +62,32 @@ sleep 1
 xfsettingsd &
 sleep 1
 
-# A plain dark-grey desktop backdrop (no wallpaper image is shipped). The output
-# is "Virtual-1" from the modesetting driver; a wrong name here is simply ignored.
-mon=/backdrop/screen0/monitorVirtual-1/workspace0
-xfconf-query -c xfce4-desktop -p "$mon/image-style" -n -t int -s 0 2>/dev/null || true
-xfconf-query -c xfce4-desktop -p "$mon/color-style" -n -t int -s 0 2>/dev/null || true
-xfconf-query -c xfce4-desktop -p "$mon/rgba1" -n \
-    -t double -t double -t double -t double -s 0.16 -s 0.17 -s 0.20 -s 1.0 2>/dev/null || true
-
-# The desktop: window manager, panel, background.
+# The desktop: window manager, then the file-manager daemon, panel and desktop.
 xfwm4 --compositor=off &
 sleep 1
+Thunar --daemon &
 xfce4-panel &
 sleep 1
 xfdesktop &
+sleep 2
+
+# The wallpaper. The RandR output name is not known ahead of time, so set the
+# backdrop on every monitor node xfdesktop has actually registered (its
+# .../last-image properties), plus the usual single-head guesses, then reload so
+# xfdesktop repaints without a solid-colour fallback.
+wp=/usr/share/backgrounds/tunix-wallpaper.png
+for prop in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep '/last-image$'); do
+    base=${prop%/last-image}
+    xfconf-query -c xfce4-desktop -p "$base/image-style" -t int -s 5 2>/dev/null || \
+        xfconf-query -c xfce4-desktop -p "$base/image-style" -n -t int -s 5 2>/dev/null || true
+    xfconf-query -c xfce4-desktop -p "$base/last-image" -t string -s "$wp" 2>/dev/null || true
+done
+for base in /backdrop/screen0/monitorVirtual-1/workspace0 \
+            /backdrop/screen0/monitor0/workspace0; do
+    xfconf-query -c xfce4-desktop -p "$base/image-style" -n -t int -s 5 2>/dev/null || true
+    xfconf-query -c xfce4-desktop -p "$base/last-image" -n -t string -s "$wp" 2>/dev/null || true
+done
+xfdesktop --reload 2>/dev/null || true
 
 # Keep the service in the foreground for dinit; when X exits, so does the session.
 wait "$XORG_PID"
