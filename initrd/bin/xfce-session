@@ -9,7 +9,9 @@
 #   dbus-daemon   the session message bus. xfconfd (the config store) and the
 #                 Xfce components activate over it; GDBus is only the client side.
 #   xfsettingsd   applies the GTK theme, fonts, cursor and keyboard from xfconf.
-#   xfwm4         the window manager (Xrender compositor off -- no GLX here).
+#   xfwm4         the window manager, XRender compositor ON (the server has
+#                 COMPOSITE/DAMAGE/RENDER; no GLX needed) so moving a window
+#                 repaints cleanly instead of smearing trails behind it.
 #   xfce4-panel   the panel / taskbar.
 #   xfdesktop     the desktop background and menu.
 set -u
@@ -63,7 +65,7 @@ xfsettingsd &
 sleep 1
 
 # The desktop: window manager, then the file-manager daemon, panel and desktop.
-xfwm4 --compositor=off &
+xfwm4 --compositor=on &
 sleep 1
 Thunar --daemon &
 xfce4-panel &
@@ -71,11 +73,13 @@ sleep 1
 xfdesktop &
 sleep 2
 
-# The wallpaper. The RandR output name is not known ahead of time, so set the
-# backdrop on every monitor node xfdesktop has actually registered (its
-# .../last-image properties), plus the usual single-head guesses, then reload so
-# xfdesktop repaints without a solid-colour fallback.
-wp=/usr/share/backgrounds/tunix-wallpaper.png
+# The wallpaper: the real Xfce "blue" backdrop that xfdesktop ships (a JPEG, which
+# gdk-pixbuf loads via its built-in libjpeg; the other shipped defaults are SVG
+# and there is no librsvg loader). The RandR output name is not known ahead of
+# time, so set the backdrop on every monitor node xfdesktop has actually
+# registered (its .../last-image properties), plus the usual single-head guesses,
+# then reload so xfdesktop repaints without a solid-colour fallback.
+wp=/usr/share/backgrounds/xfce/xfce-blue.jpg
 for prop in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep '/last-image$'); do
     base=${prop%/last-image}
     xfconf-query -c xfce4-desktop -p "$base/image-style" -t int -s 5 2>/dev/null || \

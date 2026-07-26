@@ -1278,7 +1278,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/xfce4-terminal || { echo "xfce4-terminal was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libvte-2.91.so.0 || { echo "vte was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libicuuc.so.77 || { echo "ICU (libvte's Unicode dependency) was not installed into the rootfs" >&2; exit 1; }
-	@test -e $(ROOTFS)/usr/share/backgrounds/tunix-wallpaper.png || { echo "the wallpaper was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/share/backgrounds/xfce/xfce-blue.jpg || { echo "the Xfce wallpaper was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libgarcon-1.so.0 || { echo "garcon was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libSM.so.6 || { echo "libSM was not installed into the rootfs" >&2; exit 1; }
