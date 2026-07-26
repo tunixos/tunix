@@ -91,7 +91,7 @@ cross_port_finalize_root "$ROOT_DIR"
 # libdbus links only expat (cairo-root ships libexpat) and the musl runtime; the
 # X roots come along because cairo-root's own libcairo now needs libX11 (the
 # xlib backend), which the closure walk would otherwise flag.
-cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/cairo-root" \
+cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/cairo-root" "$OUT/pixman-root" \
     "$OUT/libX11-root" "$OUT/xext-root" "$OUT/xcb-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
