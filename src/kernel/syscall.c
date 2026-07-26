@@ -1216,6 +1216,20 @@ static int64_t sys_accept(int fd, uint64_t user_address, uint64_t user_length, i
 
 static int64_t sys_sendto(int fd, uint64_t user_data, size_t length, int flags,
                           uint64_t user_address, uint64_t address_length) {
+    /* send()/sendto() on a unix socket: GLib's GDBus writes to the D-Bus session
+       bus this way, so a stream write has to work here as well as sendmsg. send()
+       carries no ancillary data; the destination address is ignored on a
+       connected socket. */
+    struct unix_socket *unix_value = socket_from_fd(fd);
+    if (unix_value) {
+        (void)flags;
+        (void)user_address;
+        (void)address_length;
+        if (length > 4096U) length = 4096U;
+        uint8_t data[4096];
+        if (length && copy_from_user(data, user_data, length) != 0) return -EFAULT;
+        return unix_socket_write(unix_value, length, data);
+    }
     struct netlink_socket *netlink = netlink_socket_from_fd(fd);
     if (netlink) {
         if (length > 4096U) return -EMSGSIZE;

@@ -287,3 +287,6 @@
 [submodule "ports/src/libSM"]
 	path = ports/src/libSM
 	url = https://gitlab.freedesktop.org/xorg/lib/libsm.git
+[submodule "ports/src/dbus"]
+	path = ports/src/dbus
+	url = https://gitlab.freedesktop.org/dbus/dbus.git
