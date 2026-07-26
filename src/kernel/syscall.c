@@ -207,6 +207,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_RSEQ 334
 #define SYS_CLONE3 435
 #define SYS_CLOSE_RANGE 436
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
 #define SYS_FACCESSAT2 439
 #define SYS_GETDENTS64 217
 
@@ -4308,11 +4309,24 @@ void syscall_dispatch(struct syscall_frame *frame) {
         }
         case SYS_CLOSE_RANGE: {
             struct process *process = process_current();
-            uint64_t first = frame->rdi, last = frame->rsi;
+            uint64_t first = frame->rdi, last = frame->rsi, flags = frame->rdx;
             if (!process || first >= PROCESS_MAX_FDS) frame->rax = 0;
             else {
                 if (last >= PROCESS_MAX_FDS) last = PROCESS_MAX_FDS - 1;
-                for (uint64_t fd = first; fd <= last; fd++) if (process->files->fds[fd]) process_close_fd(process, (int)fd);
+                if (flags & CLOSE_RANGE_CLOEXEC) {
+                    /* Mark the range close-on-exec rather than closing it now.
+                       glib/VTE's between-fork-and-exec spawn code calls
+                       close_range(3, ~0, CLOSE_RANGE_CLOEXEC) expecting its
+                       error-report pipe to stay open until the child execs;
+                       closing it here made every terminal spawn look like an
+                       instant child exit. */
+                    for (uint64_t fd = first; fd <= last; fd++)
+                        if (process->files->fds[fd])
+                            process_set_fd_flags(process, (int)fd, PROCESS_FD_CLOEXEC);
+                } else {
+                    for (uint64_t fd = first; fd <= last; fd++)
+                        if (process->files->fds[fd]) process_close_fd(process, (int)fd);
+                }
                 frame->rax = 0;
             }
             break;
