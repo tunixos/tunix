@@ -151,6 +151,11 @@ LIBWNCK_STAMP := $(PORT_OUT)/.libwnck-ready
 # Xorg server (an ordinary X client with an Xrender compositor).
 XFWM4_ROOT := $(PORT_OUT)/xfwm4-root
 XFWM4_STAMP := $(PORT_OUT)/.xfwm4-ready
+# D-Bus: libdbus-1 + the dbus-daemon message bus. The Xfce session's config store
+# (xfconfd) and its components reach each other over a D-Bus session bus; GLib's
+# GDBus is only the client side and still needs this daemon.
+DBUS_ROOT := $(PORT_OUT)/dbus-root
+DBUS_STAMP := $(PORT_OUT)/.dbus-ready
 # The GTK stack, layered on the graphics sysroot: glib (with pcre2), the text
 # shapers (fribidi, harfbuzz, pango), the image loader (gdk-pixbuf with a
 # shared libjpeg), and gtk3 itself (with cairo-gobject, atk and libepoxy).
@@ -647,6 +652,17 @@ $(XFWM4_STAMP): $(LIBWNCK_STAMP) $(LIBXFCE4UI_STAMP) ports/build-xfwm4.sh \
 	@test -x $(XFWM4_ROOT)/usr/bin/xfwm4 || { echo "xfwm4 was not produced" >&2; exit 1; }
 	@touch $@
 
+# D-Bus: libdbus-1 + dbus-daemon + tools, on expat (cairo chain) and pthreads.
+# The message bus for the Xfce session; xfconfd and the components activate over
+# it. systemd/selinux/apparmor/x11-autolaunch/docs/tests all off.
+$(DBUS_STAMP): $(CAIRO_STAMP) ports/build-dbus.sh ports/lib/cross-port.sh \
+	ports/src/dbus/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-dbus.sh
+	@test -e $(DBUS_ROOT)/usr/lib/libdbus-1.so.3 || { echo "libdbus was not produced" >&2; exit 1; }
+	@test -x $(DBUS_ROOT)/usr/bin/dbus-daemon || { echo "dbus-daemon was not produced" >&2; exit 1; }
+	@touch $@
+
 # Renders one offscreen frame on the build host, using the target loader. Proves
 # the shipped libraries initialise a softpipe context without needing to boot.
 gl-check: $(MESA_STAMP)
@@ -964,7 +980,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(WALLPAPER_OUTPUT) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1031,6 +1047,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(LIBSM_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBWNCK_ROOT)/. $(ROOTFS)/
 	cp -R $(XFWM4_ROOT)/. $(ROOTFS)/
+	cp -R $(DBUS_ROOT)/. $(ROOTFS)/
 	cp $(WALLPAPER_CONVERTER) $(ROOTFS)/usr/bin/tunix-wallpaper
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
@@ -1128,6 +1145,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -f $(ROOTFS)/usr/lib/xorg/modules/drivers/modesetting_drv.so || { echo "the modesetting DDX was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libgcrypt.so.20 || { echo "libgcrypt was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfwm4 || { echo "xfwm4 was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/dbus-daemon || { echo "dbus-daemon was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libwnck-3.so.0 || { echo "libwnck was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libSM.so.6 || { echo "libSM was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libstartup-notification-1.so.0 || { echo "startup-notification was not installed into the rootfs" >&2; exit 1; }
