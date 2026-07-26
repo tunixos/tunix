@@ -1337,14 +1337,18 @@ $(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts
 # ignored; 2 GiB is given only so QEMU surely presents a full contiguous 1 GiB
 # below the cap despite low-memory holes. The kernel heap grows from the PMM on
 # demand up to HEAP_MAX_SIZE. The CI boot smoke test stays at 256M (clones nothing).
+# -enable-kvm -cpu host: the whole X11 Xfce desktop is software-rendered
+# (llvmpipe + X core), which is unusably slow under plain TCG emulation. KVM runs
+# the guest at near-native speed. Falls back to TCG automatically if /dev/kvm is
+# absent (accel kvm:tcg).
 run: $(IMAGE)
 	rm -f $(BUILD)/serial.log
-	$(QEMU) -machine pc -m 2048M -drive format=raw,file=$(IMAGE) \
+	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -m 2048M -drive format=raw,file=$(IMAGE) \
 		-serial file:$(BUILD)/serial.log -monitor none -no-reboot -no-shutdown \
 		-netdev user,id=net0 -device rtl8139,netdev=net0
 
 headless: $(IMAGE)
-	$(QEMU) -machine pc -m 2048M -drive format=raw,file=$(IMAGE) \
+	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -m 2048M -drive format=raw,file=$(IMAGE) \
 		-nographic -monitor none -serial stdio -no-reboot -no-shutdown \
 		-netdev user,id=net0 -device rtl8139,netdev=net0
 
