@@ -17,7 +17,11 @@ jobs:
   build-image-and-boot:
     name: build-image-and-boot
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Generous, because the FIRST run (or a toolchain-version bump) builds the
+    # whole port tree from scratch -- the musl/gcc cross toolchain and LLVM alone
+    # are most of it. Every later run restores ports/out from the cache and only
+    # rebuilds the kernel + initramfs, finishing in a few minutes.
+    timeout-minutes: 300
 
     steps:
       - name: Checkout
@@ -58,6 +62,35 @@ jobs:
             tar \
             texinfo \
             xz-utils
+
+      # git checkout gives every source file a fresh mtime, so without a cache
+      # `make all` rebuilds every port on every run -- including the gcc cross
+      # toolchain, whose extraction floods and truncates the log. Cache the built
+      # ports/out and key it on what actually determines a port build: the build
+      # scripts, the shared port library, and the submodule pins (the source
+      # versions). A change to any of those busts the cache and rebuilds.
+      - name: Record submodule pins (part of the ports cache key)
+        run: git submodule status --recursive > .ci-submodule-pins
+
+      - name: Cache built ports
+        id: ports-cache
+        uses: actions/cache@v4
+        with:
+          path: ports/out
+          key: ports-out-v1-${{ hashFiles('ports/*.sh', 'ports/lib/*.sh', '.ci-submodule-pins') }}
+          # Fall back to the newest ports cache so a single changed port rebuilds
+          # incrementally instead of from zero (the gcc toolchain stays reused, as
+          # build-musl-cross.sh keys reuse on an existing stamp, not on mtimes).
+          restore-keys: |
+            ports-out-v1-
+
+      # On an exact hit the port inputs are byte-for-byte identical, so it is safe
+      # to bump the cached outputs past the just-checked-out sources and let make
+      # skip every port. (Only on an exact hit -- a partial restore must let make
+      # rebuild whatever changed.)
+      - name: Reuse cached ports
+        if: steps.ports-cache.outputs.cache-hit == 'true'
+        run: find ports/out -exec touch -c {} +
 
       - name: Build disk image
         run: make all
