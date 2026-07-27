@@ -53,6 +53,7 @@ jobs:
             git \
             gperf \
             libtool \
+            libtool-bin \
             make \
             nasm \
             pkg-config \
