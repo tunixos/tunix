@@ -36,7 +36,12 @@ export DESKTOP_SESSION=xfce
 # prompting on first run -- there is nobody to answer the "one empty panel or the
 # default?" dialog on a fresh boot.
 export XFCE_PANEL_MIGRATE_DEFAULT=1
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+
+# dinit runs this service with its own working directory (/etc/dinit.d); without
+# this, xfwm4, the panel and everything they spawn -- terminals, Thunar -- would
+# inherit it and open there instead of the home directory.
+cd "$HOME" || cd /
 
 mkdir -p /tmp/.X11-unix /var/log /run/user/0 /var/lib/dbus
 chmod 1777 /tmp/.X11-unix
