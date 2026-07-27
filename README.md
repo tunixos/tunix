@@ -2,7 +2,7 @@
 
 Tunix is a small Unix-like operating system experiment for x86_64. It includes a custom bootloader, kernel, initramfs-based userspace, framebuffer terminal, and a small set of ported userland tools.
 
-<img width="1332" height="836" alt="image" src="https://github.com/user-attachments/assets/c0717756-b161-40ac-8da3-a04712c13183" />
+![Tunix running the Xfce desktop](screenshots/screenshot.png)
 
 ## Features
 
@@ -16,8 +16,9 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
 - Git, with an `https://` transport via a static libcurl built against mbedTLS
   (so `git clone https://…` works); `ssh://` remotes are not supported
 - dinit as PID 1: services under `/etc/dinit.d`, controlled with `dinitctl`
-- Weston (Wayland) desktop on a DRM display, started automatically at boot,
-  and GTK 3 with the Wayland backend (`gtk3-widget-factory` in the panel)
+- A full Xfce desktop on Xorg (xfwm4, xfce4-panel, xfdesktop, Thunar and
+  xfce4-terminal), started automatically at boot; a Weston (Wayland) session is
+  also available
 
 ## Quick Start
 
