@@ -804,7 +804,8 @@ static int file_write_range(uint32_t ino, struct vfs_node *node,
 
     uint64_t end = offset + size;
     if (end > node->length) end = node->length;
-    if (size && end > offset) {
+    /* a node that never faulted in still matches what is on the disk */
+    if (size && end > offset && !(node->flags & VFS_LAZY_DATA)) {
         uint32_t first = (uint32_t)(offset / EXT2_BLOCK_SIZE);
         uint32_t last = (uint32_t)((end - 1U) / EXT2_BLOCK_SIZE);
         struct run_writer run = {0, 0};
@@ -960,6 +961,9 @@ static void unpersist_subtree(struct vfs_node *node, uint32_t parent_ino,
     if ((node->flags & 0xFFU) == VFS_DIRECTORY) {
         for (struct vfs_node *child = node->children; child; child = child->next)
             unpersist_subtree(child, node->disk_inode, child->name, depth + 1U);
+    } else {
+        /* the blocks are about to go, so the contents have to come in now */
+        vfs_fault_in(node);
     }
     remove_one(node, parent_ino, name);
 }
