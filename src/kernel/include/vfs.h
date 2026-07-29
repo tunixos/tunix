@@ -17,6 +17,8 @@
 #define VFS_VOLATILE    0x1000U
 /* Detached from the tree but still referenced -- see vfs_node_unref(). */
 #define VFS_ORPHANED    0x2000U
+/* Contents still on disk: data is NULL, length is set. See vfs_fault_in(). */
+#define VFS_LAZY_DATA   0x4000U
 
 struct vfs_node;
 struct file;
@@ -92,10 +94,15 @@ struct vfs_persist_ops {
     void (*written)(struct vfs_node *node, uint64_t offset, uint64_t size);
     void (*truncated)(struct vfs_node *node);
     void (*meta_changed)(struct vfs_node *node);
+    /* Fill in a VFS_LAZY_DATA node's contents. 0 on success. */
+    int (*fetch)(struct vfs_node *node);
 };
 
 void vfs_set_persist_ops(const struct vfs_persist_ops *ops);
 void vfs_notify_meta_changed(struct vfs_node *node);
+
+/* Make node->data usable. Every path that dereferences it must call this. */
+int vfs_fault_in(struct vfs_node *node);
 
 /* Hold a node that lives outside the directory tree, such as a process's cwd.
    Unreferencing an orphaned node is what finally frees it. */

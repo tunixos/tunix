@@ -33,6 +33,19 @@ void vfs_notify_meta_changed(struct vfs_node *node) {
     PERSIST(meta_changed, node);
 }
 
+/* Mount restores only the tree's shape; the first read, write, exec or mmap
+   of a file comes through here to pull its contents off the disk. */
+int vfs_fault_in(struct vfs_node *node) {
+    if (!node) return -1;
+    if (!(node->flags & VFS_LAZY_DATA)) return 0;
+    if (!persist_ops || !persist_ops->fetch) return -1;
+    if (persist_ops->fetch(node) != 0) return -1;
+    /* the fetch owes us length bytes; everything below dereferences them */
+    if (!node->data && node->length) return -1;
+    node->flags &= ~VFS_LAZY_DATA;
+    return 0;
+}
+
 static int valid_component(const char *name) {
     return name && name[0] && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
 }
@@ -229,7 +242,9 @@ static int split_parent(const char *path, char parent[256], char name[128]) {
 }
 
 static int64_t memory_read(struct vfs_node *node, uint64_t offset, size_t size, void *buffer) {
+    /* length first: a read at EOF must not fault the file in. */
     if (!node || !buffer || offset >= node->length) return 0;
+    if (vfs_fault_in(node) != 0) return -1;
     uint64_t available = node->length - offset;
     if ((uint64_t)size > available) size = (size_t)available;
     memcpy(buffer, (const uint8_t *)node->data + offset, size);
@@ -258,6 +273,8 @@ static int ensure_capacity(struct vfs_node *node, uint64_t required) {
 static int64_t memory_write(struct vfs_node *node, uint64_t offset, size_t size, const void *buffer) {
     if (!node || !buffer || (node->flags & VFS_READONLY)) return -1;
     if ((uint64_t)size > UINT64_MAX - offset) return -1;
+    /* a partial write still has to keep the bytes it does not cover */
+    if (vfs_fault_in(node) != 0) return -1;
     uint64_t end = offset + size;
     if (ensure_capacity(node, end) != 0) return -1;
     memcpy((uint8_t *)node->data + offset, buffer, size);
@@ -492,6 +509,10 @@ int vfs_rename(const char *old_path, const char *new_path) {
 
 int vfs_truncate(struct vfs_node *node, uint64_t length) {
     if (!node || (node->flags & 0xFFU) != VFS_FILE || (node->flags & VFS_READONLY)) return -1;
+    /* Truncating to nothing discards the contents, so drop the promise
+       instead of paying to fulfil it. */
+    if (!length) node->flags &= ~VFS_LAZY_DATA;
+    else if (vfs_fault_in(node) != 0) return -1;
     if (ensure_capacity(node, length) != 0) return -1;
     if (length > node->length) memset((uint8_t *)node->data + node->length, 0, (size_t)(length - node->length));
     node->length = length;
