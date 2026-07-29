@@ -273,7 +273,8 @@ static uint64_t program_header_virtual(const struct elf64_header *header,
 static int load_image(struct process *process, struct vfs_node *file,
                       uint64_t preferred_base, struct loaded_elf *loaded) {
     if (!process || !file || !loaded ||
-        (file->flags & 0xFFU) != VFS_FILE || !file->data) return -1;
+        (file->flags & 0xFFU) != VFS_FILE ||
+        vfs_fault_in(file) != 0 || !file->data) return -1;
     const uint8_t *image = (const uint8_t *)file->data;
     const struct elf64_header *header = (const struct elf64_header *)image;
     if (!valid_header(header, file->length)) return -1;
@@ -428,7 +429,8 @@ static int build_initial_stack(struct process *process,
 
 int elf_load_process(struct process *process, struct vfs_node *file,
                      const char *const argv[], const char *const envp[]) {
-    if (!process || !file || (file->flags & 0xFFU) != VFS_FILE || !file->data) return -1;
+    if (!process || !file || (file->flags & 0xFFU) != VFS_FILE ||
+        vfs_fault_in(file) != 0 || !file->data) return -1;
 
     if (file->length < sizeof(struct elf64_header)) return -1;
     struct loaded_elf main_image;
