@@ -20,23 +20,18 @@ extern void kprintf(const char *fmt, ...);
 /*
  * ext2 driver backing the entire root filesystem.
  *
- * The disk region after the initramfs holds a rev-1 ext2 filesystem
- * (4 KiB blocks, 128-byte inodes, one block group, dirent file_type
- * feature) that Linux can mount directly. The disk is the authoritative
- * copy: on first boot the initramfs seeds it, on later boots the whole
- * tree is loaded from it and the initramfs is not even read. The
- * in-memory VFS tree acts as the cache; every mutation is mirrored to
- * disk write-through via the VFS persistence hooks. Directories marked
- * VFS_VOLATILE (/tmp, /run, /dev, /proc, /var/tmp) stay RAM-only, like
- * tmpfs mounts on Linux. The superblock s_state field is the seed
- * commit marker: it stays 0 during formatting/seeding and only a fully
- * seeded filesystem is marked clean and used as a boot source.
+ * The disk region after the initramfs holds a rev-1 ext2 filesystem (4 KiB
+ * blocks, 128-byte inodes, dirent file_type) that Linux can mount directly.
+ * The disk is the authoritative copy: the initramfs seeds it on first boot
+ * and is not read again. Mounting restores only the tree's shape; file
+ * contents arrive one file at a time through ext2_fetch_data(). The VFS tree
+ * is the cache, and every mutation is mirrored to disk write-through via the
+ * persistence hooks. VFS_VOLATILE directories (/tmp, /run, /dev, /proc,
+ * /var/tmp) stay RAM-only. s_state is the seed commit marker: 0 while
+ * formatting, 1 only once a full seed landed.
  *
- * Metadata blocks (bitmaps, inode table, directories, indirect maps) go
- * through single-block write-back caches that are flushed at the end of
- * every VFS operation, and file contents move in multi-block DMA runs;
- * both matter enormously when the disk image sits on a slow host
- * filesystem.
+ * Metadata blocks go through single-block write-back caches flushed at the
+ * end of every VFS operation; file contents move in multi-block DMA runs.
  */
 
 #define EXT2_BLOCK_SIZE 4096U
@@ -1047,6 +1042,8 @@ static void ext2_event_meta_changed(struct vfs_node *node) {
     cache_flush_all();
 }
 
+static int ext2_fetch_data(struct vfs_node *node);
+
 static const struct vfs_persist_ops ext2_persist_ops = {
     .created = ext2_event_created,
     .removed = ext2_event_removed,
@@ -1054,6 +1051,7 @@ static const struct vfs_persist_ops ext2_persist_ops = {
     .written = ext2_event_written,
     .truncated = ext2_event_truncated,
     .meta_changed = ext2_event_meta_changed,
+    .fetch = ext2_fetch_data,
 };
 
 /* --- format ------------------------------------------------------------- */
@@ -1236,6 +1234,19 @@ static void *load_file_data(struct ext2_inode *inode) {
     return data;
 }
 
+/* vfs_fault_in() lands here the first time a restored file is touched. */
+static int ext2_fetch_data(struct vfs_node *node) {
+    if (!ext2_mounted_flag || !node || !node->disk_inode) return -1;
+    struct ext2_inode inode;
+    if (inode_read(node->disk_inode, &inode) != 0) return -1;
+    void *data = load_file_data(&inode);
+    if (!data) return inode.i_size ? -1 : 0;
+    node->data = data;
+    node->capacity = inode.i_size;
+    node->flags |= VFS_OWNED_DATA;
+    return 0;
+}
+
 static int load_symlink_target(struct ext2_inode *inode, char **out) {
     uint32_t size = inode->i_size;
     if (!size || size >= EXT2_BLOCK_SIZE) return -1;
@@ -1312,18 +1323,14 @@ static int load_directory(uint32_t dir_ino, struct vfs_node *dir_node,
                 if (below < 0) goto fail;
                 restored += below;
             } else if (format == EXT2_S_IFREG) {
-                void *data = load_file_data(&child);
-                if (!data && child.i_size) continue;
                 node = vfs_alloc_node(name, VFS_FILE);
                 if (!node || vfs_attach(dir_node, node) != 0) {
                     if (node) kfree(node);
-                    if (data) kfree(data);
                     continue;
                 }
-                node->data = data;
                 node->length = child.i_size;
-                node->capacity = child.i_size;
-                if (data) node->flags |= VFS_OWNED_DATA;
+                /* contents stay on disk until something asks for them */
+                if (child.i_size) node->flags |= VFS_LAZY_DATA;
                 node->mode = child.i_mode & 07777U;
                 node->uid = child.i_uid;
                 node->gid = child.i_gid;
