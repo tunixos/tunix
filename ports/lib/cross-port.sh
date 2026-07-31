@@ -147,13 +147,23 @@ set(CMAKE_SYSTEM_PROCESSOR x86_64)
 set(CMAKE_C_COMPILER "$CROSS_CC")
 set(CMAKE_CXX_COMPILER "$CROSS_CXX")
 set(CMAKE_AR "$CROSS_AR")
-set(CMAKE_FIND_ROOT_PATH "$GRAPHICS_SYSROOT/usr")
+# The sysroot top, not its /usr: CMake re-roots by concatenation, so /usr/lib
+# has to become \$root/usr/lib rather than \$root/usr/usr/lib.
+set(CMAKE_FIND_ROOT_PATH "$GRAPHICS_SYSROOT")
+# -rpath-link, as the meson cross file has, so the linker resolves transitive
+# NEEDED entries (an exe against libbrotlienc must find libbrotlicommon).
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-L$GRAPHICS_SYSROOT/usr/lib -Wl,-rpath-link,$GRAPHICS_SYSROOT/usr/lib")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "-L$GRAPHICS_SYSROOT/usr/lib -Wl,-rpath-link,$GRAPHICS_SYSROOT/usr/lib")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "-L$GRAPHICS_SYSROOT/usr/lib -Wl,-rpath-link,$GRAPHICS_SYSROOT/usr/lib")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 # Link tests would need to run a target binary; compiling one is proof enough.
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+# Guarded so a port whose probes need real link tests (brotli) can override it.
+if(NOT DEFINED CMAKE_TRY_COMPILE_TARGET_TYPE)
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+endif()
 EOF_TOOLCHAIN
 }
 
