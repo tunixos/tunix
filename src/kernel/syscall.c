@@ -286,6 +286,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define MAP_FIXED 0x10
 #define MREMAP_MAYMOVE 1
 #define MAP_ANONYMOUS 0x20
+#define MAP_NORESERVE 0x4000
 #define MAP_FIXED_NOREPLACE 0x100000
 
 #define F_DUPFD 0
@@ -1063,8 +1064,10 @@ static int64_t sys_socket(int domain, int type, int protocol) {
     if (type_flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) return -EINVAL;
     struct process *process = process_current();
     if (domain == TUNIX_AF_UNIX) {
-        if (base_type != TUNIX_SOCK_STREAM || protocol != 0) return -EOPNOTSUPP;
-        struct unix_socket *socket = unix_socket_create();
+        if ((base_type != TUNIX_SOCK_STREAM && base_type != TUNIX_SOCK_SEQPACKET) ||
+            protocol != 0) return -EOPNOTSUPP;
+        struct unix_socket *socket =
+            unix_socket_create(base_type == TUNIX_SOCK_SEQPACKET);
         if (!socket) return -ENOMEM;
         unix_socket_set_credentials(socket, process ? (int32_t)process->pid : 0, 0, 0);
         struct file *file = file_create_socket(socket);
@@ -1099,11 +1102,13 @@ static int64_t sys_socketpair(int domain, int type, int protocol,
     int base_type = type & 0xF;
     int type_flags = type & ~0xF;
     if (type_flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) return -EINVAL;
-    if (domain != TUNIX_AF_UNIX || base_type != TUNIX_SOCK_STREAM || protocol != 0)
+    if (domain != TUNIX_AF_UNIX || protocol != 0 ||
+        (base_type != TUNIX_SOCK_STREAM && base_type != TUNIX_SOCK_SEQPACKET))
         return -EOPNOTSUPP;
     struct unix_socket *first = NULL;
     struct unix_socket *second = NULL;
-    int status = unix_socket_pair(&first, &second);
+    int status = unix_socket_pair(&first, &second,
+                                  base_type == TUNIX_SOCK_SEQPACKET);
     if (status < 0) return status;
     struct process *process = process_current();
     int32_t pid = process ? (int32_t)process->pid : 0;
@@ -2491,6 +2496,7 @@ static void unmap_pages(struct process *process, uint64_t start, uint64_t end) {
     /* Forget any mapping record here first: the table must never describe
        pages that are no longer mapped. */
     process_forget_file_mappings(start, end);
+    process_release_reserved(start, end);
     for (uint64_t address = start; address < end; address += 4096) {
         uint64_t physical;
         uint64_t flags;
@@ -2523,6 +2529,8 @@ static int64_t sys_brk(uint64_t requested) {
 static int mapping_range_free(struct process *process, uint64_t base, uint64_t length) {
     if (!process || !length || base >= USER_ADDRESS_LIMIT ||
         length > USER_ADDRESS_LIMIT - base) return 0;
+    /* A reservation owns its range even though none of it is mapped yet. */
+    if (process_range_reserved(base, base + length)) return 0;
     for (uint64_t page = base; page < base + length; page += 4096) {
         if (vmm_translate(process->cr3, page, NULL, NULL) == 0) return 0;
     }
@@ -2642,6 +2650,24 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
             }
             return (int64_t)base;
         }
+    }
+
+    /*
+     * MAP_NORESERVE is the caller saying most of this will never be touched.
+     * JSC reserves 8 GiB of cage this way and halves down to 4 GiB before it
+     * gives up and aborts, so committing the range up front is not an option:
+     * record it and let the page fault handler commit a page at a time.
+     */
+    if (!file && (flags & MAP_NORESERVE) && !(flags & MAP_SHARED)) {
+        unmap_pages(process, base, base + length);
+        if (process_reserve_range(base, base + length,
+                                  page_flags | PAGE_USER | PAGE_PRESENT) != 0)
+            return -ENOMEM;
+        if (advance_mmap_base) {
+            process->mmap_base = base + length + 4096;
+            if (process->memory) process->memory->mmap_base = process->mmap_base;
+        }
+        return (int64_t)base;
     }
 
     uint64_t allocation_flags = file ? (page_flags | PAGE_WRITE) : page_flags;
@@ -2806,9 +2832,16 @@ static int64_t sys_mprotect(uint64_t address, uint64_t length, int prot) {
     uint64_t flags = PAGE_USER | PAGE_PRESENT;
     if (prot & PROT_WRITE) flags |= PAGE_WRITE;
     if (nx_enabled && !(prot & PROT_EXEC)) flags |= PAGE_NX;
+    /* Uncommitted reservation pages have no entry to protect; record the new
+       flags so the pages get them when a fault commits them. */
+    process_reprotect_reserved(address, address + length, flags | PAGE_PRESENT);
+    int reserved = process_range_reserved(address, address + length);
     for (uint64_t page = address; page < address + length; page += 4096) {
         uint64_t old_flags;
-        if (vmm_translate(process->cr3, page, NULL, &old_flags) != 0) return -ENOMEM;
+        if (vmm_translate(process->cr3, page, NULL, &old_flags) != 0) {
+            if (reserved) continue;
+            return -ENOMEM;
+        }
         uint64_t effective_flags = flags | (old_flags & (PAGE_DEVICE | PAGE_SHARED));
         if (nx_enabled && (old_flags & PAGE_DEVICE)) effective_flags |= PAGE_NX;
         /*
@@ -3311,6 +3344,27 @@ static int64_t sys_clone_fork_compat(struct syscall_frame *frame,
             !child_stack || exit_signal != 0) return -EINVAL;
         return process_clone_thread_from_syscall(frame, child_stack, tls,
                                                  parent_tid_user, child_tid_user, flags);
+    }
+
+    /*
+     * posix_spawn: CLONE_VM|CLONE_VFORK plus a stack for the helper that
+     * execs. The child gets a copy of the address space rather than sharing
+     * it, which is enough because the helper reports its result down a pipe,
+     * and the parent runs on rather than blocking -- it is already waiting on
+     * that pipe. GLib spawns every WebKit child process this way.
+     */
+    if ((flags & CLONE_VFORK) && (flags & CLONE_VM) && child_stack) {
+        uint64_t vfork_allowed = CLONE_VM | CLONE_VFORK | CLONE_FS | CLONE_FILES |
+                                 CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_SETTLS |
+                                 CLONE_FORK_METADATA_FLAGS;
+        if (flags & ~(0xFFULL | vfork_allowed)) return -ENOSYS;
+        if (exit_signal != 0 && exit_signal != SIGCHLD) return -EINVAL;
+        int64_t vfork_pid = process_fork_from_syscall(frame);
+        if (vfork_pid <= 0) return vfork_pid;
+        struct process *spawned = process_find((uint64_t)vfork_pid);
+        if (!spawned) return -ESRCH;
+        spawned->saved_frame.user_rsp = child_stack;
+        return vfork_pid;
     }
 
     uint64_t unsupported = flags & ~(0xFFULL | CLONE_FORK_METADATA_FLAGS);
