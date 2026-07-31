@@ -365,3 +365,7 @@
 	path = ports/src/libsoup
 	url = https://gitlab.gnome.org/GNOME/libsoup.git
 	shallow = true
+[submodule "ports/src/webkit"]
+	path = ports/src/webkit
+	url = https://github.com/WebKit/WebKit.git
+	shallow = true
