@@ -320,3 +320,8 @@
 [submodule "ports/src/xfce4-terminal"]
 	path = ports/src/xfce4-terminal
 	url = https://gitlab.xfce.org/apps/xfce4-terminal.git
+[submodule "ports/src/icu"]
+	path = ports/src/icu
+	url = https://github.com/unicode-org/icu.git
+	shallow = true
+	branch = maint/maint-77
