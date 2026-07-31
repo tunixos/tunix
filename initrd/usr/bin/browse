@@ -1,0 +1,15 @@
+#!/bin/bash
+# Launch WebKit's MiniBrowser on the Xfce session.
+#
+# WEBKIT_DISABLE_COMPOSITING_MODE=1 keeps webkit off the accelerated path (an
+# EGL context per web view, composited on llvmpipe). The non-composited path
+# renders with cairo straight into the X pixmap GTK3 already hands the server
+# -- the same pixels, minus a reference-rasterised GL pipeline in the middle.
+#
+# No TLS on the image (https needs glib-networking), so the default page is
+# local. http:// works; https:// reports an SSL error rather than hanging.
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export GDK_BACKEND=x11
+export DISPLAY=${DISPLAY:-:0}
+
+exec /usr/libexec/webkit2gtk-4.0/MiniBrowser "${@:-file:///usr/share/tunix/welcome.html}"
