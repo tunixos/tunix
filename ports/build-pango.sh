@@ -16,9 +16,8 @@ set -euo pipefail
 #
 # harfbuzz choices: freetype on (that is how it reaches the font files that
 # fontconfig resolves), glib on (pango and gtk both want hb's glib
-# integration), everything else -- cairo glue, ICU, gobject introspection --
-# off because pango brings its own cairo path and nothing here consumes the
-# rest.
+# integration), icu on (WebKit needs the harfbuzz-icu bridge; pango ignores
+# it), cairo glue and gobject introspection off.
 #
 # pango choices: fontconfig+freetype+cairo on (the whole point), xft off (no
 # X), libthai off (no Thai locale data on the image).
@@ -56,8 +55,9 @@ done
 cross_port_require_toolchain
 cross_port_require_tools meson ninja pkg-config python3 "$READELF"
 
-# Pango sits on glib and the cairo/fontconfig/freetype chain.
-for module in glib-2.0 gobject-2.0 gio-2.0 cairo fontconfig freetype2; do
+# Pango sits on glib and the cairo/fontconfig/freetype chain; icu-uc feeds the
+# harfbuzz-icu bridge.
+for module in glib-2.0 gobject-2.0 gio-2.0 cairo fontconfig freetype2 icu-uc; do
     [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/$module.pc" ]] || cross_port_fail \
         "$module is not in the graphics sysroot; build its port first"
 done
@@ -107,7 +107,7 @@ meson setup "$BUILD/harfbuzz" "$HARFBUZZ_SOURCE" \
     -Dglib=enabled \
     -Dgobject=disabled \
     -Dcairo=disabled \
-    -Dicu=disabled \
+    -Dicu=enabled \
     -Dgraphite2=disabled \
     -Dintrospection=disabled \
     -Dtests=disabled \
@@ -116,8 +116,10 @@ meson setup "$BUILD/harfbuzz" "$HARFBUZZ_SOURCE" \
     -Dutilities=disabled
 meson compile -C "$BUILD/harfbuzz" -j "$JOBS"
 install_both "$BUILD/harfbuzz"
-[[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/harfbuzz.pc" ]] || \
-    cross_port_fail "harfbuzz.pc was not installed"
+for pc in harfbuzz harfbuzz-icu; do
+    [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/$pc.pc" ]] || \
+        cross_port_fail "$pc.pc was not installed"
+done
 
 # --- pango ---------------------------------------------------------------
 check_version pango "$(meson_version "$PANGO_SOURCE")" "$EXPECTED_PANGO_VERSION"
@@ -157,6 +159,7 @@ for pc in pango pangocairo pangoft2; do
 done
 
 for spec in "libfribidi.so.0:libfribidi.so.0" "libharfbuzz.so.0:libharfbuzz.so.0" \
+            "libharfbuzz-icu.so.0:libharfbuzz-icu.so.0" \
             "libpango-1.0.so.0:libpango-1.0.so.0" \
             "libpangocairo-1.0.so.0:libpangocairo-1.0.so.0" \
             "libpangoft2-1.0.so.0:libpangoft2-1.0.so.0"; do
@@ -179,7 +182,8 @@ cross_port_finalize_root "$ROOT_DIR"
 # mesa-root is in the closure list because it is what ships libstdc++ and
 # libgcc_s, and harfbuzz is C++; libffi and pixman close over glib and cairo.
 cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/glib-root" "$OUT/cairo-root" \
-    "$OUT/mesa-root" "$OUT/libdrm-root" "$OUT/libffi-root" "$OUT/pixman-root"
+    "$OUT/mesa-root" "$OUT/libdrm-root" "$OUT/libffi-root" "$OUT/pixman-root" \
+    "$OUT/icu-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
 printf 'pango %s (fribidi %s, harfbuzz %s) staged at %s (%s)\n' \
