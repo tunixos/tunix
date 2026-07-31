@@ -181,10 +181,25 @@ LIBXML2_STAMP := $(PORT_OUT)/.libxml2-ready
 # xfsettingsd applies the GTK theme/font/cursor/keyboard from xfconf.
 XFCE4_SETTINGS_ROOT := $(PORT_OUT)/xfce4-settings-root
 XFCE4_SETTINGS_STAMP := $(PORT_OUT)/.xfce4-settings-ready
-# ICU (prebuilt root, from the graphics bring-up): libvte links libicuuc for
-# Unicode, so the image needs its shared libraries even though no Makefile stamp
-# rule builds it.
+# ICU: Unicode. libvte links libicuuc, and webkit links the whole set.
 ICU_ROOT := $(PORT_OUT)/icu-root
+ICU_STAMP := $(PORT_OUT)/.icu-ready
+# The rest of the WebKit stack: storage, image/font codecs, crypto, the HTTP
+# client, then the engine (webkit2gtk-4.0 on GTK3 + libsoup2).
+SQLITE_ROOT := $(PORT_OUT)/sqlite-root
+SQLITE_STAMP := $(PORT_OUT)/.sqlite-ready
+LIBWEBP_ROOT := $(PORT_OUT)/libwebp-root
+LIBWEBP_STAMP := $(PORT_OUT)/.libwebp-ready
+WOFF2_ROOT := $(PORT_OUT)/woff2-root
+WOFF2_STAMP := $(PORT_OUT)/.woff2-ready
+LIBGCRYPT_ROOT := $(PORT_OUT)/libgcrypt-root
+LIBGCRYPT_STAMP := $(PORT_OUT)/.libgcrypt-ready
+LIBTASN1_ROOT := $(PORT_OUT)/libtasn1-root
+LIBTASN1_STAMP := $(PORT_OUT)/.libtasn1-ready
+LIBSOUP_ROOT := $(PORT_OUT)/libsoup-root
+LIBSOUP_STAMP := $(PORT_OUT)/.libsoup-ready
+WEBKITGTK_ROOT := $(PORT_OUT)/webkitgtk-root
+WEBKITGTK_STAMP := $(PORT_OUT)/.webkitgtk-ready
 # VTE: the GNOME terminal widget (libvte-2.91), pinned to 0.72 to avoid the fmt/
 # simdutf/fast_float deps newer VTE needs. The engine behind xfce4-terminal.
 VTE_ROOT := $(PORT_OUT)/vte-root
@@ -564,7 +579,7 @@ $(GLIB_STAMP): $(CAIRO_STAMP) $(LIBFFI_STAMP) ports/build-glib.sh \
 
 # Text shaping for GTK: fribidi, harfbuzz and pango in one strictly ordered
 # chain, mirroring the cairo script's structure.
-$(PANGO_STAMP): $(GLIB_STAMP) $(CAIRO_STAMP) ports/build-pango.sh \
+$(PANGO_STAMP): $(GLIB_STAMP) $(CAIRO_STAMP) $(ICU_STAMP) ports/build-pango.sh \
 	ports/lib/cross-port.sh ports/src/pango/meson.build \
 	ports/src/patches/pango/0001-pangofc-fontmap-include-fcfreetype.patch \
 	ports/src/harfbuzz/meson.build ports/src/fribidi/meson.build
@@ -736,12 +751,83 @@ $(XFDESKTOP_STAMP): $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) \
 	@test -x $(XFDESKTOP_ROOT)/usr/bin/xfdesktop || { echo "xfdesktop was not produced" >&2; exit 1; }
 	@touch $@
 
-# libxml2: minimal (no python/http/icu), on zlib, for libxkbcommon's xkbregistry.
+# libxml2 (no python/http/icu) for libxkbcommon's xkbregistry, plus libxslt;
+# WebCore parses XML and XSLT with both.
 $(LIBXML2_STAMP): $(CAIRO_STAMP) ports/build-libxml2.sh ports/lib/cross-port.sh \
-	ports/src/libxml2/meson.build
+	ports/src/libxml2/meson.build ports/src/libxslt/CMakeLists.txt
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libxml2.sh
 	@test -e $(LIBXML2_ROOT)/usr/lib/libxml2.so.16 || { echo "libxml2 was not produced" >&2; exit 1; }
+	@test -e $(LIBXML2_ROOT)/usr/lib/libxslt.so.1 || { echo "libxslt was not produced" >&2; exit 1; }
+	@touch $@
+
+# --- the WebKit stack ----------------------------------------------------
+# ICU cross-builds in two passes (host tools first); mesa is in the closure
+# list only because it ships libstdc++.
+$(ICU_STAMP): $(MUSL_CROSS_STAMP) $(MESA_STAMP) ports/build-icu.sh \
+	ports/lib/cross-port.sh ports/src/icu/icu4c/source/configure
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-icu.sh
+	@test -e $(ICU_ROOT)/usr/lib/libicuuc.so.77 || { echo "icu was not produced" >&2; exit 1; }
+	@touch $@
+
+$(SQLITE_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) ports/build-sqlite.sh \
+	ports/lib/cross-port.sh ports/src/sqlite/configure
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-sqlite.sh
+	@test -x $(SQLITE_ROOT)/usr/bin/sqlite3 || { echo "sqlite was not produced" >&2; exit 1; }
+	@touch $@
+
+$(LIBWEBP_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) ports/build-libwebp.sh \
+	ports/lib/cross-port.sh ports/src/libwebp/CMakeLists.txt
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libwebp.sh
+	@test -e $(LIBWEBP_ROOT)/usr/lib/libwebpdemux.so.2 || { echo "libwebp was not produced" >&2; exit 1; }
+	@touch $@
+
+$(WOFF2_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) $(MESA_STAMP) \
+	ports/build-woff2.sh ports/lib/cross-port.sh \
+	ports/src/patches/woff2/0001-output-h-include-cstdint.patch \
+	ports/src/brotli/CMakeLists.txt ports/src/woff2/CMakeLists.txt
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-woff2.sh
+	@test -e $(WOFF2_ROOT)/usr/lib/libbrotlidec.so.1 || { echo "brotli was not produced" >&2; exit 1; }
+	@test -e $(WOFF2_ROOT)/usr/lib/libwoff2dec.so.1.0.2 || { echo "woff2 was not produced" >&2; exit 1; }
+	@touch $@
+
+$(LIBGCRYPT_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) ports/build-libgcrypt.sh \
+	ports/lib/cross-port.sh ports/src/libgpg-error/configure.ac \
+	ports/src/libgcrypt/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libgcrypt.sh
+	@test -e $(LIBGCRYPT_ROOT)/usr/lib/libgcrypt.so.20 || { echo "libgcrypt was not produced" >&2; exit 1; }
+	@touch $@
+
+$(LIBTASN1_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) ports/build-libtasn1.sh \
+	ports/lib/cross-port.sh ports/src/libtasn1/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libtasn1.sh
+	@test -e $(LIBTASN1_ROOT)/usr/lib/libtasn1.so.6 || { echo "libtasn1 was not produced" >&2; exit 1; }
+	@touch $@
+
+$(LIBSOUP_STAMP): $(GLIB_STAMP) $(SQLITE_STAMP) $(LIBXML2_STAMP) $(WOFF2_STAMP) \
+	ports/build-libsoup.sh ports/lib/cross-port.sh \
+	ports/src/libpsl/meson.build ports/src/libsoup/meson.build
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-libsoup.sh
+	@test -e $(LIBSOUP_ROOT)/usr/lib/libsoup-2.4.so.1 || { echo "libsoup was not produced" >&2; exit 1; }
+	@touch $@
+
+# The engine. Compiles on native ext4 (rsynced there) because a few thousand
+# C++ TUs over drvfs is not a build, it is an archaeology dig.
+$(WEBKITGTK_STAMP): $(GTK3_STAMP) $(ICU_STAMP) $(LIBXML2_STAMP) $(SQLITE_STAMP) \
+	$(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) \
+	$(LIBSOUP_STAMP) ports/build-webkitgtk.sh ports/lib/cross-port.sh \
+	ports/src/webkit/Source/cmake/OptionsGTK.cmake
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-webkitgtk.sh
+	@test -e $(WEBKITGTK_ROOT)/usr/lib/libwebkit2gtk-4.0.so.37 || { echo "webkitgtk was not produced" >&2; exit 1; }
+	@test -x $(WEBKITGTK_ROOT)/usr/libexec/webkit2gtk-4.0/MiniBrowser || { echo "MiniBrowser was not produced" >&2; exit 1; }
 	@touch $@
 
 # xfce4-settings: the settings daemon + dialogs. Links garcon and the X input
@@ -1082,7 +1168,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1160,6 +1246,13 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(ICU_ROOT)/usr/lib/. $(ROOTFS)/usr/lib/
 	cp -R $(VTE_ROOT)/. $(ROOTFS)/
 	cp -R $(XFCE4_TERMINAL_ROOT)/. $(ROOTFS)/
+	cp -R $(SQLITE_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBWEBP_ROOT)/. $(ROOTFS)/
+	cp -R $(WOFF2_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBGCRYPT_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBTASN1_ROOT)/. $(ROOTFS)/
+	cp -R $(LIBSOUP_ROOT)/. $(ROOTFS)/
+	cp -R $(WEBKITGTK_ROOT)/. $(ROOTFS)/
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
 	cp $(SSL_HELPER) $(ROOTFS)/usr/bin/openssl
@@ -1240,6 +1333,15 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -e $(ROOTFS)/usr/lib/libgtk-3.so.0 || { echo "gtk3 was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/gtk3-widget-factory || { echo "gtk3-widget-factory was not installed into the rootfs" >&2; exit 1; }
 	@test -f $(ROOTFS)/usr/share/glib-2.0/schemas/gschemas.compiled || { echo "gsettings schemas were not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libwebkit2gtk-4.0.so.37 || { echo "webkitgtk was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libjavascriptcoregtk-4.0.so.18 || { echo "javascriptcoregtk was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/libexec/webkit2gtk-4.0/MiniBrowser || { echo "MiniBrowser was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/libexec/webkit2gtk-4.0/WebKitWebProcess || { echo "WebKitWebProcess was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libsoup-2.4.so.1 || { echo "libsoup was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libxslt.so.1 || { echo "libxslt was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libharfbuzz-icu.so.0 || { echo "harfbuzz-icu was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libicuuc.so.77 || { echo "icu was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/share/tunix/welcome.html || { echo "the browser welcome page was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxfce4util.so.7 || { echo "libxfce4util was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxfconf-0.so.3 || { echo "xfconf was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxfce4ui-2.so.0 || { echo "libxfce4ui was not installed into the rootfs" >&2; exit 1; }
@@ -1288,6 +1390,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/startx $(ROOTFS)/bin/fb-shot $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
 		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test \
 		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/fastfetch \
+		$(ROOTFS)/usr/bin/browse \
 		$(ROOTFS)/usr/bin/as $(ROOTFS)/usr/bin/ld $(ROOTFS)/usr/bin/ar \
 		$(ROOTFS)/usr/bin/nm $(ROOTFS)/usr/bin/ranlib $(ROOTFS)/usr/bin/objcopy \
 		$(ROOTFS)/usr/bin/objdump $(ROOTFS)/usr/bin/readelf $(ROOTFS)/usr/bin/size \
