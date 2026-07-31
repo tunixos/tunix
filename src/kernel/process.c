@@ -95,6 +95,8 @@ static void memory_copy_mappings(struct process_memory *destination,
         if (destination->mappings[index].file)
             file_ref(destination->mappings[index].file);
     }
+    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++)
+        destination->reservations[index] = source->reservations[index];
 }
 
 int process_record_file_mapping(uint64_t start, uint64_t length,
@@ -666,6 +668,111 @@ void process_start_first(void) {
  * Returns 1 when a page was mapped and the faulting instruction should be
  * retried, 0 when the fault was not a stack growth and must be handled.
  */
+/* --- MAP_NORESERVE reservations ----------------------------------------- */
+
+static struct process_reservation *reservation_slots(void) {
+    return current && current->memory ? current->memory->reservations : NULL;
+}
+
+int process_reserve_range(uint64_t start, uint64_t end, uint64_t flags) {
+    struct process_reservation *slots = reservation_slots();
+    if (!slots || start >= end) return -1;
+    process_release_reserved(start, end);
+    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
+        if (slots[index].start) continue;
+        slots[index].start = start;
+        slots[index].end = end;
+        slots[index].flags = flags;
+        return 0;
+    }
+    return -1;
+}
+
+/*
+ * Drop [start, end) from every reservation it overlaps. A hole punched in the
+ * middle needs a second slot for the tail; if none is free the tail is
+ * forgotten, which costs a future fault its mapping rather than corrupting
+ * anything, so the caller is not failed for it.
+ */
+void process_release_reserved(uint64_t start, uint64_t end) {
+    struct process_reservation *slots = reservation_slots();
+    if (!slots || start >= end) return;
+    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
+        struct process_reservation *entry = &slots[index];
+        if (!entry->start || end <= entry->start || start >= entry->end) continue;
+        uint64_t old_end = entry->end;
+        if (start <= entry->start && end >= entry->end) {
+            entry->start = 0;
+            continue;
+        }
+        if (start > entry->start) {
+            entry->end = start;
+            if (end < old_end) {
+                for (int slot = 0; slot < PROCESS_MAX_RESERVATIONS; slot++) {
+                    if (slots[slot].start) continue;
+                    slots[slot].start = end;
+                    slots[slot].end = old_end;
+                    slots[slot].flags = entry->flags;
+                    break;
+                }
+            }
+        } else {
+            entry->start = end;
+        }
+    }
+}
+
+void process_reprotect_reserved(uint64_t start, uint64_t end, uint64_t flags) {
+    struct process_reservation *slots = reservation_slots();
+    if (!slots || start >= end) return;
+    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
+        struct process_reservation *entry = &slots[index];
+        if (!entry->start || end <= entry->start || start >= entry->end) continue;
+        /* Whole-range changes are what mprotect on a cage actually does; a
+           partial one keeps the old flags on the part it does not cover. */
+        if (start <= entry->start && end >= entry->end) entry->flags = flags;
+    }
+}
+
+int process_range_reserved(uint64_t start, uint64_t end) {
+    struct process_reservation *slots = reservation_slots();
+    if (!slots || start >= end) return 0;
+    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
+        struct process_reservation *entry = &slots[index];
+        if (entry->start && start < entry->end && end > entry->start) return 1;
+    }
+    return 0;
+}
+
+int process_commit_reserved(uint64_t fault_address) {
+    struct process_reservation *slots = reservation_slots();
+    if (!slots || current->state != PROCESS_RUNNING || !current->cr3) return 0;
+
+    uint64_t page = fault_address & ~4095ULL;
+    uint64_t flags = 0;
+    int found = 0;
+    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
+        struct process_reservation *entry = &slots[index];
+        if (entry->start && page >= entry->start && page < entry->end) {
+            flags = entry->flags;
+            found = 1;
+            break;
+        }
+    }
+    if (!found) return 0;
+    /* Already mapped means this was a protection fault, not a missing page. */
+    if (vmm_translate(current->cr3, page, NULL, NULL) == 0) return 0;
+
+    uint64_t physical = (uint64_t)pmm_alloc_page();
+    if (!physical) return 0;
+    memset(vmm_phys_to_virt(physical), 0, 4096);
+    if (vmm_map_page_in(current->cr3, page, physical, flags) != 0) {
+        pmm_free_page((void *)physical);
+        return 0;
+    }
+    return 1;
+}
+
 int process_grow_user_stack(uint64_t fault_address) {
     if (!current || current->state != PROCESS_RUNNING || !current->cr3) return 0;
     if (fault_address >= USER_STACK_TOP || fault_address < USER_STACK_LIMIT) return 0;

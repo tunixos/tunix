@@ -47,6 +47,19 @@ struct process_file_mapping {
     struct file *file;
 };
 
+/*
+ * A MAP_NORESERVE range: address space handed out with no memory behind it,
+ * committed a page at a time as it is touched. JSC reserves gigabytes this
+ * way and touches a fraction of it.
+ */
+#define PROCESS_MAX_RESERVATIONS 16
+
+struct process_reservation {
+    uint64_t start;   /* 0 when the slot is free */
+    uint64_t end;
+    uint64_t flags;   /* page flags a committed page gets */
+};
+
 struct process_memory {
     uint64_t cr3;
     uint64_t refs;
@@ -54,6 +67,7 @@ struct process_memory {
     uint64_t brk_end;
     uint64_t mmap_base;
     struct process_file_mapping mappings[PROCESS_MAX_FILE_MAPPINGS];
+    struct process_reservation reservations[PROCESS_MAX_RESERVATIONS];
 };
 
 /* One descriptor table, shared by every thread of a thread group (fork gives
@@ -177,6 +191,13 @@ void process_yield_from_syscall(struct syscall_frame *frame);
 void process_timer_interrupt(struct interrupt_frame *frame);
 /* Map another user stack page for a fault inside the stack growth window.
    Returns 1 when the faulting instruction should simply be retried. */
+/* MAP_NORESERVE ranges. process_commit_reserved() answers a not-present fault
+   the same way the stack window does: 1 means retry the instruction. */
+int process_reserve_range(uint64_t start, uint64_t end, uint64_t flags);
+void process_release_reserved(uint64_t start, uint64_t end);
+void process_reprotect_reserved(uint64_t start, uint64_t end, uint64_t flags);
+int process_range_reserved(uint64_t start, uint64_t end);
+int process_commit_reserved(uint64_t fault_address);
 /*
  * The shared-file-mapping table behind mremap(). Addresses and lengths must be
  * page aligned; the record takes its own reference on `file`.

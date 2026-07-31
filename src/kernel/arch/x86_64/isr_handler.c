@@ -62,6 +62,12 @@ void isr_handler(struct interrupt_frame *regs) {
             return; /* page mapped; retry the faulting instruction */
         }
 
+        /* Same shape, for the first touch of a MAP_NORESERVE reservation. */
+        if (regs->int_no == 14 && (regs->cs & 3U) == 3U &&
+            !(regs->err_code & 1U) && process_commit_reserved(fault_address)) {
+            return;
+        }
+
         /* A write protection fault on a *present* page is how a copy-on-write
            page announces its first write after fork. Error code bit 0 set means
            present, bit 1 set means it was a write; anything else here is a real
