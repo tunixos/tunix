@@ -325,3 +325,7 @@
 	url = https://github.com/unicode-org/icu.git
 	shallow = true
 	branch = maint/maint-77
+[submodule "ports/src/libxslt"]
+	path = ports/src/libxslt
+	url = https://gitlab.gnome.org/GNOME/libxslt.git
+	shallow = true
