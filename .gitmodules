@@ -345,3 +345,15 @@
 	path = ports/src/woff2
 	url = https://github.com/google/woff2.git
 	shallow = true
+[submodule "ports/src/libgpg-error"]
+	path = ports/src/libgpg-error
+	url = https://github.com/gpg/libgpg-error.git
+	shallow = true
+[submodule "ports/src/libgcrypt"]
+	path = ports/src/libgcrypt
+	url = https://github.com/gpg/libgcrypt.git
+	shallow = true
+[submodule "ports/src/libtasn1"]
+	path = ports/src/libtasn1
+	url = https://gitlab.com/gnutls/libtasn1.git
+	shallow = true
