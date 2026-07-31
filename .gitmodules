@@ -357,3 +357,11 @@
 	path = ports/src/libtasn1
 	url = https://gitlab.com/gnutls/libtasn1.git
 	shallow = true
+[submodule "ports/src/libpsl"]
+	path = ports/src/libpsl
+	url = https://github.com/rockdaboot/libpsl.git
+	shallow = true
+[submodule "ports/src/libsoup"]
+	path = ports/src/libsoup
+	url = https://gitlab.gnome.org/GNOME/libsoup.git
+	shallow = true
