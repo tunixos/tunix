@@ -46,6 +46,18 @@ int vfs_fault_in(struct vfs_node *node) {
     return 0;
 }
 
+/* mmap copies the whole file into the process; keeping the kernel's copy as
+   well doubles the cost of every shared library on the image. */
+void vfs_release_data(struct vfs_node *node) {
+    if (!node || (node->flags & 0xFFU) != VFS_FILE) return;
+    if (!node->disk_inode || !node->data || !(node->flags & VFS_OWNED_DATA)) return;
+    if (!persist_ops || !persist_ops->fetch) return;
+    kfree(node->data);
+    node->data = NULL;
+    node->capacity = 0;
+    node->flags = (node->flags & ~VFS_OWNED_DATA) | VFS_LAZY_DATA;
+}
+
 static int valid_component(const char *name) {
     return name && name[0] && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
 }

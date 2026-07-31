@@ -2701,6 +2701,9 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
             copied += (uint64_t)amount;
             if ((size_t)amount < chunk) break;
         }
+        /* The process has its own copy now; the disk can hold the other one.
+           Without this every mapped library is resident twice. */
+        if (file->kind == FILE_KIND_VFS) vfs_release_data(file->node);
     }
     if (file && !(prot & PROT_WRITE)) {
         uint64_t final_flags = PAGE_USER | PAGE_PRESENT | page_flags;
