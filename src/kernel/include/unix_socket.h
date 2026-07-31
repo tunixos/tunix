@@ -15,20 +15,24 @@ struct unix_credentials {
 
 #define TUNIX_AF_UNIX 1
 #define TUNIX_SOCK_STREAM 1
+/* Connection-oriented like a stream, but each send is one message a single
+   recv returns whole. WebKit's UI/web process IPC is built on it. */
+#define TUNIX_SOCK_SEQPACKET 5
 
 struct tunix_sockaddr_un {
     uint16_t family;
     char path[108];
 };
 
-struct unix_socket *unix_socket_create(void);
+struct unix_socket *unix_socket_create(int seqpacket);
 void unix_socket_set_credentials(struct unix_socket *socket, int32_t pid, uint32_t uid, uint32_t gid);
 int unix_socket_get_peer_credentials(struct unix_socket *socket, struct unix_credentials *credentials);
 int unix_socket_get_name(struct unix_socket *socket, int peer,
                          struct tunix_sockaddr_un *address, size_t *length);
 void unix_socket_set_passcred(struct unix_socket *socket, int enabled);
 int unix_socket_get_passcred(struct unix_socket *socket);
-int unix_socket_pair(struct unix_socket **first, struct unix_socket **second);
+int unix_socket_pair(struct unix_socket **first, struct unix_socket **second,
+                     int seqpacket);
 void unix_socket_ref(struct unix_socket *socket);
 void unix_socket_unref(struct unix_socket *socket);
 int unix_socket_bind(struct unix_socket *socket, const struct tunix_sockaddr_un *address,

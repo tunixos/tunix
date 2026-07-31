@@ -16,10 +16,22 @@
 #define ENOTCONN 107
 #define EPIPE 32
 
+#define EMSGSIZE 90
+
 #define UNIX_MAX_LISTENERS 8
 #define UNIX_PENDING_MAX 8
 #define UNIX_RIGHTS_MAX 8
 #define UNIX_ANCILLARY_MAX 8
+#define UNIX_RECORDS_MAX 64
+
+/* Message boundaries for SOCK_SEQPACKET, alongside the byte pipe: one length
+   per send, so a recv can hand back exactly one message. */
+struct unix_record_queue {
+    uint32_t lengths[UNIX_RECORDS_MAX];
+    int head;
+    int tail;
+    int count;
+};
 
 struct unix_ancillary {
     struct file *files[UNIX_RIGHTS_MAX];
@@ -38,6 +50,8 @@ struct unix_channel {
     struct pipe_buffer to_b;
     struct unix_ancillary_queue ancillary_to_a;
     struct unix_ancillary_queue ancillary_to_b;
+    struct unix_record_queue records_to_a;
+    struct unix_record_queue records_to_b;
     struct unix_credentials a_credentials;
     struct unix_credentials b_credentials;
     char a_path[108];
@@ -55,6 +69,7 @@ struct unix_socket {
     int refs;
     int listening;
     int connected;
+    int seqpacket;
     int side;
     int backlog;
     int passcred;
@@ -78,6 +93,18 @@ static struct pipe_buffer *outgoing(struct unix_socket *socket) {
     if (!socket || !socket->channel) return NULL;
     return socket->side == 0 ? &socket->channel->to_b : &socket->channel->to_a;
 }
+static struct unix_record_queue *incoming_records(struct unix_socket *socket) {
+    if (!socket || !socket->channel) return NULL;
+    return socket->side == 0 ? &socket->channel->records_to_a :
+                               &socket->channel->records_to_b;
+}
+
+static struct unix_record_queue *outgoing_records(struct unix_socket *socket) {
+    if (!socket || !socket->channel) return NULL;
+    return socket->side == 0 ? &socket->channel->records_to_b :
+                               &socket->channel->records_to_a;
+}
+
 static struct unix_ancillary_queue *incoming_ancillary(struct unix_socket *socket) {
     if (!socket || !socket->channel) return NULL;
     return socket->side == 0 ? &socket->channel->ancillary_to_a :
@@ -147,11 +174,12 @@ static void listener_unregister(struct unix_socket *socket) {
     }
 }
 
-struct unix_socket *unix_socket_create(void) {
+struct unix_socket *unix_socket_create(int seqpacket) {
     struct unix_socket *socket = (struct unix_socket *)kmalloc(sizeof(*socket));
     if (!socket) return NULL;
     memset(socket, 0, sizeof(*socket));
     socket->refs = 1;
+    socket->seqpacket = seqpacket ? 1 : 0;
     socket->backlog = UNIX_PENDING_MAX;
     return socket;
 }
@@ -214,13 +242,14 @@ int unix_socket_get_passcred(struct unix_socket *socket) {
 }
 
 
-int unix_socket_pair(struct unix_socket **first, struct unix_socket **second) {
+int unix_socket_pair(struct unix_socket **first, struct unix_socket **second,
+                     int seqpacket) {
     if (!first || !second) return -EINVAL;
     *first = NULL;
     *second = NULL;
     struct unix_channel *channel = (struct unix_channel *)kmalloc(sizeof(*channel));
-    struct unix_socket *a = unix_socket_create();
-    struct unix_socket *b = unix_socket_create();
+    struct unix_socket *a = unix_socket_create(seqpacket);
+    struct unix_socket *b = unix_socket_create(seqpacket);
     if (!channel || !a || !b) {
         if (channel) kfree(channel);
         if (a) unix_socket_unref(a);
@@ -355,7 +384,8 @@ int unix_socket_connect(struct unix_socket *socket, const struct tunix_sockaddr_
     if (!listener || listener->pending_count >= listener->backlog) return -ECONNREFUSED;
 
     struct unix_channel *channel = (struct unix_channel *)kmalloc(sizeof(*channel));
-    struct unix_socket *server = unix_socket_create();
+    /* The accepted end speaks whatever the connecting end speaks. */
+    struct unix_socket *server = unix_socket_create(socket->seqpacket);
     if (!channel || !server) {
         if (channel) kfree(channel);
         if (server) unix_socket_unref(server);
@@ -399,8 +429,27 @@ int64_t unix_socket_read(struct unix_socket *socket, size_t size, void *buffer) 
     if (own_read_shutdown(socket)) return 0;
     struct pipe_buffer *pipe = incoming(socket);
     if (!pipe) return -ENOTCONN;
-    if (pipe->count == 0) return peer_write_open(socket) ? -EAGAIN : 0;
     uint8_t *out = (uint8_t *)buffer;
+
+    /* One message per call, and what does not fit is dropped with it -- that
+       is what makes a seqpacket a seqpacket. */
+    if (socket->seqpacket) {
+        struct unix_record_queue *records = incoming_records(socket);
+        if (!records) return -ENOTCONN;
+        if (records->count == 0) return peer_write_open(socket) ? -EAGAIN : 0;
+        size_t record = records->lengths[records->head];
+        records->head = (records->head + 1) % UNIX_RECORDS_MAX;
+        records->count--;
+        size_t deliver = size < record ? size : record;
+        for (size_t index = 0; index < record; index++) {
+            if (index < deliver) out[index] = pipe->data[pipe->read_pos];
+            pipe->read_pos = (pipe->read_pos + 1) % PIPE_CAPACITY;
+        }
+        pipe->count -= record;
+        return (int64_t)deliver;
+    }
+
+    if (pipe->count == 0) return peer_write_open(socket) ? -EAGAIN : 0;
     size_t amount = size < pipe->count ? size : pipe->count;
     for (size_t index = 0; index < amount; index++) {
         out[index] = pipe->data[pipe->read_pos];
@@ -415,8 +464,26 @@ int64_t unix_socket_write(struct unix_socket *socket, size_t size, const void *b
     if (own_write_shutdown(socket) || peer_read_shutdown(socket) || !peer_open(socket)) return -EPIPE;
     struct pipe_buffer *pipe = outgoing(socket);
     size_t available = PIPE_CAPACITY - pipe->count;
-    if (!available) return -EAGAIN;
     const uint8_t *in = (const uint8_t *)buffer;
+
+    /* All of the message or none of it, so the reader gets it back whole. */
+    if (socket->seqpacket) {
+        struct unix_record_queue *records = outgoing_records(socket);
+        if (!records) return -ENOTCONN;
+        if (size > PIPE_CAPACITY) return -EMSGSIZE;
+        if (size > available || records->count >= UNIX_RECORDS_MAX) return -EAGAIN;
+        for (size_t index = 0; index < size; index++) {
+            pipe->data[pipe->write_pos] = in[index];
+            pipe->write_pos = (pipe->write_pos + 1) % PIPE_CAPACITY;
+        }
+        pipe->count += size;
+        records->lengths[records->tail] = (uint32_t)size;
+        records->tail = (records->tail + 1) % UNIX_RECORDS_MAX;
+        records->count++;
+        return (int64_t)size;
+    }
+
+    if (!available) return -EAGAIN;
     size_t amount = size < available ? size : available;
     for (size_t index = 0; index < amount; index++) {
         pipe->data[pipe->write_pos] = in[index];
@@ -474,6 +541,10 @@ int unix_socket_read_ready(struct unix_socket *socket) {
     if (socket->listening) return socket->pending_count > 0;
     if (!socket->connected || !socket->channel) return 0;
     if (own_read_shutdown(socket)) return 1;
+    if (socket->seqpacket) {
+        struct unix_record_queue *records = incoming_records(socket);
+        return (records && records->count > 0) || !peer_write_open(socket);
+    }
     return incoming(socket)->count > 0 || !peer_write_open(socket);
 }
 
