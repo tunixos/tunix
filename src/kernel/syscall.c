@@ -287,6 +287,8 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define MREMAP_MAYMOVE 1
 #define MAP_ANONYMOUS 0x20
 #define MAP_NORESERVE 0x4000
+/* Ceiling on what a read-only file mapping shares rather than copies. */
+#define SHARED_MAP_MAX_BYTES (256ULL * 1024 * 1024)
 #define MAP_FIXED_NOREPLACE 0x100000
 
 #define F_DUPFD 0
@@ -2551,6 +2553,34 @@ static int find_mapping_range(struct process *process, uint64_t start,
     return -1;
 }
 
+/* Private pages for [start, end) of a file mapping: the bytes the file still
+   has are copied in, everything past its end reads as zero. */
+static int copy_file_tail(struct process *process, struct file *file,
+                          uint64_t base, uint64_t start, uint64_t end,
+                          uint64_t offset, uint64_t page_flags, int prot) {
+    if (map_zero_pages(process, base + start, base + end,
+                       page_flags | PAGE_WRITE) != 0) return -1;
+    uint8_t buffer[256];
+    uint64_t copied = start;
+    while (copied < end) {
+        size_t chunk = end - copied > sizeof(buffer) ? sizeof(buffer)
+                                                     : (size_t)(end - copied);
+        int64_t amount = vfs_read(file->node, offset + copied, chunk, buffer);
+        if (amount <= 0) break;
+        if (vmm_copy_to_space(process->cr3, base + copied, buffer,
+                              (size_t)amount) != 0) return -1;
+        copied += (uint64_t)amount;
+        if ((size_t)amount < chunk) break;
+    }
+    if (!(prot & PROT_WRITE)) {
+        uint64_t final_flags = PAGE_USER | PAGE_PRESENT | page_flags;
+        for (uint64_t page = base + start; page < base + end; page += 4096) {
+            if (vmm_protect_page_in(process->cr3, page, final_flags) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
 static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, int fd, uint64_t offset) {
     struct process *process = process_current();
     if (!process || !length) return -EINVAL;
@@ -2668,6 +2698,66 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
             if (process->memory) process->memory->mmap_base = process->mmap_base;
         }
         return (int64_t)base;
+    }
+
+    /*
+     * A read-only private file mapping is how every shared library is loaded,
+     * and copying it per process is what put webkit over the memory ceiling:
+     * libwebkit2gtk alone is 68 MiB and each of its processes wanted its own.
+     * Map the kernel's cached copy instead, taking a reference on each page and
+     * handing it over copy-on-write so a write still gets a private page.
+     *
+     * Only whole pages that lie inside the file can be shared. The page the
+     * file ends in has to read as zeros past that point -- the loader relies on
+     * it for the bss that overlaps the last page -- so it and everything after
+     * it get private pages, filled from the file and zero beyond.
+     */
+    if (file && file->kind == FILE_KIND_VFS && file->node &&
+        (file->node->flags & 0xFFU) == VFS_FILE && (flags & MAP_PRIVATE) &&
+        !(prot & PROT_WRITE) && file->node->length <= SHARED_MAP_MAX_BYTES &&
+        offset < file->node->length && vfs_fault_in(file->node) == 0 &&
+        file->node->data && (((uint64_t)file->node->data & 0xFFFULL) == 0)) {
+        uint64_t shareable = (file->node->length - offset) & ~0xFFFULL;
+        if (shareable > length) shareable = length;
+        uint64_t shared_flags = PAGE_USER | PAGE_PRESENT | PAGE_COW | PAGE_FILEBACKED;
+        if (nx_enabled && !(prot & PROT_EXEC)) shared_flags |= PAGE_NX;
+
+        uint64_t mapped = 0;
+        while (mapped < shareable) {
+            uint64_t physical;
+            if (vmm_translate(vmm_kernel_cr3(),
+                              (uint64_t)file->node->data + offset + mapped,
+                              &physical, NULL) != 0) break;
+            physical &= ~0xFFFULL;
+            /* The heap's own hold on this frame is not counted, so claim it
+               here too: that reference is what keeps the cached copy alive
+               once the last mapping of it goes away. */
+            if (pmm_page_refcount(physical) == 0 && pmm_page_ref(physical) != 0) break;
+            if (pmm_page_ref(physical) != 0) break;
+            if (vmm_map_page_in(process->cr3, base + mapped, physical,
+                                shared_flags) != 0) {
+                pmm_free_page((void *)physical);
+                break;
+            }
+            mapped += 4096;
+        }
+
+        if (mapped == shareable) {
+            file->node->flags |= VFS_PINNED_DATA;
+            if (mapped < length &&
+                copy_file_tail(process, file, base, mapped, length, offset,
+                               page_flags, prot) != 0) {
+                unmap_pages(process, base, base + length);
+                return -ENOMEM;
+            }
+            if (advance_mmap_base) {
+                process->mmap_base = base + length + 4096;
+                if (process->memory) process->memory->mmap_base = process->mmap_base;
+            }
+            return (int64_t)base;
+        }
+        /* Partial run: drop it and copy the whole mapping the ordinary way. */
+        unmap_pages(process, base, base + mapped);
     }
 
     uint64_t allocation_flags = file ? (page_flags | PAGE_WRITE) : page_flags;

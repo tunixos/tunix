@@ -52,7 +52,7 @@ struct process_file_mapping {
  * committed a page at a time as it is touched. JSC reserves gigabytes this
  * way and touches a fraction of it.
  */
-#define PROCESS_MAX_RESERVATIONS 16
+#define PROCESS_MAX_RESERVATIONS 128
 
 struct process_reservation {
     uint64_t start;   /* 0 when the slot is free */

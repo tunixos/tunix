@@ -11,6 +11,8 @@
 
 extern void panic(const char *msg);
 extern void kprintf(const char *fmt, ...);
+/* Commits a reserved page the kernel is about to touch (see process.c). */
+extern int process_commit_reserved(uint64_t fault_address);
 
 #if TUNIX_DEBUG_LOGS
 #define KDEBUG(...) kprintf(__VA_ARGS__)
@@ -346,7 +348,12 @@ int vmm_user_range_valid(uint64_t cr3_physical, uint64_t address,
     uint64_t last = (address + length - 1) & ~0xFFFULL;
     for (uint64_t page = first;; page += 4096) {
         uint64_t flags;
-        if (vmm_translate(cr3_physical, page, NULL, &flags) != 0) return 0;
+        if (vmm_translate(cr3_physical, page, NULL, &flags) != 0) {
+            /* Reserved but not yet touched: userspace would have faulted the
+               page in here, so do it for the kernel before giving up. */
+            if (cr3_physical != read_cr3() || !process_commit_reserved(page) ||
+                vmm_translate(cr3_physical, page, NULL, &flags) != 0) return 0;
+        }
         /* A copy-on-write page is logically writable even though the hardware
            entry is read-only: the write is allowed, it just has to break the
            sharing first. Callers that actually store into the page do that via
@@ -565,11 +572,12 @@ int vmm_handle_cow_fault(uint64_t cr3_physical, uint64_t virtual_address) {
         (PAGE_PRESENT | PAGE_COW | PAGE_USER)) return -1;
 
     uint64_t physical = entry & ADDRESS_MASK;
-    uint64_t flags = (entry & ~ADDRESS_MASK & ~PAGE_COW) | PAGE_WRITE;
+    uint64_t flags = (entry & ~ADDRESS_MASK & ~PAGE_COW & ~PAGE_FILEBACKED) | PAGE_WRITE;
 
     /* Sole remaining owner: no copy needed, just hand the page back its write
-       permission. This is the common case once siblings have exited or exec'd. */
-    if (pmm_page_refcount(physical) <= 1) {
+       permission. This is the common case once siblings have exited or exec'd.
+       Never for a file-backed frame -- see PAGE_FILEBACKED. */
+    if (!(entry & PAGE_FILEBACKED) && pmm_page_refcount(physical) <= 1) {
         pt[index] = physical | flags;
     } else {
         if (!physical_direct_range_valid(physical, 4096)) return -1;

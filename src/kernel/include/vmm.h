@@ -33,6 +33,12 @@
    one straight through -- copying it, whether eagerly or on write, would
    silently break the sharing. */
 #define PAGE_SHARED   (1ULL << 11)
+/* Software bit (the CPU ignores 52..58). Marks a copy-on-write page whose frame
+   is the kernel's own cached copy of a file. The sole-owner shortcut in
+   vmm_handle_cow_fault() must never fire for one: the refcount stops counting
+   the cache once siblings copy away, and handing the frame back writable would
+   let a process edit the kernel's copy of the file. */
+#define PAGE_FILEBACKED (1ULL << 52)
 #define PAGE_NX       (1ULL << 63)
 
 void vmm_init(void);

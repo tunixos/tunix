@@ -15,6 +15,9 @@
  * fit when QEMU is given enough RAM (see the run targets' -m). */
 #define HEAP_MAX_SIZE (768ULL * 1024 * 1024)
 #define HEAP_PAGE_SIZE 4096ULL
+/* Allocations this big come back page aligned: file contents land in them and
+   mmap maps those pages straight into user processes. */
+#define HEAP_PAGE_ALIGN_MIN (64ULL * 1024)
 #define HEAP_MAGIC 0x1234ABCD
 
 /*
@@ -120,10 +123,33 @@ static int heap_grow(size_t min_size) {
     return 0;
 }
 
+/* Carve `block` so the payload of the block returned starts on a page boundary,
+   leaving the skipped bytes behind as a free block of their own. NULL when this
+   block cannot hold the request that way. */
+static heap_block_t *split_for_page_alignment(heap_block_t *block, uint64_t size) {
+    uint64_t payload = (uint64_t)block + sizeof(heap_block_t);
+    if ((payload & (HEAP_PAGE_SIZE - 1)) == 0) return block;
+    uint64_t aligned = (payload + HEAP_PAGE_SIZE - 1) & ~(HEAP_PAGE_SIZE - 1);
+    while (aligned - payload < sizeof(heap_block_t) + HEAP_ALIGN)
+        aligned += HEAP_PAGE_SIZE;
+    uint64_t lead = aligned - payload;
+    if (block->size < lead + size) return NULL;
+
+    heap_block_t *tail = (heap_block_t *)(aligned - sizeof(heap_block_t));
+    tail->magic = HEAP_MAGIC;
+    tail->size = (uint32_t)(block->size - lead);
+    tail->is_free = 1;
+    tail->next = block->next;
+    block->size = (uint32_t)(lead - sizeof(heap_block_t));
+    block->next = tail;
+    return tail;
+}
+
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
     /* Round up so the *next* block starts aligned too. */
     size = (size + (HEAP_ALIGN - 1)) & ~(HEAP_ALIGN - 1);
+    int page_aligned = size >= HEAP_PAGE_ALIGN_MIN;
 
     spinlock_acquire(&heap_lock);
 
@@ -131,25 +157,31 @@ void* kmalloc(size_t size) {
         heap_block_t* curr = head;
         while (curr != NULL) {
             if (curr->is_free && curr->size >= size) {
-                if (curr->size > size + sizeof(heap_block_t) + 16) {
-                    heap_block_t* new_block = (heap_block_t*)((uint8_t*)curr + sizeof(heap_block_t) + size);
+                heap_block_t* chosen = curr;
+                if (page_aligned) {
+                    chosen = split_for_page_alignment(curr, size);
+                    if (!chosen) { curr = curr->next; continue; }
+                }
+                if (chosen->size > size + sizeof(heap_block_t) + 16) {
+                    heap_block_t* new_block = (heap_block_t*)((uint8_t*)chosen + sizeof(heap_block_t) + size);
                     new_block->magic = HEAP_MAGIC;
-                    new_block->size = curr->size - size - sizeof(heap_block_t);
+                    new_block->size = chosen->size - size - sizeof(heap_block_t);
                     new_block->is_free = 1;
-                    new_block->next = curr->next;
+                    new_block->next = chosen->next;
 
-                    curr->size = size;
-                    curr->next = new_block;
+                    chosen->size = size;
+                    chosen->next = new_block;
                 }
 
-                curr->is_free = 0;
+                chosen->is_free = 0;
                 spinlock_release(&heap_lock);
-                return (void*)((uint8_t*)curr + sizeof(heap_block_t));
+                return (void*)((uint8_t*)chosen + sizeof(heap_block_t));
             }
             curr = curr->next;
         }
 
-        if (heap_grow(size) != 0) {
+        if (heap_grow(page_aligned ? size + HEAP_PAGE_SIZE + sizeof(heap_block_t)
+                                   : size) != 0) {
             spinlock_release(&heap_lock);
             return NULL;
         }

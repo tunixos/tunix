@@ -19,6 +19,9 @@
 #define VFS_ORPHANED    0x2000U
 /* Contents still on disk: data is NULL, length is set. See vfs_fault_in(). */
 #define VFS_LAZY_DATA   0x4000U
+/* Some process maps these pages: they must never be freed or refetched under
+   it. Set when mmap shares the contents instead of copying them. */
+#define VFS_PINNED_DATA 0x8000U
 
 struct vfs_node;
 struct file;

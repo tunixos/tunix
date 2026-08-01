@@ -51,11 +51,20 @@ int vfs_fault_in(struct vfs_node *node) {
 void vfs_release_data(struct vfs_node *node) {
     if (!node || (node->flags & 0xFFU) != VFS_FILE) return;
     if (!node->disk_inode || !node->data || !(node->flags & VFS_OWNED_DATA)) return;
+    if (node->flags & VFS_PINNED_DATA) return;
     if (!persist_ops || !persist_ops->fetch) return;
     kfree(node->data);
     node->data = NULL;
     node->capacity = 0;
     node->flags = (node->flags & ~VFS_OWNED_DATA) | VFS_LAZY_DATA;
+}
+
+/* Pinned data is mapped into a process; releasing it would pull the pages out
+   from under that mapping, so it is leaked instead. */
+static void free_node_data(struct vfs_node *node) {
+    if (!node || !node->data || !(node->flags & VFS_OWNED_DATA)) return;
+    if (node->flags & VFS_PINNED_DATA) return;
+    kfree(node->data);
 }
 
 static int valid_component(const char *name) {
@@ -275,7 +284,7 @@ static int ensure_capacity(struct vfs_node *node, uint64_t required) {
     if (!new_data) return -1;
     memset(new_data, 0, (size_t)capacity);
     if (node->data && node->length) memcpy(new_data, node->data, (size_t)node->length);
-    if ((node->flags & VFS_OWNED_DATA) && node->data) kfree(node->data);
+    free_node_data(node);
     node->data = new_data;
     node->capacity = capacity;
     node->flags |= VFS_OWNED_DATA;
@@ -326,7 +335,7 @@ struct vfs_node *vfs_create_file(const char *path, const void *data,
     node->read = memory_read;
     if (!(flags & VFS_READONLY)) node->write = memory_write;
     if (vfs_attach(parent, node) != 0) {
-        if ((node->flags & VFS_OWNED_DATA) && node->data) kfree(node->data);
+        free_node_data(node);
         kfree(node);
         return NULL;
     }
@@ -425,7 +434,7 @@ static void destroy_node(struct vfs_node *node) {
         node->flags |= VFS_ORPHANED;
         return;
     }
-    if ((node->flags & VFS_OWNED_DATA) && node->data) kfree(node->data);
+    free_node_data(node);
     kfree(node);
 }
 
@@ -438,7 +447,7 @@ void vfs_node_unref(struct vfs_node *node) {
     if (--node->refs) return;
     /* Still linked into the tree: the parent owns it, nothing to do. */
     if (!(node->flags & VFS_ORPHANED)) return;
-    if ((node->flags & VFS_OWNED_DATA) && node->data) kfree(node->data);
+    free_node_data(node);
     kfree(node);
 }
 
