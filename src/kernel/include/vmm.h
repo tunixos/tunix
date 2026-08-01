@@ -5,6 +5,10 @@
 #include <stdint.h>
 
 #define KERNEL_BASE 0xFFFFFFFF80000000ULL
+/* The kernel heap, in a PML4 entry of its own. It used to sit directly above
+   the direct map, which is what held the direct map -- and so the amount of
+   RAM the machine could use -- to a single gigabyte. */
+#define HEAP_VIRTUAL_BASE 0xFFFFFF0000000000ULL
 #define USER_ADDRESS_LIMIT 0x0000800000000000ULL
 
 /*

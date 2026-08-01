@@ -166,8 +166,43 @@ void vmm_init(void) {
     for (uint64_t i = 0; i < 512; i++) {
         pd[i] = (i * 0x200000ULL) | PAGE_PRESENT | PAGE_WRITE | PAGE_HUGE;
     }
+
+    /*
+     * The direct map continues into the next PDPT slot, as far as the
+     * framebuffer window. It used to stop at 1 GiB because the heap sat in
+     * that slot; the heap has moved to its own PML4 entry to free it, which is
+     * what lets the machine use more than a gigabyte of RAM.
+     */
+    if (DIRECT_MAP_SIZE > 0x40000000ULL) {
+        uint64_t extra_physical = (uint64_t)pmm_alloc_page();
+        uint64_t *extra = page_table_pointer(extra_physical);
+        if (!extra) panic("VMM: direct map extension unavailable");
+        memset(extra, 0, 4096);
+        for (uint64_t i = 0; i < (DIRECT_MAP_SIZE - 0x40000000ULL) / 0x200000ULL; i++) {
+            extra[i] = (0x40000000ULL + i * 0x200000ULL) |
+                       PAGE_PRESENT | PAGE_WRITE | PAGE_HUGE;
+        }
+        pdpt[high_pdp + 1] = extra_physical | PAGE_PRESENT | PAGE_WRITE;
+    }
+
+    /*
+     * The heap's own PML4 entry, created here so that every address space
+     * cloned later inherits it. Everything below it is filled in on demand by
+     * heap_grow(), and those tables hang off this one entry, so they are
+     * visible everywhere without any further copying.
+     */
+    uint16_t heap_pml4 = (uint16_t)((HEAP_VIRTUAL_BASE >> 39) & 0x1FF);
+    if (!(pml4[heap_pml4] & PAGE_PRESENT)) {
+        uint64_t heap_pdpt = (uint64_t)pmm_alloc_page();
+        uint64_t *table = page_table_pointer(heap_pdpt);
+        if (!table) panic("VMM: heap PDPT unavailable");
+        memset(table, 0, 4096);
+        pml4[heap_pml4] = heap_pdpt | PAGE_PRESENT | PAGE_WRITE;
+    }
+
     write_cr3(kernel_cr3_physical);
-    KDEBUG("VMM: 1 GiB supervisor-only direct map ready\n");
+    KDEBUG("VMM: %u MiB supervisor-only direct map ready\n",
+           (unsigned)(DIRECT_MAP_SIZE / (1024 * 1024)));
 }
 
 uint64_t vmm_kernel_cr3(void) { return kernel_cr3_physical; }

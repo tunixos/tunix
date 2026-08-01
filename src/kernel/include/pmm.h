@@ -4,7 +4,9 @@
 #include <stdint.h>
 
 #define PMM_PAGE_SIZE 4096ULL
-#define PMM_DIRECT_MAP_LIMIT (1024ULL * 1024ULL * 1024ULL)
+/* The kernel direct map runs from KERNEL_BASE to the framebuffer window at
+   KERNEL_BASE + 1.75 GiB, so that much physical RAM can be managed. */
+#define PMM_DIRECT_MAP_LIMIT (1792ULL * 1024ULL * 1024ULL)
 
 struct e820_entry {
     uint64_t base;

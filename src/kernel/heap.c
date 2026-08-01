@@ -3,7 +3,9 @@
 #include "include/pmm.h"
 #include "include/spinlock.h"
 
-#define HEAP_START 0xFFFFFFFFC0000000
+/* Its own PML4 entry (see vmm_init): the slot it used to share with the
+   direct map is now direct map, which is where the extra RAM came from. */
+#define HEAP_START HEAP_VIRTUAL_BASE
 #define HEAP_INITIAL_SIZE (1024 * 1024)
 /* The heap grows on demand from the PMM, so this ceiling costs nothing until
  * hit; if physical RAM runs out first heap_grow() just fails gracefully. It was
