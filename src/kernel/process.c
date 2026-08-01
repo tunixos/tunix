@@ -75,13 +75,6 @@ static void memory_unref(struct process_memory *memory) {
     if (!memory || memory->refs == 0) return;
     memory->refs--;
     if (memory->refs != 0) return;
-    /* The mappings die with the address space, so their references go too. */
-    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
-        if (memory->mappings[index].file) {
-            file_unref(memory->mappings[index].file);
-            memory->mappings[index].file = NULL;
-        }
-    }
     areas_free(memory);
     if (memory->cr3) vmm_destroy_address_space(memory->cr3);
     kfree(memory);
@@ -95,56 +88,7 @@ static void memory_unref(struct process_memory *memory) {
 static void memory_copy_mappings(struct process_memory *destination,
                                  const struct process_memory *source) {
     if (!destination || !source) return;
-    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
-        destination->mappings[index] = source->mappings[index];
-        if (destination->mappings[index].file)
-            file_ref(destination->mappings[index].file);
-    }
     areas_copy(destination, source);
-}
-
-int process_record_file_mapping(uint64_t start, uint64_t length,
-                                struct file *file, uint64_t offset) {
-    if (!current || !current->memory || !file || !length) return -1;
-    /* A new mapping replaces whatever used to live there. */
-    process_forget_file_mappings(start, start + length);
-    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
-        struct process_file_mapping *entry = &current->memory->mappings[index];
-        if (entry->start) continue;
-        entry->start = start;
-        entry->length = length;
-        entry->offset = offset;
-        entry->file = file;
-        file_ref(file);
-        return 0;
-    }
-    /* Out of slots: the mapping still works, it just cannot be grown later. */
-    return -1;
-}
-
-void process_forget_file_mappings(uint64_t start, uint64_t end) {
-    if (!current || !current->memory || end <= start) return;
-    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
-        struct process_file_mapping *entry = &current->memory->mappings[index];
-        if (!entry->start) continue;
-        if (entry->start >= end || entry->start + entry->length <= start) continue;
-        file_unref(entry->file);
-        entry->start = 0;
-        entry->length = 0;
-        entry->offset = 0;
-        entry->file = NULL;
-    }
-}
-
-struct process_file_mapping *process_find_file_mapping(uint64_t address) {
-    if (!current || !current->memory) return NULL;
-    for (int index = 0; index < PROCESS_MAX_FILE_MAPPINGS; index++) {
-        struct process_file_mapping *entry = &current->memory->mappings[index];
-        if (!entry->start) continue;
-        if (address >= entry->start && address < entry->start + entry->length)
-            return entry;
-    }
-    return NULL;
 }
 
 static void sync_memory_view(struct process *process) {
@@ -679,15 +623,38 @@ static struct vm_area **area_list(void) {
 }
 
 static struct vm_area *area_alloc(uint64_t start, uint64_t end,
-                                  uint64_t page_flags, uint32_t kind) {
+                                  uint64_t page_flags, uint32_t kind,
+                                  struct file *file, uint64_t offset) {
     struct vm_area *area = (struct vm_area *)kmalloc(sizeof(*area));
     if (!area) return NULL;
     area->start = start;
     area->end = end;
     area->page_flags = page_flags;
     area->kind = kind;
+    area->file = file;
+    area->offset = offset;
     area->next = NULL;
+    if (file) file_ref(file);
     return area;
+}
+
+static void area_free(struct vm_area *area) {
+    if (!area) return;
+    if (area->file) file_unref(area->file);
+    kfree(area);
+}
+
+/* Splitting keeps the offset pointing at the same place in the backing object,
+   which is the whole reason the offset is recorded. */
+static struct vm_area *area_split_at(struct vm_area *area, uint64_t cut) {
+    struct vm_area *tail = area_alloc(cut, area->end, area->page_flags,
+                                      area->kind, area->file,
+                                      area->offset + (cut - area->start));
+    if (!tail) return NULL;
+    area->end = cut;
+    tail->next = area->next;
+    area->next = tail;
+    return tail;
 }
 
 /* Insert keeping the list sorted and non-overlapping; the caller has already
@@ -700,11 +667,11 @@ static void area_insert(struct vm_area **list, struct vm_area *area) {
 }
 
 int process_map_area(uint64_t start, uint64_t end, uint64_t page_flags,
-                     uint32_t kind) {
+                     uint32_t kind, struct file *file, uint64_t offset) {
     struct vm_area **list = area_list();
     if (!list || start >= end) return -1;
     process_unmap_area(start, end);
-    struct vm_area *area = area_alloc(start, end, page_flags, kind);
+    struct vm_area *area = area_alloc(start, end, page_flags, kind, file, offset);
     if (!area) return -1;
     area_insert(list, area);
     return 0;
@@ -729,24 +696,21 @@ void process_unmap_area(uint64_t start, uint64_t end) {
         }
         if (start <= area->start && end >= area->end) {
             *link = area->next;
-            kfree(area);
+            area_free(area);
             continue;
         }
         if (start > area->start && end < area->end) {
-            struct vm_area *tail =
-                area_alloc(end, area->end, area->page_flags, area->kind);
+            struct vm_area *tail = area_split_at(area, end);
             area->end = start;
-            if (tail) {
-                tail->next = area->next;
-                area->next = tail;
-                link = &tail->next;
-                continue;
-            }
-            link = &area->next;
+            link = tail ? &tail->next : &area->next;
             continue;
         }
-        if (start > area->start) area->end = start;
-        else area->start = end;
+        if (start > area->start) {
+            area->end = start;
+        } else {
+            area->offset += end - area->start;
+            area->start = end;
+        }
         link = &area->next;
     }
 }
@@ -769,15 +733,10 @@ void process_protect_area(uint64_t start, uint64_t end, uint64_t page_flags) {
            split advances the walk, so this always terminates. */
         if (area->start < start || area->end > end) {
             uint64_t cut = area->start < start ? start : end;
-            struct vm_area *tail =
-                area_alloc(cut, area->end, area->page_flags, area->kind);
-            if (!tail) {
+            if (!area_split_at(area, cut)) {
                 link = &area->next;
                 continue;
             }
-            area->end = cut;
-            tail->next = area->next;
-            area->next = tail;
             link = &area->next;
             continue;
         }
@@ -812,7 +771,7 @@ int process_find_free_range(uint64_t start, uint64_t length, uint64_t *base_out)
     return 0;
 }
 
-static struct vm_area *area_for(uint64_t address) {
+struct vm_area *process_find_area(uint64_t address) {
     struct vm_area **list = area_list();
     if (!list) return NULL;
     for (struct vm_area *area = *list; area; area = area->next) {
@@ -825,7 +784,7 @@ static struct vm_area *area_for(uint64_t address) {
 int process_commit_area(uint64_t fault_address) {
     if (!current || current->state != PROCESS_RUNNING || !current->cr3) return 0;
     uint64_t page = fault_address & ~4095ULL;
-    struct vm_area *area = area_for(page);
+    struct vm_area *area = process_find_area(page);
     if (!area || !(area->kind & VM_ANONYMOUS)) return 0;
     /* Already mapped means this was a protection fault, not a missing page. */
     if (vmm_translate(current->cr3, page, NULL, NULL) == 0) return 0;
@@ -845,7 +804,7 @@ static void areas_free(struct process_memory *memory) {
     struct vm_area *area = memory->areas;
     while (area) {
         struct vm_area *next = area->next;
-        kfree(area);
+        area_free(area);
         area = next;
     }
     memory->areas = NULL;
@@ -856,7 +815,8 @@ static int areas_copy(struct process_memory *destination,
     struct vm_area **link = &destination->areas;
     for (const struct vm_area *area = source->areas; area; area = area->next) {
         struct vm_area *copy =
-            area_alloc(area->start, area->end, area->page_flags, area->kind);
+            area_alloc(area->start, area->end, area->page_flags, area->kind,
+                       area->file, area->offset);
         if (!copy) {
             areas_free(destination);
             return -1;

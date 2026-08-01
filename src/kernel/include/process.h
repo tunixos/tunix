@@ -28,26 +28,6 @@ struct pty_pair;
 struct interrupt_frame;
 
 /*
- * A MAP_SHARED mapping of a file, remembered so it can be grown later.
- *
- * Page tables alone cannot answer "what backs this address", which is exactly
- * what mremap() needs in order to extend a mapping over more of its object.
- * This is the minimum record that answers it; it is not general VMA tracking,
- * and only shared file mappings are listed.
- *
- * The reference on `file` is what keeps the backing object alive when the
- * process closes the descriptor but keeps the mapping.
- */
-#define PROCESS_MAX_FILE_MAPPINGS 32
-
-struct process_file_mapping {
-    uint64_t start;   /* page-aligned user address, 0 when the slot is free */
-    uint64_t length;  /* page-aligned byte count */
-    uint64_t offset;  /* byte offset into the backing object */
-    struct file *file;
-};
-
-/*
  * One mapped range of the address space.
  *
  * The kernel used to infer this from the page tables, which can only say what
@@ -67,6 +47,12 @@ struct vm_area {
     uint64_t end;
     uint64_t page_flags;  /* what a page committed here is mapped with */
     uint32_t kind;
+    /* What backs the range, for the mappings that have a backing object.
+       The reference is what keeps it alive once the process closes the
+       descriptor but keeps the mapping, and it is what mremap() needs in
+       order to extend a mapping over more of that object. */
+    struct file *file;
+    uint64_t offset;
     struct vm_area *next;
 };
 
@@ -76,7 +62,6 @@ struct process_memory {
     uint64_t brk_start;
     uint64_t brk_end;
     uint64_t mmap_base;
-    struct process_file_mapping mappings[PROCESS_MAX_FILE_MAPPINGS];
     struct vm_area *areas;
 };
 
@@ -204,24 +189,14 @@ void process_timer_interrupt(struct interrupt_frame *frame);
 /* The address-space map. process_commit_area() answers a not-present fault the
    same way the stack window does: 1 means retry the instruction. */
 int process_map_area(uint64_t start, uint64_t end, uint64_t page_flags,
-                     uint32_t kind);
+                     uint32_t kind, struct file *file, uint64_t offset);
 void process_unmap_area(uint64_t start, uint64_t end);
 void process_protect_area(uint64_t start, uint64_t end, uint64_t page_flags);
 int process_area_range_free(uint64_t start, uint64_t end);
 int process_find_free_range(uint64_t start, uint64_t length, uint64_t *base_out);
 int process_commit_area(uint64_t fault_address);
-/*
- * The shared-file-mapping table behind mremap(). Addresses and lengths must be
- * page aligned; the record takes its own reference on `file`.
- */
-int process_record_file_mapping(uint64_t start, uint64_t length,
-                                struct file *file, uint64_t offset);
-/* Drops any record overlapping [start, end), releasing its file reference.
-   Called whenever pages are unmapped, so the table cannot outlive the pages. */
-void process_forget_file_mappings(uint64_t start, uint64_t end);
-/* The record covering `address`, or NULL when nothing shared-file-backed is
-   mapped there (an anonymous mapping, for instance). */
-struct process_file_mapping *process_find_file_mapping(uint64_t address);
+/* The area covering `address`, or NULL when nothing is mapped there. */
+struct vm_area *process_find_area(uint64_t address);
 
 int process_grow_user_stack(uint64_t fault_address);
 int process_handle_cow_fault(uint64_t fault_address);
