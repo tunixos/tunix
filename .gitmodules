@@ -372,3 +372,6 @@
 [submodule "ports/src/welcome"]
 	path = ports/src/welcome
 	url = https://github.com/tunixos/welcome.git
+[submodule "tunix-boot"]
+	path = tunix-boot
+	url = https://github.com/tunixos/tunix-boot.git
