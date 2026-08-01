@@ -2498,7 +2498,7 @@ static void unmap_pages(struct process *process, uint64_t start, uint64_t end) {
     /* Forget any mapping record here first: the table must never describe
        pages that are no longer mapped. */
     process_forget_file_mappings(start, end);
-    process_release_reserved(start, end);
+    process_unmap_area(start, end);
     for (uint64_t address = start; address < end; address += 4096) {
         uint64_t physical;
         uint64_t flags;
@@ -2528,27 +2528,37 @@ static int64_t sys_brk(uint64_t requested) {
     return (int64_t)requested;
 }
 
+/*
+ * Both questions have to be asked. The map knows about ranges that are owned
+ * but not yet resident, which the page tables cannot show; the page tables know
+ * about everything mapped by a path that predates the map -- the ELF image, the
+ * initial stack, device mappings. Asking the map first is what makes this cheap:
+ * an occupied range is rejected without touching a single page table.
+ */
 static int mapping_range_free(struct process *process, uint64_t base, uint64_t length) {
     if (!process || !length || base >= USER_ADDRESS_LIMIT ||
         length > USER_ADDRESS_LIMIT - base) return 0;
-    /* A reservation owns its range even though none of it is mapped yet. */
-    if (process_range_reserved(base, base + length)) return 0;
+    if (!process_area_range_free(base, base + length)) return 0;
     for (uint64_t page = base; page < base + length; page += 4096) {
         if (vmm_translate(process->cr3, page, NULL, NULL) == 0) return 0;
     }
     return 1;
 }
 
+/* The map proposes a gap; mapping_range_free() confirms nothing older is
+   sitting in it, and the search moves past the gap if something is. */
 static int find_mapping_range(struct process *process, uint64_t start,
                               uint64_t length, uint64_t *base_out) {
     uint64_t base = align_up(start, 4096);
     while (base < USER_ADDRESS_LIMIT && length <= USER_ADDRESS_LIMIT - base) {
-        if (mapping_range_free(process, base, length)) {
-            *base_out = base;
+        uint64_t candidate;
+        if (process_find_free_range(base, length, &candidate) != 0) return -1;
+        if (mapping_range_free(process, candidate, length)) {
+            *base_out = candidate;
             return 0;
         }
-        if (USER_ADDRESS_LIMIT - base < length + 4096ULL) break;
-        base += 4096;
+        if (USER_ADDRESS_LIMIT - candidate < length + 4096ULL) break;
+        base = candidate + 4096;
     }
     return -1;
 }
@@ -2683,15 +2693,16 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
     }
 
     /*
-     * MAP_NORESERVE is the caller saying most of this will never be touched.
-     * JSC reserves 8 GiB of cage this way and halves down to 4 GiB before it
-     * gives up and aborts, so committing the range up front is not an option:
-     * record it and let the page fault handler commit a page at a time.
+     * Private anonymous memory is handed out as address space and paid for a
+     * page at a time as it is touched. JSC reserves 8 GiB of cage up front and
+     * the webkit web process asks for 84 MiB of arena it barely uses;
+     * committing either eagerly is what used to run the machine out of memory.
      */
-    if (!file && (flags & MAP_NORESERVE) && !(flags & MAP_SHARED)) {
+    if (!file && !(flags & MAP_SHARED)) {
         unmap_pages(process, base, base + length);
-        if (process_reserve_range(base, base + length,
-                                  page_flags | PAGE_USER | PAGE_PRESENT) != 0)
+        if (process_map_area(base, base + length,
+                             page_flags | PAGE_USER | PAGE_PRESENT,
+                             VM_ANONYMOUS) != 0)
             return -ENOMEM;
         if (advance_mmap_base) {
             process->mmap_base = base + length + 4096;
@@ -2925,10 +2936,10 @@ static int64_t sys_mprotect(uint64_t address, uint64_t length, int prot) {
     uint64_t flags = PAGE_USER | PAGE_PRESENT;
     if (prot & PROT_WRITE) flags |= PAGE_WRITE;
     if (nx_enabled && !(prot & PROT_EXEC)) flags |= PAGE_NX;
-    /* Uncommitted reservation pages have no entry to protect; record the new
-       flags so the pages get them when a fault commits them. */
-    process_reprotect_reserved(address, address + length, flags | PAGE_PRESENT);
-    int reserved = process_range_reserved(address, address + length);
+    /* Uncommitted pages have no entry to protect; record the new flags on the
+       map so they get them when a fault commits them. */
+    process_protect_area(address, address + length, flags | PAGE_PRESENT);
+    int reserved = !process_area_range_free(address, address + length);
     for (uint64_t page = address; page < address + length; page += 4096) {
         uint64_t old_flags;
         if (vmm_translate(process->cr3, page, NULL, &old_flags) != 0) {

@@ -48,16 +48,26 @@ struct process_file_mapping {
 };
 
 /*
- * A MAP_NORESERVE range: address space handed out with no memory behind it,
- * committed a page at a time as it is touched. JSC reserves gigabytes this
- * way and touches a fraction of it.
+ * One mapped range of the address space.
+ *
+ * The kernel used to infer this from the page tables, which can only say what
+ * is resident, not what a range is *for*. That is why anonymous memory had to
+ * be committed at mmap time -- an untouched page and an unmapped one looked
+ * identical -- and why finding a free range meant walking every page of every
+ * candidate. With the ranges written down, memory is handed out as address
+ * space and paid for a page at a time when it is touched.
+ *
+ * The list is sorted by start address and never overlaps; splitting is what
+ * munmap and mprotect do to it.
  */
-#define PROCESS_MAX_RESERVATIONS 128
+#define VM_ANONYMOUS 0x1U
 
-struct process_reservation {
-    uint64_t start;   /* 0 when the slot is free */
+struct vm_area {
+    uint64_t start;
     uint64_t end;
-    uint64_t flags;   /* page flags a committed page gets */
+    uint64_t page_flags;  /* what a page committed here is mapped with */
+    uint32_t kind;
+    struct vm_area *next;
 };
 
 struct process_memory {
@@ -67,7 +77,7 @@ struct process_memory {
     uint64_t brk_end;
     uint64_t mmap_base;
     struct process_file_mapping mappings[PROCESS_MAX_FILE_MAPPINGS];
-    struct process_reservation reservations[PROCESS_MAX_RESERVATIONS];
+    struct vm_area *areas;
 };
 
 /* One descriptor table, shared by every thread of a thread group (fork gives
@@ -191,13 +201,15 @@ void process_yield_from_syscall(struct syscall_frame *frame);
 void process_timer_interrupt(struct interrupt_frame *frame);
 /* Map another user stack page for a fault inside the stack growth window.
    Returns 1 when the faulting instruction should simply be retried. */
-/* MAP_NORESERVE ranges. process_commit_reserved() answers a not-present fault
-   the same way the stack window does: 1 means retry the instruction. */
-int process_reserve_range(uint64_t start, uint64_t end, uint64_t flags);
-void process_release_reserved(uint64_t start, uint64_t end);
-void process_reprotect_reserved(uint64_t start, uint64_t end, uint64_t flags);
-int process_range_reserved(uint64_t start, uint64_t end);
-int process_commit_reserved(uint64_t fault_address);
+/* The address-space map. process_commit_area() answers a not-present fault the
+   same way the stack window does: 1 means retry the instruction. */
+int process_map_area(uint64_t start, uint64_t end, uint64_t page_flags,
+                     uint32_t kind);
+void process_unmap_area(uint64_t start, uint64_t end);
+void process_protect_area(uint64_t start, uint64_t end, uint64_t page_flags);
+int process_area_range_free(uint64_t start, uint64_t end);
+int process_find_free_range(uint64_t start, uint64_t length, uint64_t *base_out);
+int process_commit_area(uint64_t fault_address);
 /*
  * The shared-file-mapping table behind mremap(). Addresses and lengths must be
  * page aligned; the record takes its own reference on `file`.

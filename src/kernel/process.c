@@ -67,6 +67,10 @@ static void memory_ref(struct process_memory *memory) {
     if (memory) memory->refs++;
 }
 
+static void areas_free(struct process_memory *memory);
+static int areas_copy(struct process_memory *destination,
+                      const struct process_memory *source);
+
 static void memory_unref(struct process_memory *memory) {
     if (!memory || memory->refs == 0) return;
     memory->refs--;
@@ -78,6 +82,7 @@ static void memory_unref(struct process_memory *memory) {
             memory->mappings[index].file = NULL;
         }
     }
+    areas_free(memory);
     if (memory->cr3) vmm_destroy_address_space(memory->cr3);
     kfree(memory);
 }
@@ -95,8 +100,7 @@ static void memory_copy_mappings(struct process_memory *destination,
         if (destination->mappings[index].file)
             file_ref(destination->mappings[index].file);
     }
-    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++)
-        destination->reservations[index] = source->reservations[index];
+    areas_copy(destination, source);
 }
 
 int process_record_file_mapping(uint64_t start, uint64_t length,
@@ -668,109 +672,199 @@ void process_start_first(void) {
  * Returns 1 when a page was mapped and the faulting instruction should be
  * retried, 0 when the fault was not a stack growth and must be handled.
  */
-/* --- MAP_NORESERVE reservations ----------------------------------------- */
+/* --- the address-space map ---------------------------------------------- */
 
-static struct process_reservation *reservation_slots(void) {
-    return current && current->memory ? current->memory->reservations : NULL;
+static struct vm_area **area_list(void) {
+    return current && current->memory ? &current->memory->areas : NULL;
 }
 
-int process_reserve_range(uint64_t start, uint64_t end, uint64_t flags) {
-    struct process_reservation *slots = reservation_slots();
-    if (!slots || start >= end) return -1;
-    process_release_reserved(start, end);
-    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
-        if (slots[index].start) continue;
-        slots[index].start = start;
-        slots[index].end = end;
-        slots[index].flags = flags;
-        return 0;
-    }
-    return -1;
+static struct vm_area *area_alloc(uint64_t start, uint64_t end,
+                                  uint64_t page_flags, uint32_t kind) {
+    struct vm_area *area = (struct vm_area *)kmalloc(sizeof(*area));
+    if (!area) return NULL;
+    area->start = start;
+    area->end = end;
+    area->page_flags = page_flags;
+    area->kind = kind;
+    area->next = NULL;
+    return area;
 }
 
-/*
- * Drop [start, end) from every reservation it overlaps. A hole punched in the
- * middle needs a second slot for the tail; if none is free the tail is
- * forgotten, which costs a future fault its mapping rather than corrupting
- * anything, so the caller is not failed for it.
- */
-void process_release_reserved(uint64_t start, uint64_t end) {
-    struct process_reservation *slots = reservation_slots();
-    if (!slots || start >= end) return;
-    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
-        struct process_reservation *entry = &slots[index];
-        if (!entry->start || end <= entry->start || start >= entry->end) continue;
-        uint64_t old_end = entry->end;
-        if (start <= entry->start && end >= entry->end) {
-            entry->start = 0;
-            continue;
-        }
-        if (start > entry->start) {
-            entry->end = start;
-            if (end < old_end) {
-                for (int slot = 0; slot < PROCESS_MAX_RESERVATIONS; slot++) {
-                    if (slots[slot].start) continue;
-                    slots[slot].start = end;
-                    slots[slot].end = old_end;
-                    slots[slot].flags = entry->flags;
-                    break;
-                }
-            }
-        } else {
-            entry->start = end;
-        }
-    }
+/* Insert keeping the list sorted and non-overlapping; the caller has already
+   cleared whatever used to live in the range. */
+static void area_insert(struct vm_area **list, struct vm_area *area) {
+    struct vm_area **link = list;
+    while (*link && (*link)->start < area->start) link = &(*link)->next;
+    area->next = *link;
+    *link = area;
 }
 
-void process_reprotect_reserved(uint64_t start, uint64_t end, uint64_t flags) {
-    struct process_reservation *slots = reservation_slots();
-    if (!slots || start >= end) return;
-    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
-        struct process_reservation *entry = &slots[index];
-        if (!entry->start || end <= entry->start || start >= entry->end) continue;
-        /* Whole-range changes are what mprotect on a cage actually does; a
-           partial one keeps the old flags on the part it does not cover. */
-        if (start <= entry->start && end >= entry->end) entry->flags = flags;
-    }
-}
-
-int process_range_reserved(uint64_t start, uint64_t end) {
-    struct process_reservation *slots = reservation_slots();
-    if (!slots || start >= end) return 0;
-    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
-        struct process_reservation *entry = &slots[index];
-        if (entry->start && start < entry->end && end > entry->start) return 1;
-    }
+int process_map_area(uint64_t start, uint64_t end, uint64_t page_flags,
+                     uint32_t kind) {
+    struct vm_area **list = area_list();
+    if (!list || start >= end) return -1;
+    process_unmap_area(start, end);
+    struct vm_area *area = area_alloc(start, end, page_flags, kind);
+    if (!area) return -1;
+    area_insert(list, area);
     return 0;
 }
 
-int process_commit_reserved(uint64_t fault_address) {
-    struct process_reservation *slots = reservation_slots();
-    if (!slots || current->state != PROCESS_RUNNING || !current->cr3) return 0;
+/*
+ * Remove [start, end) from the map. An area the range falls inside splits in
+ * two, which is the case munmap and mprotect hit most; if the tail cannot be
+ * allocated the area is simply truncated, so the map never describes memory
+ * that is not there.
+ */
+void process_unmap_area(uint64_t start, uint64_t end) {
+    struct vm_area **list = area_list();
+    if (!list || start >= end) return;
 
-    uint64_t page = fault_address & ~4095ULL;
-    uint64_t flags = 0;
-    int found = 0;
-    for (int index = 0; index < PROCESS_MAX_RESERVATIONS; index++) {
-        struct process_reservation *entry = &slots[index];
-        if (entry->start && page >= entry->start && page < entry->end) {
-            flags = entry->flags;
-            found = 1;
-            break;
+    struct vm_area **link = list;
+    while (*link) {
+        struct vm_area *area = *link;
+        if (area->end <= start || area->start >= end) {
+            link = &area->next;
+            continue;
         }
+        if (start <= area->start && end >= area->end) {
+            *link = area->next;
+            kfree(area);
+            continue;
+        }
+        if (start > area->start && end < area->end) {
+            struct vm_area *tail =
+                area_alloc(end, area->end, area->page_flags, area->kind);
+            area->end = start;
+            if (tail) {
+                tail->next = area->next;
+                area->next = tail;
+                link = &tail->next;
+                continue;
+            }
+            link = &area->next;
+            continue;
+        }
+        if (start > area->start) area->end = start;
+        else area->start = end;
+        link = &area->next;
     }
-    if (!found) return 0;
+}
+
+/* mprotect over part of an area splits it, so the new permissions apply to
+   exactly the range asked for. */
+void process_protect_area(uint64_t start, uint64_t end, uint64_t page_flags) {
+    struct vm_area **list = area_list();
+    if (!list || start >= end) return;
+
+    struct vm_area **link = list;
+    while (*link) {
+        struct vm_area *area = *link;
+        if (area->end <= start || area->start >= end) {
+            link = &area->next;
+            continue;
+        }
+        /* Trim whatever lies outside the range into an area of its own, then
+           the remainder is exactly the range and takes the new flags. Each
+           split advances the walk, so this always terminates. */
+        if (area->start < start || area->end > end) {
+            uint64_t cut = area->start < start ? start : end;
+            struct vm_area *tail =
+                area_alloc(cut, area->end, area->page_flags, area->kind);
+            if (!tail) {
+                link = &area->next;
+                continue;
+            }
+            area->end = cut;
+            tail->next = area->next;
+            area->next = tail;
+            link = &area->next;
+            continue;
+        }
+        area->page_flags = page_flags;
+        link = &area->next;
+    }
+}
+
+int process_area_range_free(uint64_t start, uint64_t end) {
+    struct vm_area **list = area_list();
+    if (!list || start >= end) return 0;
+    for (struct vm_area *area = *list; area; area = area->next) {
+        if (area->start >= end) break;
+        if (area->end > start) return 0;
+    }
+    return 1;
+}
+
+/* Walk the gaps between areas rather than probing address by address. */
+int process_find_free_range(uint64_t start, uint64_t length, uint64_t *base_out) {
+    struct vm_area **list = area_list();
+    if (!list || !length || !base_out) return -1;
+    uint64_t base = start;
+    for (struct vm_area *area = *list; area; area = area->next) {
+        if (area->end <= base) continue;
+        if (area->start >= base && area->start - base >= length) break;
+        base = area->end;
+        if (base >= USER_ADDRESS_LIMIT) return -1;
+    }
+    if (length > USER_ADDRESS_LIMIT - base) return -1;
+    *base_out = base;
+    return 0;
+}
+
+static struct vm_area *area_for(uint64_t address) {
+    struct vm_area **list = area_list();
+    if (!list) return NULL;
+    for (struct vm_area *area = *list; area; area = area->next) {
+        if (address < area->start) return NULL;
+        if (address < area->end) return area;
+    }
+    return NULL;
+}
+
+int process_commit_area(uint64_t fault_address) {
+    if (!current || current->state != PROCESS_RUNNING || !current->cr3) return 0;
+    uint64_t page = fault_address & ~4095ULL;
+    struct vm_area *area = area_for(page);
+    if (!area || !(area->kind & VM_ANONYMOUS)) return 0;
     /* Already mapped means this was a protection fault, not a missing page. */
     if (vmm_translate(current->cr3, page, NULL, NULL) == 0) return 0;
 
     uint64_t physical = (uint64_t)pmm_alloc_page();
     if (!physical) return 0;
     memset(vmm_phys_to_virt(physical), 0, 4096);
-    if (vmm_map_page_in(current->cr3, page, physical, flags) != 0) {
+    if (vmm_map_page_in(current->cr3, page, physical, area->page_flags) != 0) {
         pmm_free_page((void *)physical);
         return 0;
     }
     return 1;
+}
+
+static void areas_free(struct process_memory *memory) {
+    if (!memory) return;
+    struct vm_area *area = memory->areas;
+    while (area) {
+        struct vm_area *next = area->next;
+        kfree(area);
+        area = next;
+    }
+    memory->areas = NULL;
+}
+
+static int areas_copy(struct process_memory *destination,
+                      const struct process_memory *source) {
+    struct vm_area **link = &destination->areas;
+    for (const struct vm_area *area = source->areas; area; area = area->next) {
+        struct vm_area *copy =
+            area_alloc(area->start, area->end, area->page_flags, area->kind);
+        if (!copy) {
+            areas_free(destination);
+            return -1;
+        }
+        *link = copy;
+        link = &copy->next;
+    }
+    return 0;
 }
 
 int process_grow_user_stack(uint64_t fault_address) {

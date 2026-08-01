@@ -62,9 +62,9 @@ void isr_handler(struct interrupt_frame *regs) {
             return; /* page mapped; retry the faulting instruction */
         }
 
-        /* Same shape, for the first touch of a MAP_NORESERVE reservation. */
+        /* Same shape, for the first touch of an anonymous mapping. */
         if (regs->int_no == 14 && (regs->cs & 3U) == 3U &&
-            !(regs->err_code & 1U) && process_commit_reserved(fault_address)) {
+            !(regs->err_code & 1U) && process_commit_area(fault_address)) {
             return;
         }
 
