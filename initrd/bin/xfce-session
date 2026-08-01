@@ -98,5 +98,9 @@ for base in /backdrop/screen0/monitorVirtual-1/workspace0 \
 done
 xfdesktop --reload 2>/dev/null || true
 
+# The welcome screen, on a first boot only: --if-first-run returns immediately
+# once the marker under $XDG_CONFIG_HOME is there, so this can run every login.
+tunix-welcome --if-first-run &
+
 # Keep the service in the foreground for dinit; when X exits, so does the session.
 wait "$XORG_PID"
