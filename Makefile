@@ -1253,6 +1253,17 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(LIBTASN1_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBSOUP_ROOT)/. $(ROOTFS)/
 	cp -R $(WEBKITGTK_ROOT)/. $(ROOTFS)/
+	# The shared MIME database, which is how GIO answers g_content_type_guess()
+	# and therefore how WebKit decides a file:// URL is html rather than plain
+	# text. Only the compiled lookup tables are needed, not the per-type XML the
+	# package also ships, so this is 424 KiB rather than 8 MiB. Taken from the
+	# build host: the format is architecture independent.
+	mkdir -p $(ROOTFS)/usr/share/mime
+	for f in mime.cache globs globs2 magic aliases subclasses types icons \
+		generic-icons treemagic XMLnamespaces; do \
+		cp /usr/share/mime/$$f $(ROOTFS)/usr/share/mime/ 2>/dev/null || true; \
+	done
+	@test -f $(ROOTFS)/usr/share/mime/mime.cache || { echo "the shared MIME database was not installed into the rootfs (install shared-mime-info on the build host)" >&2; exit 1; }
 	cp $(HTTPS_GET) $(ROOTFS)/usr/bin/https-get
 	ln -sfn ../usr/bin/https-get $(ROOTFS)/bin/https-get
 	cp $(SSL_HELPER) $(ROOTFS)/usr/bin/openssl
@@ -1444,6 +1455,18 @@ headless: $(IMAGE)
 qemu-ci: $(IMAGE)
 	QEMU="$(QEMU)" bash .github/scripts/qemu-ci-smoke.sh $(IMAGE) $(BUILD)/qemu-ci.log
 
+
+# The ports take hours to build and are rarely the thing being changed. One
+# edited build script -- or a drvfs mtime that comes back skewed -- is enough to
+# make `make run` decide the whole graph is stale. Stamping every port output
+# with a single timestamp is what "already built, leave them alone" looks like
+# to make: nothing is newer than anything else, so nothing rebuilds.
+.PHONY: ports-uptodate
+ports-uptodate:
+	@touch $(PORT_OUT)/.timestamp-reference
+	@find $(PORT_OUT) -maxdepth 1 \( -type f -o -name '.*-ready' \) \
+		-exec touch -r $(PORT_OUT)/.timestamp-reference {} +
+	@echo "port outputs marked up to date"
 
 clean:
 	rm -rf $(BUILD) $(PORT_OUT)
