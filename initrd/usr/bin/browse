@@ -6,8 +6,9 @@
 # renders with cairo straight into the X pixmap GTK3 already hands the server
 # -- the same pixels, minus a reference-rasterised GL pipeline in the middle.
 #
-# No TLS on the image (https needs glib-networking), so the default page is
-# local. http:// works; https:// reports an SSL error rather than hanging.
+# https works: glib-networking registers gnutls as GIO's TLS backend, and
+# gnutls verifies against the same /etc/ssl/cert.pem https-get and curl use.
+# The default page stays local so the browser opens without a network.
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export GDK_BACKEND=x11
 export DISPLAY=${DISPLAY:-:0}
