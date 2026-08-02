@@ -1081,8 +1081,16 @@ static void notify_children_of_parent_death(struct process *parent) {
     } while (item != queue);
 }
 
+/* Defined with exit_group, which wants the same teardown. */
+static void terminate_sibling_threads(int status);
+
 static void process_exit_from_signal(struct syscall_frame *frame, int signal_number) {
     if (current) current->termination_signal = signal_number;
+    /* The signal was aimed at the process; the thread it landed on is an
+       accident of scheduling, and taking only that one down leaves the rest
+       running with the process's files still open. */
+    terminate_sibling_threads(128 + signal_number);
+    if (current) current->is_thread = 0;
     process_exit_from_syscall(frame, 128 + signal_number);
 }
 
@@ -1371,28 +1379,41 @@ int process_futex_wake(uint64_t address, int maximum) {
     return woken;
 }
 
+/* End every *other* thread sharing the caller's thread group.
+ *
+ * A process is its thread group: exit_group says so outright, and a fatal
+ * signal means the same thing even though it arrives at one thread. Leaving
+ * the siblings running is not a tidiness problem -- they hold the process's
+ * open files, so nothing the process had open is ever closed. That is how
+ * killing the browser left five WebKitWebProcess threads alive at a quarter
+ * gigabyte each, and their sockets open, so the helper processes on the far
+ * end never saw the end-of-file that tells them to exit either.
+ */
+static void terminate_sibling_threads(int status) {
+    if (!current || !queue) return;
+    uint64_t group = current->tgid;
+    struct process *item = queue;
+    do {
+        if (item != current && item->tgid == group && item->state != PROCESS_DEAD) {
+            item->exit_status = status;
+            process_handle_robust_list(item);
+            if (item->clear_child_tid_user) {
+                uint64_t clear_address = item->clear_child_tid_user;
+                uint32_t zero = 0;
+                (void)vmm_copy_to_space(item->cr3, clear_address, &zero, sizeof(zero));
+                item->clear_child_tid_user = 0;
+                (void)process_futex_wake(clear_address, 1);
+            }
+            item->state = PROCESS_DEAD;
+            process_release_files(item);
+        }
+        item = item->next;
+    } while (item != queue);
+}
+
 void process_exit_group_from_syscall(struct syscall_frame *frame, int status) {
     if (!current || !frame) panic("process: exit_group without current process");
-    uint64_t group = current->tgid;
-    if (queue) {
-        struct process *item = queue;
-        do {
-            if (item != current && item->tgid == group && item->state != PROCESS_DEAD) {
-                item->exit_status = status;
-                process_handle_robust_list(item);
-                if (item->clear_child_tid_user) {
-                    uint64_t clear_address = item->clear_child_tid_user;
-                    uint32_t zero = 0;
-                    (void)vmm_copy_to_space(item->cr3, clear_address, &zero, sizeof(zero));
-                    item->clear_child_tid_user = 0;
-                    (void)process_futex_wake(clear_address, 1);
-                }
-                item->state = PROCESS_DEAD;
-                process_release_files(item);
-            }
-            item = item->next;
-        } while (item != queue);
-    }
+    terminate_sibling_threads(status);
     current->is_thread = 0;
     process_exit_from_syscall(frame, status);
 }
