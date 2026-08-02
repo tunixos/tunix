@@ -379,3 +379,7 @@
 	path = ports/src/nettle
 	url = https://github.com/gnutls/nettle.git
 	shallow = true
+[submodule "ports/src/glib-networking"]
+	path = ports/src/glib-networking
+	url = https://gitlab.gnome.org/GNOME/glib-networking.git
+	shallow = true
