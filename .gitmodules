@@ -375,3 +375,7 @@
 [submodule "tunix-boot"]
 	path = tunix-boot
 	url = https://github.com/tunixos/tunix-boot.git
+[submodule "ports/src/nettle"]
+	path = ports/src/nettle
+	url = https://github.com/gnutls/nettle.git
+	shallow = true
