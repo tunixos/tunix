@@ -1148,7 +1148,11 @@ $(BUILD)/tty.o: src/kernel/include/input.h src/kernel/include/tty.h src/kernel/i
 $(BUILD)/process.o: src/kernel/include/process.h src/kernel/include/signal.h src/kernel/include/interrupt.h
 # struct vfs_node is embedded across the whole kernel; a layout change must
 # rebuild every object or stale offsets corrupt the tree at runtime.
-$(KERNEL_OBJS): src/kernel/include/vfs.h
+# Every kernel header, not just vfs.h. Editing a header the compiler reads but
+# make does not know about produces the worst kind of build: one that succeeds
+# and runs the previous code, which costs a debugging session to notice.
+KERNEL_HEADERS := $(wildcard src/kernel/include/*.h) $(wildcard src/include/tunix/*.h)
+$(KERNEL_OBJS): $(KERNEL_HEADERS)
 # And so must a change to KERNEL_CFLAGS. Without this a flag that alters code
 # generation -- -mgeneral-regs-only, say -- applies only to the objects that
 # happen to be rebuilt for other reasons, and the result is a kernel that is
