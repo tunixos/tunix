@@ -89,10 +89,15 @@ extern void kprintf(const char *fmt, ...);
 #define TRB_CYCLE (1U << 0)
 #define TRB_TOGGLE_CYCLE (1U << 1)
 
+#define TRB_TYPE_NORMAL 1U
+#define TRB_TYPE_SETUP_STAGE 2U
+#define TRB_TYPE_DATA_STAGE 3U
+#define TRB_TYPE_STATUS_STAGE 4U
 #define TRB_TYPE_LINK 6U
 #define TRB_TYPE_ENABLE_SLOT 9U
 #define TRB_TYPE_ADDRESS_DEVICE 11U
 #define TRB_TYPE_NO_OP_COMMAND 23U
+#define TRB_TYPE_TRANSFER_EVENT 32U
 #define TRB_TYPE_COMMAND_COMPLETION 33U
 #define TRB_TYPE_PORT_STATUS_CHANGE 34U
 
@@ -160,6 +165,34 @@ extern void kprintf(const char *fmt, ...);
 #define COMMAND_SLOT_SHIFT 24U
 
 #define MAX_DEVICES 8U
+
+/* Control transfer stages. The setup packet travels inside the TRB rather
+   than through a buffer, which is what the immediate-data bit says. */
+#define TRB_IMMEDIATE_DATA (1U << 6)
+#define TRB_INTERRUPT_ON_COMPLETION (1U << 5)
+#define TRB_CHAIN (1U << 4)
+#define TRB_DIRECTION_IN (1U << 16)
+#define TRB_TRANSFER_TYPE_SHIFT 16U
+#define TRB_TRANSFER_TYPE_NO_DATA 0U
+#define TRB_TRANSFER_TYPE_OUT 2U
+#define TRB_TRANSFER_TYPE_IN 3U
+#define SETUP_PACKET_BYTES 8U
+
+/* Endpoint 0 is device context index 1: the index counts endpoints in the
+   order the contexts appear, and the slot context occupies index 0. */
+#define EP0_DOORBELL_TARGET 1U
+#define DOORBELL_STRIDE 4U
+
+#define USB_REQUEST_GET_DESCRIPTOR 6U
+#define USB_REQUEST_SET_CONFIGURATION 9U
+#define USB_DIRECTION_IN 0x80U
+#define USB_DESCRIPTOR_DEVICE 1U
+#define USB_DESCRIPTOR_TYPE_SHIFT 8U
+#define USB_DEVICE_DESCRIPTOR_BYTES 18U
+/* Offsets into the device descriptor that this driver reads. */
+#define DEVICE_DESCRIPTOR_MAX_PACKET 7U
+
+#define TRANSFER_TIMEOUT_NS (1000ULL * 1000ULL * 1000ULL)
 
 #define USBCMD_RUN (1U << 0)
 #define USBCMD_RESET (1U << 1)
@@ -581,6 +614,92 @@ static int address_device(struct xhci_device *device) {
                        device->slot << COMMAND_SLOT_SHIFT, NULL);
 }
 
+/* Put one TRB on a device's own ring. Same cycle-bit dance as the command
+   ring; the difference is which doorbell wakes it. */
+static void enqueue(struct producer_ring *ring, uint64_t parameter,
+                    uint32_t status, uint32_t type, uint32_t control_extra) {
+    struct trb *entry = &ring->entries[ring->index];
+    entry->parameter_low = (uint32_t)parameter;
+    entry->parameter_high = (uint32_t)(parameter >> 32);
+    entry->status = status;
+    __asm__ volatile("" ::: "memory");
+    entry->control = (type << TRB_TYPE_SHIFT) | control_extra | ring->cycle;
+
+    ring->index++;
+    if (ring->index == RING_TRB_COUNT - 1) {
+        struct trb *link = &ring->entries[RING_TRB_COUNT - 1];
+        link->control = (link->control & ~TRB_CYCLE) | ring->cycle;
+        ring->index = 0;
+        ring->cycle ^= 1;
+    }
+}
+
+static void ring_doorbell(uint32_t slot, uint32_t target) {
+    __asm__ volatile("" ::: "memory");
+    xhci_write32(controller.doorbell + (uint64_t)slot * DOORBELL_STRIDE, target);
+}
+
+static int wait_for_transfer(void) {
+    uint64_t deadline = time_uptime_ns() + TRANSFER_TIMEOUT_NS;
+    for (;;) {
+        struct trb event;
+        if (next_event(&event)) {
+            uint32_t type = (event.control >> TRB_TYPE_SHIFT) & TRB_TYPE_MASK;
+            if (type == TRB_TYPE_TRANSFER_EVENT) {
+                uint32_t code = (event.status >> TRB_COMPLETION_SHIFT) & TRB_COMPLETION_MASK;
+                /* A short packet is how a device says "that is all I have",
+                   which for a descriptor read is success, not failure. */
+                return (code == TRB_COMPLETION_SUCCESS || code == 13U) ? 0 : -(int)code;
+            }
+        }
+        if (time_uptime_ns() >= deadline) return -1;
+        __asm__ volatile("pause");
+    }
+}
+
+/* A control transfer: setup, an optional data stage, then a status stage the
+   other way round. The interrupt-on-completion bit goes on the last stage,
+   because that is the one whose event says the whole thing is done. */
+static int control_transfer(struct xhci_device *device, uint8_t request_type,
+                            uint8_t request, uint16_t value, uint16_t index,
+                            void *buffer, uint16_t length) {
+    uint64_t setup = (uint64_t)request_type | ((uint64_t)request << 8) |
+                     ((uint64_t)value << 16) | ((uint64_t)index << 32) |
+                     ((uint64_t)length << 48);
+
+    uint32_t transfer_type = TRB_TRANSFER_TYPE_NO_DATA;
+    if (length) {
+        transfer_type = (request_type & USB_DIRECTION_IN) ? TRB_TRANSFER_TYPE_IN
+                                                          : TRB_TRANSFER_TYPE_OUT;
+    }
+
+    enqueue(&device->control_ring, setup, SETUP_PACKET_BYTES, TRB_TYPE_SETUP_STAGE,
+            TRB_IMMEDIATE_DATA | (transfer_type << TRB_TRANSFER_TYPE_SHIFT));
+
+    if (length) {
+        uint64_t physical = vmm_virt_to_phys_direct(buffer);
+        enqueue(&device->control_ring, physical, length, TRB_TYPE_DATA_STAGE,
+                (request_type & USB_DIRECTION_IN) ? TRB_DIRECTION_IN : 0);
+    }
+
+    /* The status stage runs opposite to the data, and with no data it is IN. */
+    uint32_t status_direction = (length && (request_type & USB_DIRECTION_IN)) ? 0 : TRB_DIRECTION_IN;
+    enqueue(&device->control_ring, 0, 0, TRB_TYPE_STATUS_STAGE,
+            status_direction | TRB_INTERRUPT_ON_COMPLETION);
+
+    ring_doorbell(device->slot, EP0_DOORBELL_TARGET);
+    return wait_for_transfer();
+}
+
+/* The first thing anyone asks a USB device. Its answer includes the real
+   maximum packet size for endpoint zero, which the addressing step could only
+   guess at from the port speed. */
+static int read_device_descriptor(struct xhci_device *device, uint8_t *out) {
+    return control_transfer(device, USB_DIRECTION_IN, USB_REQUEST_GET_DESCRIPTOR,
+                            USB_DESCRIPTOR_DEVICE << USB_DESCRIPTOR_TYPE_SHIFT, 0,
+                            out, USB_DEVICE_DESCRIPTOR_BYTES);
+}
+
 /* Walk the root hub and bring up whatever is plugged in. */
 static void enumerate_ports(void) {
     unsigned found = 0;
@@ -613,8 +732,18 @@ static void enumerate_ports(void) {
 
         device->used = 1;
         found++;
-        kprintf("XHCI: port %u addressed as slot %u, speed %u\n",
-                (unsigned)port, (unsigned)slot, (unsigned)speed);
+
+        uint64_t descriptor_physical = 0;
+        uint8_t *descriptor = dma_page(&descriptor_physical);
+        if (descriptor && read_device_descriptor(device, descriptor) == 0) {
+            kprintf("XHCI: port %u slot %u speed %u, ep0 packet %u, usb %x.%x\n",
+                    (unsigned)port, (unsigned)slot, (unsigned)speed,
+                    (unsigned)descriptor[DEVICE_DESCRIPTOR_MAX_PACKET],
+                    (unsigned)descriptor[3], (unsigned)descriptor[2]);
+        } else {
+            kprintf("XHCI: port %u slot %u addressed, but would not describe itself\n",
+                    (unsigned)port, (unsigned)slot);
+        }
     }
     if (!found) kprintf("XHCI: no devices attached\n");
 }
