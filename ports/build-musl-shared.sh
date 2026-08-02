@@ -114,8 +114,12 @@ ln -s libtunix_dynamic.so.1 "$RUNTIME_ROOT/usr/lib/libtunix_dynamic.so"
 # run on the host: it would take the build shell's controlling terminal.
 "$MUSL_CC" -O2 -fPIE -pie "$SOURCE/pty-test.c" \
     -o "$RUNTIME_ROOT/usr/bin/pty-test"
+# Writing code and then running it: what JavaScriptCore's JIT needs from mmap
+# and mprotect, asked plainly so the answer is not a crash inside a compiler.
+"$MUSL_CC" -O2 -fPIE -pie "$SOURCE/exec-mem-test.c" \
+    -o "$RUNTIME_ROOT/usr/bin/exec-mem-test"
 
-for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test signalfd-test kill-blocked-test pty-test; do
+for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test signalfd-test kill-blocked-test pty-test exec-mem-test; do
     interp=$($READELF -l "$RUNTIME_ROOT/usr/bin/$binary" | \
         sed -n 's/.*Requesting program interpreter: \([^]]*\).*/\1/p')
     [[ "$interp" == "/lib/$loader_name" ]] || \
@@ -145,9 +149,11 @@ library_path="$RUNTIME_ROOT/lib:$SYSROOT/usr/lib:$RUNTIME_ROOT/usr/lib"
     "$RUNTIME_ROOT/usr/bin/signalfd-test"
 "$host_loader" --library-path "$library_path" \
     "$RUNTIME_ROOT/usr/bin/kill-blocked-test"
+"$host_loader" --library-path "$library_path" \
+    "$RUNTIME_ROOT/usr/bin/exec-mem-test"
 
 "$HOST_STRIP" --strip-unneeded "$LIBRARY"
-for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test signalfd-test kill-blocked-test pty-test; do
+for binary in dynamic-hello dynamic-nopie dlopen-test pthread-test shm-test signalfd-test kill-blocked-test pty-test exec-mem-test; do
     "$HOST_STRIP" --strip-all "$RUNTIME_ROOT/usr/bin/$binary"
 done
 

@@ -322,7 +322,8 @@ $(MUSL_SHARED_STAMP): ports/build-musl-shared.sh \
 	tools/dynamic-runtime/shm-test.c \
 	tools/dynamic-runtime/signalfd-test.c \
 	tools/dynamic-runtime/kill-blocked-test.c \
-	tools/dynamic-runtime/pty-test.c
+	tools/dynamic-runtime/pty-test.c \
+	tools/dynamic-runtime/exec-mem-test.c
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-musl-shared.sh
 	@test -x $(MUSL_SHARED_ROOT)/lib/ld-musl-x86_64.so.1 || { echo "shared musl loader was not produced" >&2; exit 1; }
@@ -1386,6 +1387,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/dynamic-runtime-check || { echo "dynamic runtime checks were not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/shm-test || { echo "shared-memory test was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/signalfd-test || { echo "signalfd test was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/exec-mem-test || { echo "the executable-memory test was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/shared-image-codecs-check || { echo "shared image codec checks were not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libz.so.1 || { echo "shared zlib runtime was not installed into the rootfs" >&2; exit 1; }
 	@test -L $(ROOTFS)/usr/lib/libpng16.so.16 || { echo "shared libpng runtime was not installed into the rootfs" >&2; exit 1; }
