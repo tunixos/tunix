@@ -12,9 +12,10 @@ set -euo pipefail
 # or libidn2 runtime dependency. Non-ASCII domain lookups lose IDN
 # conversion, which Tunix can live with.
 #
-# TLS is a known, accepted gap: https needs a glib-networking TLS backend
-# (gnutls or openssl), neither of which is ported yet. http:// and file://
-# work; -Dtls_check=false says we know.
+# TLS is not libsoup's own: it links no TLS library and asks GIO for a backend
+# at runtime, which is what the glib-networking port supplies. tls_check runs
+# that question as a build-time assertion, so a missing backend fails here
+# rather than showing up much later as a blank page.
 #
 # Output layout:
 #   $OUT/graphics-sysroot/usr/{include,lib}   headers + .pc for webkit
@@ -55,12 +56,20 @@ for module in glib-2.0 gio-2.0 sqlite3 libxml-2.0 libbrotlidec zlib; do
     [[ -f "$GRAPHICS_SYSROOT/usr/lib/pkgconfig/$module.pc" ]] || cross_port_fail \
         "$module is not in the graphics sysroot; build its port first"
 done
+[[ -f "$GRAPHICS_SYSROOT/usr/lib/gio/modules/libgiognutls.so" ]] || cross_port_fail \
+    "the gio tls module is not in the graphics sysroot; build the glib-networking port first"
 
 rm -rf "$BUILD" "$ROOT_DIR"
 mkdir -p "$BUILD" "$ROOT_DIR"
 
 cross_port_write_meson_cross "$CROSS_FILE"
 cross_port_export_pkg_config
+
+# tls_check compiles a program and runs it through the cross file's exe wrapper.
+# The module directory compiled into libgio is the *guest* /usr/lib/gio/modules,
+# which on this machine is the host's own -- glibc modules a musl process cannot
+# load. Name the sysroot's copy instead; the wrapper inherits this environment.
+export GIO_MODULE_DIR="$GRAPHICS_SYSROOT/usr/lib/gio/modules"
 
 install_both() {
     DESTDIR="$GRAPHICS_SYSROOT" meson install -C "$1" --no-rebuild
@@ -89,7 +98,6 @@ meson setup "$BUILD/libsoup" "$SOUP_SOURCE" \
     -Dintrospection=disabled \
     -Dvapi=disabled \
     -Dsysprof=disabled \
-    -Dtls_check=false \
     -Dtests=false \
     -Dinstalled_tests=false
 meson compile -C "$BUILD/libsoup" -j "$JOBS"
@@ -112,10 +120,14 @@ find "$ROOT_DIR/usr/lib" -maxdepth 1 -type l -name '*.so' -delete
 
 cross_port_finalize_root "$ROOT_DIR"
 # mesa-root ships libstdc++ (woff2's libraries are C++), libdrm-root closes
-# over mesa's own winsys.
+# over mesa's own winsys. The X roots are here because cairo grew an Xlib
+# surface backend when Xorg was ported, and this check follows every library in
+# every root listed -- not just the ones libsoup itself links.
 cross_port_check_runtime_closure "$ROOT_DIR" "$OUT/glib-root" "$OUT/libxml2-root" \
     "$OUT/sqlite-root" "$OUT/woff2-root" "$OUT/cairo-root" "$OUT/libffi-root" \
-    "$OUT/pixman-root" "$OUT/mesa-root" "$OUT/libdrm-root"
+    "$OUT/pixman-root" "$OUT/mesa-root" "$OUT/libdrm-root" "$OUT/llvm-root" \
+    "$OUT/libX11-root" "$OUT/xcb-root" "$OUT/xext-root" "$OUT/fontstack-root" \
+    "$OUT/image-codecs-shared-root" "$OUT/musl-shared-root"
 
 size=$(du -sh "$ROOT_DIR" | cut -f1)
 printf 'libpsl + libsoup %s staged at %s (%s)\n' "$soup_version" "$ROOT_DIR" "$size"
