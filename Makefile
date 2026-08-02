@@ -196,6 +196,17 @@ LIBGCRYPT_ROOT := $(PORT_OUT)/libgcrypt-root
 LIBGCRYPT_STAMP := $(PORT_OUT)/.libgcrypt-ready
 LIBTASN1_ROOT := $(PORT_OUT)/libtasn1-root
 LIBTASN1_STAMP := $(PORT_OUT)/.libtasn1-ready
+# TLS. gnutls stands on nettle, which stands on gmp; glib-networking is the
+# module that registers it as GIO's TLS backend. Without that last piece
+# https:// does not exist as far as libsoup and WebKit are concerned.
+GMP_ROOT := $(PORT_OUT)/gmp-root
+GMP_STAMP := $(PORT_OUT)/.gmp-ready
+NETTLE_ROOT := $(PORT_OUT)/nettle-root
+NETTLE_STAMP := $(PORT_OUT)/.nettle-ready
+GNUTLS_ROOT := $(PORT_OUT)/gnutls-root
+GNUTLS_STAMP := $(PORT_OUT)/.gnutls-ready
+GLIB_NETWORKING_ROOT := $(PORT_OUT)/glib-networking-root
+GLIB_NETWORKING_STAMP := $(PORT_OUT)/.glib-networking-ready
 LIBSOUP_ROOT := $(PORT_OUT)/libsoup-root
 LIBSOUP_STAMP := $(PORT_OUT)/.libsoup-ready
 WEBKITGTK_ROOT := $(PORT_OUT)/webkitgtk-root
@@ -814,7 +825,39 @@ $(LIBTASN1_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) ports/build-libtasn1
 	@test -e $(LIBTASN1_ROOT)/usr/lib/libtasn1.so.6 || { echo "libtasn1 was not produced" >&2; exit 1; }
 	@touch $@
 
+$(GMP_STAMP): $(MUSL_CROSS_STAMP) $(MUSL_SHARED_STAMP) ports/build-gmp.sh \
+	ports/lib/cross-port.sh
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-gmp.sh
+	@test -e $(GMP_ROOT)/usr/lib/libgmp.so.10 || { echo "gmp was not produced" >&2; exit 1; }
+	@touch $@
+
+$(NETTLE_STAMP): $(GMP_STAMP) ports/build-nettle.sh ports/lib/cross-port.sh \
+	ports/src/nettle/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-nettle.sh
+	@test -e $(NETTLE_ROOT)/usr/lib/libnettle.so.8 || { echo "nettle was not produced" >&2; exit 1; }
+	@test -e $(NETTLE_ROOT)/usr/lib/libhogweed.so.6 || { echo "hogweed was not produced" >&2; exit 1; }
+	@touch $@
+
+$(GNUTLS_STAMP): $(NETTLE_STAMP) $(LIBTASN1_STAMP) ports/build-gnutls.sh \
+	ports/lib/cross-port.sh
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-gnutls.sh
+	@test -e $(GNUTLS_ROOT)/usr/lib/libgnutls.so.30 || { echo "gnutls was not produced" >&2; exit 1; }
+	@touch $@
+
+# The module is what makes gnutls reachable: gio dlopens it, it registers the
+# TLS backend, and only then does https:// work anywhere on the image.
+$(GLIB_NETWORKING_STAMP): $(GNUTLS_STAMP) $(GLIB_STAMP) ports/build-glib-networking.sh \
+	ports/lib/cross-port.sh ports/src/glib-networking/meson.build tools/gio-tls-test.c
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-glib-networking.sh
+	@test -e $(GLIB_NETWORKING_ROOT)/usr/lib/gio/modules/libgiognutls.so || { echo "the gio tls module was not produced" >&2; exit 1; }
+	@touch $@
+
 $(LIBSOUP_STAMP): $(GLIB_STAMP) $(SQLITE_STAMP) $(LIBXML2_STAMP) $(WOFF2_STAMP) \
+	$(GLIB_NETWORKING_STAMP) \
 	ports/build-libsoup.sh ports/lib/cross-port.sh \
 	ports/src/libpsl/meson.build ports/src/libsoup/meson.build
 	@mkdir -p $(PORT_OUT)
@@ -1203,7 +1246,7 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1287,6 +1330,10 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(WOFF2_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBGCRYPT_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBTASN1_ROOT)/. $(ROOTFS)/
+	cp -R $(GMP_ROOT)/. $(ROOTFS)/
+	cp -R $(NETTLE_ROOT)/. $(ROOTFS)/
+	cp -R $(GNUTLS_ROOT)/. $(ROOTFS)/
+	cp -R $(GLIB_NETWORKING_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBSOUP_ROOT)/. $(ROOTFS)/
 	cp -R $(WEBKITGTK_ROOT)/. $(ROOTFS)/
 	# The shared MIME database, which is how GIO answers g_content_type_guess()
@@ -1385,6 +1432,11 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/libexec/webkit2gtk-4.0/MiniBrowser || { echo "MiniBrowser was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/libexec/webkit2gtk-4.0/WebKitWebProcess || { echo "WebKitWebProcess was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libsoup-2.4.so.1 || { echo "libsoup was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libgnutls.so.30 || { echo "gnutls was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libhogweed.so.6 || { echo "hogweed was not installed into the rootfs" >&2; exit 1; }
+	@test -e $(ROOTFS)/usr/lib/libgmp.so.10 || { echo "gmp was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/lib/gio/modules/libgiognutls.so || { echo "the gio tls module was not installed into the rootfs; https would not work" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/gio-tls-check || { echo "the gio tls check was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libxslt.so.1 || { echo "libxslt was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libharfbuzz-icu.so.0 || { echo "harfbuzz-icu was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libicuuc.so.77 || { echo "icu was not installed into the rootfs" >&2; exit 1; }
