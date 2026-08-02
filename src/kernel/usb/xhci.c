@@ -194,6 +194,37 @@ extern void kprintf(const char *fmt, ...);
 
 #define TRANSFER_TIMEOUT_NS (1000ULL * 1000ULL * 1000ULL)
 
+#define USB_DESCRIPTOR_CONFIGURATION 2U
+#define USB_DESCRIPTOR_INTERFACE 4U
+#define USB_DESCRIPTOR_ENDPOINT 5U
+#define CONFIGURATION_DESCRIPTOR_BYTES 9U
+#define CONFIGURATION_TOTAL_LENGTH_OFFSET 2U
+#define CONFIGURATION_VALUE_OFFSET 5U
+#define DESCRIPTOR_LENGTH_OFFSET 0U
+#define DESCRIPTOR_TYPE_OFFSET 1U
+#define INTERFACE_NUMBER_OFFSET 2U
+#define INTERFACE_CLASS_OFFSET 5U
+#define INTERFACE_SUBCLASS_OFFSET 6U
+#define INTERFACE_PROTOCOL_OFFSET 7U
+#define ENDPOINT_ADDRESS_OFFSET 2U
+#define ENDPOINT_ATTRIBUTES_OFFSET 3U
+#define ENDPOINT_MAX_PACKET_OFFSET 4U
+#define ENDPOINT_INTERVAL_OFFSET 6U
+
+/* The HID boot subclass is the reason this driver can read a keyboard without
+   understanding report descriptors at all: a device that advertises it must
+   also answer in a fixed eight-byte format that predates the whole HID
+   report machinery, and every keyboard and mouse supports it. */
+#define USB_CLASS_HID 3U
+#define HID_SUBCLASS_BOOT 1U
+#define HID_PROTOCOL_KEYBOARD 1U
+#define HID_PROTOCOL_MOUSE 2U
+
+#define ENDPOINT_DIRECTION_IN 0x80U
+#define ENDPOINT_NUMBER_MASK 0x0FU
+#define ENDPOINT_TYPE_MASK 0x03U
+#define ENDPOINT_TYPE_INTERRUPT 3U
+
 #define USBCMD_RUN (1U << 0)
 #define USBCMD_RESET (1U << 1)
 #define USBSTS_HALTED (1U << 0)
@@ -250,6 +281,15 @@ struct xhci_device {
     uint32_t *input_context;
     uint64_t output_physical;
     struct producer_ring control_ring;
+
+    /* What the configuration descriptor said, if this turned out to be a HID
+       device answering the boot protocol. */
+    uint8_t hid_protocol;      /* keyboard, mouse, or zero for neither */
+    uint8_t interface_number;
+    uint8_t configuration_value;
+    uint8_t endpoint_address;
+    uint16_t endpoint_packet;
+    uint8_t endpoint_interval;
 };
 
 static struct xhci_controller controller;
@@ -700,6 +740,66 @@ static int read_device_descriptor(struct xhci_device *device, uint8_t *out) {
                             out, USB_DEVICE_DESCRIPTOR_BYTES);
 }
 
+/* Read the configuration descriptor and pick out a boot-protocol HID
+ * interface and the interrupt endpoint it reports on.
+ *
+ * The descriptor is a flat run of variable-length records, so it is walked by
+ * length rather than indexed. Only the endpoint that follows the interface we
+ * accepted is taken, which is what keeps a composite device's other interfaces
+ * from being mistaken for the keyboard's.
+ */
+static int find_hid_interface(struct xhci_device *device, uint8_t *buffer) {
+    if (control_transfer(device, USB_DIRECTION_IN, USB_REQUEST_GET_DESCRIPTOR,
+                         USB_DESCRIPTOR_CONFIGURATION << USB_DESCRIPTOR_TYPE_SHIFT, 0,
+                         buffer, CONFIGURATION_DESCRIPTOR_BYTES) != 0) return -1;
+
+    uint16_t total = (uint16_t)(buffer[CONFIGURATION_TOTAL_LENGTH_OFFSET] |
+                                (buffer[CONFIGURATION_TOTAL_LENGTH_OFFSET + 1] << 8));
+    if (!total || total > RING_BYTES) return -1;
+    if (control_transfer(device, USB_DIRECTION_IN, USB_REQUEST_GET_DESCRIPTOR,
+                         USB_DESCRIPTOR_CONFIGURATION << USB_DESCRIPTOR_TYPE_SHIFT, 0,
+                         buffer, total) != 0) return -1;
+
+    device->configuration_value = buffer[CONFIGURATION_VALUE_OFFSET];
+
+    int in_boot_interface = 0;
+    for (uint16_t offset = 0; offset + 2U <= total; ) {
+        uint8_t length = buffer[offset + DESCRIPTOR_LENGTH_OFFSET];
+        uint8_t type = buffer[offset + DESCRIPTOR_TYPE_OFFSET];
+        if (!length || offset + length > total) break;
+
+        if (type == USB_DESCRIPTOR_INTERFACE) {
+            uint8_t class_code = buffer[offset + INTERFACE_CLASS_OFFSET];
+            uint8_t subclass = buffer[offset + INTERFACE_SUBCLASS_OFFSET];
+            uint8_t protocol = buffer[offset + INTERFACE_PROTOCOL_OFFSET];
+            in_boot_interface = class_code == USB_CLASS_HID &&
+                                subclass == HID_SUBCLASS_BOOT &&
+                                (protocol == HID_PROTOCOL_KEYBOARD ||
+                                 protocol == HID_PROTOCOL_MOUSE);
+            if (in_boot_interface) {
+                device->hid_protocol = protocol;
+                device->interface_number = buffer[offset + INTERFACE_NUMBER_OFFSET];
+            }
+        } else if (type == USB_DESCRIPTOR_ENDPOINT && in_boot_interface) {
+            uint8_t address = buffer[offset + ENDPOINT_ADDRESS_OFFSET];
+            uint8_t attributes = buffer[offset + ENDPOINT_ATTRIBUTES_OFFSET];
+            if ((address & ENDPOINT_DIRECTION_IN) &&
+                (attributes & ENDPOINT_TYPE_MASK) == ENDPOINT_TYPE_INTERRUPT) {
+                device->endpoint_address = address;
+                device->endpoint_packet =
+                    (uint16_t)(buffer[offset + ENDPOINT_MAX_PACKET_OFFSET] |
+                               (buffer[offset + ENDPOINT_MAX_PACKET_OFFSET + 1] << 8));
+                device->endpoint_interval = buffer[offset + ENDPOINT_INTERVAL_OFFSET];
+                return 0;
+            }
+        }
+        offset = (uint16_t)(offset + length);
+    }
+
+    device->hid_protocol = 0;
+    return -1;
+}
+
 /* Walk the root hub and bring up whatever is plugged in. */
 static void enumerate_ports(void) {
     unsigned found = 0;
@@ -735,15 +835,23 @@ static void enumerate_ports(void) {
 
         uint64_t descriptor_physical = 0;
         uint8_t *descriptor = dma_page(&descriptor_physical);
-        if (descriptor && read_device_descriptor(device, descriptor) == 0) {
-            kprintf("XHCI: port %u slot %u speed %u, ep0 packet %u, usb %x.%x\n",
-                    (unsigned)port, (unsigned)slot, (unsigned)speed,
-                    (unsigned)descriptor[DEVICE_DESCRIPTOR_MAX_PACKET],
-                    (unsigned)descriptor[3], (unsigned)descriptor[2]);
-        } else {
+        if (!descriptor || read_device_descriptor(device, descriptor) != 0) {
             kprintf("XHCI: port %u slot %u addressed, but would not describe itself\n",
                     (unsigned)port, (unsigned)slot);
+            continue;
         }
+
+        if (find_hid_interface(device, descriptor) != 0) {
+            kprintf("XHCI: port %u slot %u is not a boot-protocol HID device\n",
+                    (unsigned)port, (unsigned)slot);
+            continue;
+        }
+
+        kprintf("XHCI: port %u slot %u is a %s, endpoint %x, %u bytes every %u\n",
+                (unsigned)port, (unsigned)slot,
+                device->hid_protocol == HID_PROTOCOL_KEYBOARD ? "keyboard" : "mouse",
+                (unsigned)device->endpoint_address, (unsigned)device->endpoint_packet,
+                (unsigned)device->endpoint_interval);
     }
     if (!found) kprintf("XHCI: no devices attached\n");
 }
