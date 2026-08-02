@@ -19,6 +19,8 @@
 #include "../include/vmm.h"
 #include "../include/time.h"
 #include "../include/kstring.h"
+#include "../include/input.h"
+#include "../../include/tunix/input_event.h"
 #include "../include/xhci.h"
 
 extern void kprintf(const char *fmt, ...);
@@ -225,6 +227,32 @@ extern void kprintf(const char *fmt, ...);
 #define ENDPOINT_TYPE_MASK 0x03U
 #define ENDPOINT_TYPE_INTERRUPT 3U
 
+#define TRB_TYPE_CONFIGURE_ENDPOINT 12U
+#define EP_TYPE_INTERRUPT_IN 7U
+#define EP_INTERVAL_SHIFT 16U
+#define EP_MAX_INTERVAL 15U
+#define EP_AVERAGE_TRB_SHIFT 0U
+#define EP_MAX_ESIT_SHIFT 16U
+/* Full and low speed state the interval in frames; the field here counts in
+   125-microsecond microframes, of which a frame holds eight. */
+#define MICROFRAMES_PER_FRAME 8U
+
+/* HID class requests. SET_PROTOCOL(0) is what puts a device into the fixed
+   report format this driver can read without a report-descriptor parser. */
+#define HID_REQUEST_TYPE_OUT 0x21U
+#define HID_REQUEST_SET_PROTOCOL 0x0BU
+#define HID_PROTOCOL_BOOT 0U
+
+#define KEYBOARD_REPORT_BYTES 8U
+#define KEYBOARD_REPORT_KEYS 6U
+#define KEYBOARD_REPORT_KEYS_OFFSET 2U
+#define KEYBOARD_MODIFIER_COUNT 8U
+/* Usages below this are error conditions the device reports in every slot at
+   once (rollover, POST fail); they are not keys. */
+#define HID_USAGE_FIRST_KEY 4U
+
+#define MOUSE_BUTTON_MASK 0x07U
+
 #define USBCMD_RUN (1U << 0)
 #define USBCMD_RESET (1U << 1)
 #define USBSTS_HALTED (1U << 0)
@@ -290,6 +318,14 @@ struct xhci_device {
     uint8_t endpoint_address;
     uint16_t endpoint_packet;
     uint8_t endpoint_interval;
+
+    /* The interrupt endpoint, once it is configured and running. */
+    uint32_t endpoint_dci;
+    struct producer_ring transfer_ring;
+    uint8_t *report;
+    uint64_t report_physical;
+    uint8_t previous[KEYBOARD_REPORT_BYTES];
+    int running;
 };
 
 static struct xhci_controller controller;
@@ -800,6 +836,212 @@ static int find_hid_interface(struct xhci_device *device, uint8_t *buffer) {
     return -1;
 }
 
+/* HID usage to keycode. Only the boot-protocol range is here, because that is
+   the only range a boot-protocol device is allowed to send. The layout is the
+   usage table's own order -- letters, digits, then the rest -- which is why
+   this is a switch over ranges rather than a flat array. */
+static uint16_t keycode_for_usage(uint8_t usage) {
+    static const uint16_t letters[] = {
+        TUNIX_KEY_A, TUNIX_KEY_B, TUNIX_KEY_C, TUNIX_KEY_D, TUNIX_KEY_E,
+        TUNIX_KEY_F, TUNIX_KEY_G, TUNIX_KEY_H, TUNIX_KEY_I, TUNIX_KEY_J,
+        TUNIX_KEY_K, TUNIX_KEY_L, TUNIX_KEY_M, TUNIX_KEY_N, TUNIX_KEY_O,
+        TUNIX_KEY_P, TUNIX_KEY_Q, TUNIX_KEY_R, TUNIX_KEY_S, TUNIX_KEY_T,
+        TUNIX_KEY_U, TUNIX_KEY_V, TUNIX_KEY_W, TUNIX_KEY_X, TUNIX_KEY_Y,
+        TUNIX_KEY_Z,
+    };
+    static const uint16_t digits[] = {
+        TUNIX_KEY_1, TUNIX_KEY_2, TUNIX_KEY_3, TUNIX_KEY_4, TUNIX_KEY_5,
+        TUNIX_KEY_6, TUNIX_KEY_7, TUNIX_KEY_8, TUNIX_KEY_9, TUNIX_KEY_0,
+    };
+    static const uint16_t punctuation[] = {
+        TUNIX_KEY_ENTER, TUNIX_KEY_ESC, TUNIX_KEY_BACKSPACE, TUNIX_KEY_TAB,
+        TUNIX_KEY_SPACE, TUNIX_KEY_MINUS, TUNIX_KEY_EQUAL, TUNIX_KEY_LEFTBRACE,
+        TUNIX_KEY_RIGHTBRACE, TUNIX_KEY_BACKSLASH, TUNIX_KEY_RESERVED,
+        TUNIX_KEY_SEMICOLON, TUNIX_KEY_APOSTROPHE, TUNIX_KEY_GRAVE,
+        TUNIX_KEY_COMMA, TUNIX_KEY_DOT, TUNIX_KEY_SLASH, TUNIX_KEY_CAPSLOCK,
+    };
+    static const uint16_t function_keys[] = {
+        TUNIX_KEY_F1, TUNIX_KEY_F2, TUNIX_KEY_F3, TUNIX_KEY_F4, TUNIX_KEY_F5,
+        TUNIX_KEY_F6, TUNIX_KEY_F7, TUNIX_KEY_F8, TUNIX_KEY_F9, TUNIX_KEY_F10,
+        TUNIX_KEY_F11, TUNIX_KEY_F12,
+    };
+
+    if (usage >= 0x04U && usage <= 0x1DU) return letters[usage - 0x04U];
+    if (usage >= 0x1EU && usage <= 0x27U) return digits[usage - 0x1EU];
+    if (usage >= 0x28U && usage <= 0x39U) return punctuation[usage - 0x28U];
+    if (usage >= 0x3AU && usage <= 0x45U) return function_keys[usage - 0x3AU];
+    switch (usage) {
+        case 0x46U: return TUNIX_KEY_SYSRQ;
+        case 0x47U: return TUNIX_KEY_SCROLLLOCK;
+        case 0x48U: return TUNIX_KEY_PAUSE;
+        case 0x49U: return TUNIX_KEY_INSERT;
+        case 0x4AU: return TUNIX_KEY_HOME;
+        case 0x4BU: return TUNIX_KEY_PAGEUP;
+        case 0x4CU: return TUNIX_KEY_DELETE;
+        case 0x4DU: return TUNIX_KEY_END;
+        case 0x4EU: return TUNIX_KEY_PAGEDOWN;
+        case 0x4FU: return TUNIX_KEY_RIGHT;
+        case 0x50U: return TUNIX_KEY_LEFT;
+        case 0x51U: return TUNIX_KEY_DOWN;
+        case 0x52U: return TUNIX_KEY_UP;
+        case 0x53U: return TUNIX_KEY_NUMLOCK;
+        default: return TUNIX_KEY_RESERVED;
+    }
+}
+
+static uint16_t keycode_for_modifier(unsigned bit) {
+    static const uint16_t modifiers[KEYBOARD_MODIFIER_COUNT] = {
+        TUNIX_KEY_LEFTCTRL, TUNIX_KEY_LEFTSHIFT, TUNIX_KEY_LEFTALT,
+        TUNIX_KEY_LEFTMETA, TUNIX_KEY_RIGHTCTRL, TUNIX_KEY_RIGHTSHIFT,
+        TUNIX_KEY_RIGHTALT, TUNIX_KEY_RIGHTMETA,
+    };
+    return modifiers[bit];
+}
+
+/* A boot keyboard reports the set of keys currently held, not the change. The
+   difference against the previous report is where presses and releases come
+   from, in both directions. */
+static void handle_keyboard_report(struct xhci_device *device) {
+    const uint8_t *now = device->report;
+    const uint8_t *before = device->previous;
+
+    for (unsigned bit = 0; bit < KEYBOARD_MODIFIER_COUNT; bit++) {
+        uint8_t mask = (uint8_t)(1U << bit);
+        if ((now[0] & mask) == (before[0] & mask)) continue;
+        input_external_key(keycode_for_modifier(bit), (now[0] & mask) ? 0 : 1);
+    }
+
+    for (unsigned i = 0; i < KEYBOARD_REPORT_KEYS; i++) {
+        uint8_t usage = before[KEYBOARD_REPORT_KEYS_OFFSET + i];
+        if (usage < HID_USAGE_FIRST_KEY) continue;
+        int still_held = 0;
+        for (unsigned j = 0; j < KEYBOARD_REPORT_KEYS; j++)
+            if (now[KEYBOARD_REPORT_KEYS_OFFSET + j] == usage) still_held = 1;
+        if (!still_held) input_external_key(keycode_for_usage(usage), 1);
+    }
+
+    for (unsigned i = 0; i < KEYBOARD_REPORT_KEYS; i++) {
+        uint8_t usage = now[KEYBOARD_REPORT_KEYS_OFFSET + i];
+        if (usage < HID_USAGE_FIRST_KEY) continue;
+        int was_held = 0;
+        for (unsigned j = 0; j < KEYBOARD_REPORT_KEYS; j++)
+            if (before[KEYBOARD_REPORT_KEYS_OFFSET + j] == usage) was_held = 1;
+        if (!was_held) input_external_key(keycode_for_usage(usage), 0);
+    }
+
+    memcpy(device->previous, now, KEYBOARD_REPORT_BYTES);
+}
+
+/* A boot mouse reports movement since the last report, so it needs no memory
+   of what came before. */
+static void handle_mouse_report(struct xhci_device *device) {
+    const uint8_t *report = device->report;
+    input_external_mouse((int)(int8_t)report[1], (int)(int8_t)report[2],
+                         (int)(int8_t)report[3], report[0] & MOUSE_BUTTON_MASK);
+}
+
+/* Hand the endpoint a buffer and tell it to fill it. Every completed report
+   costs one of these, which is why it is also called from the poll. */
+static void arm_transfer(struct xhci_device *device) {
+    enqueue(&device->transfer_ring, device->report_physical, device->endpoint_packet,
+            TRB_TYPE_NORMAL, TRB_INTERRUPT_ON_COMPLETION);
+    ring_doorbell(device->slot, device->endpoint_dci);
+}
+
+/* Describe the interrupt endpoint to the controller and turn it on. The input
+   context adds one endpoint and restates the slot, because the slot's count of
+   how many endpoint contexts are valid has to grow with it. */
+static int configure_endpoint(struct xhci_device *device) {
+    uint8_t number = device->endpoint_address & ENDPOINT_NUMBER_MASK;
+    device->endpoint_dci = (uint32_t)number * 2U + 1U;
+
+    device->transfer_ring.entries = dma_page(&device->transfer_ring.physical);
+    device->report = dma_page(&device->report_physical);
+    if (!device->transfer_ring.entries || !device->report) return -1;
+    device->transfer_ring.index = 0;
+    device->transfer_ring.cycle = 1;
+    struct trb *link = &device->transfer_ring.entries[RING_TRB_COUNT - 1];
+    link->parameter_low = (uint32_t)device->transfer_ring.physical;
+    link->parameter_high = (uint32_t)(device->transfer_ring.physical >> 32);
+    link->control = (TRB_TYPE_LINK << TRB_TYPE_SHIFT) | TRB_TOGGLE_CYCLE;
+
+    /* The interval field is a power of two in microframes. High speed already
+       states it that way; full and low speed count whole frames instead. */
+    uint32_t interval = device->endpoint_interval ? device->endpoint_interval - 1U : 0U;
+    if (device->speed == USB_SPEED_LOW || device->speed == USB_SPEED_FULL) {
+        uint32_t microframes = (uint32_t)device->endpoint_interval * MICROFRAMES_PER_FRAME;
+        interval = 0;
+        while ((1U << (interval + 1U)) <= microframes && interval < EP_MAX_INTERVAL) interval++;
+    }
+    if (interval > EP_MAX_INTERVAL) interval = EP_MAX_INTERVAL;
+
+    memset(device->input_context, 0, RING_BYTES);
+    uint32_t *control = context_at(device->input_context, INPUT_CONTROL_INDEX);
+    control[1] = INPUT_ADD_SLOT | (1U << device->endpoint_dci);
+
+    uint32_t *slot = context_at(device->input_context, SLOT_CONTEXT_INDEX);
+    slot[0] = (device->speed << SLOT_SPEED_SHIFT) |
+              (device->endpoint_dci << SLOT_CONTEXT_ENTRIES_SHIFT);
+    slot[1] = device->port << SLOT_ROOT_PORT_SHIFT;
+
+    uint32_t *endpoint = context_at(device->input_context, device->endpoint_dci + 1U);
+    endpoint[0] = interval << EP_INTERVAL_SHIFT;
+    endpoint[1] = (EP_TYPE_INTERRUPT_IN << EP_TYPE_SHIFT) |
+                  (EP_ERROR_COUNT << EP_ERROR_COUNT_SHIFT) |
+                  ((uint32_t)device->endpoint_packet << EP_MAX_PACKET_SHIFT);
+    endpoint[2] = (uint32_t)(device->transfer_ring.physical | EP_DEQUEUE_CYCLE);
+    endpoint[3] = (uint32_t)(device->transfer_ring.physical >> 32);
+    endpoint[4] = ((uint32_t)device->endpoint_packet << EP_AVERAGE_TRB_SHIFT) |
+                  ((uint32_t)device->endpoint_packet << EP_MAX_ESIT_SHIFT);
+
+    return run_command(TRB_TYPE_CONFIGURE_ENDPOINT, device->input_physical,
+                       device->slot << COMMAND_SLOT_SHIFT, NULL);
+}
+
+/* Everything between "a HID interface was found" and "reports are arriving". */
+static int start_hid(struct xhci_device *device) {
+    if (control_transfer(device, 0, USB_REQUEST_SET_CONFIGURATION,
+                         device->configuration_value, 0, NULL, 0) != 0) return -1;
+    if (configure_endpoint(device) != 0) return -1;
+    /* Not fatal if refused: a device that only speaks the boot protocol has
+       nothing to switch, and answers the request with a stall. */
+    (void)control_transfer(device, HID_REQUEST_TYPE_OUT, HID_REQUEST_SET_PROTOCOL,
+                           HID_PROTOCOL_BOOT, device->interface_number, NULL, 0);
+    device->running = 1;
+    arm_transfer(device);
+    return 0;
+}
+
+static struct xhci_device *device_for_slot(uint32_t slot) {
+    for (unsigned i = 0; i < MAX_DEVICES; i++)
+        if (devices[i].used && devices[i].running && devices[i].slot == slot)
+            return &devices[i];
+    return NULL;
+}
+
+/* Called from the input layer's poll: take whatever the endpoints have
+   finished, turn it into key and pointer events, and ask for more. */
+void xhci_poll(void) {
+    if (!controller.present) return;
+
+    struct trb event;
+    while (next_event(&event)) {
+        uint32_t type = (event.control >> TRB_TYPE_SHIFT) & TRB_TYPE_MASK;
+        if (type != TRB_TYPE_TRANSFER_EVENT) continue;
+
+        struct xhci_device *device =
+            device_for_slot((event.control >> COMMAND_SLOT_SHIFT) & 0xFFU);
+        if (!device) continue;
+
+        uint32_t code = (event.status >> TRB_COMPLETION_SHIFT) & TRB_COMPLETION_MASK;
+        if (code == TRB_COMPLETION_SUCCESS || code == 13U) {
+            if (device->hid_protocol == HID_PROTOCOL_KEYBOARD) handle_keyboard_report(device);
+            else handle_mouse_report(device);
+        }
+        arm_transfer(device);
+    }
+}
+
 /* Walk the root hub and bring up whatever is plugged in. */
 static void enumerate_ports(void) {
     unsigned found = 0;
@@ -847,11 +1089,15 @@ static void enumerate_ports(void) {
             continue;
         }
 
-        kprintf("XHCI: port %u slot %u is a %s, endpoint %x, %u bytes every %u\n",
-                (unsigned)port, (unsigned)slot,
+        if (start_hid(device) != 0) {
+            kprintf("XHCI: port %u slot %u would not start reporting\n",
+                    (unsigned)port, (unsigned)slot);
+            continue;
+        }
+
+        kprintf("XHCI: %s on port %u slot %u, endpoint %x reporting\n",
                 device->hid_protocol == HID_PROTOCOL_KEYBOARD ? "keyboard" : "mouse",
-                (unsigned)device->endpoint_address, (unsigned)device->endpoint_packet,
-                (unsigned)device->endpoint_interval);
+                (unsigned)port, (unsigned)slot, (unsigned)device->endpoint_address);
     }
     if (!found) kprintf("XHCI: no devices attached\n");
 }

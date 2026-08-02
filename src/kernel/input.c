@@ -5,6 +5,7 @@
 #include "include/io.h"
 #include "include/kstring.h"
 #include "include/time.h"
+#include "include/xhci.h"
 #include "include/tty.h"
 #include "include/usercopy.h"
 #include "../include/tunix/input_event.h"
@@ -283,6 +284,45 @@ static void keyboard_emit_key(uint16_t keycode, int released) {
     input_sync_at(TUNIX_INPUT_DEVICE_KEYBOARD, timestamp);
 }
 
+/* Defined with the PS/2 packet handling, which wants the same helper. */
+static void mouse_emit_button(uint64_t timestamp, uint8_t changed,
+                              uint8_t state, uint8_t bit, uint16_t code);
+
+/*
+ * The way in for a keyboard that is not on the PS/2 port.
+ *
+ * USB HID reports carry usages, not scancodes, and the driver that reads them
+ * has already turned those into keycodes -- so they join the path here, past
+ * the translation, and everything downstream cannot tell the two keyboards
+ * apart. A machine with both ends up with one keyboard device fed from two
+ * places, which is what a user expects of it.
+ */
+void input_external_key(uint16_t keycode, int released) {
+    keyboard_emit_key(keycode, released);
+}
+
+/* The same door for a pointer. Button state is a bitmap in the same order the
+   PS/2 packet uses, so the two share the change-detection below. */
+void input_external_mouse(int dx, int dy, int wheel, uint8_t buttons) {
+    uint8_t changed = buttons ^ mouse_buttons;
+    if (!dx && !dy && !wheel && !changed) return;
+
+    uint64_t timestamp = time_uptime_ns();
+    if (dx) input_emit_at(TUNIX_INPUT_DEVICE_MOUSE, timestamp, TUNIX_EV_REL,
+                          TUNIX_REL_X, dx);
+    /* HID counts Y downwards, which is the direction the rest of the system
+       wants; the PS/2 path negates because that one counts upwards. */
+    if (dy) input_emit_at(TUNIX_INPUT_DEVICE_MOUSE, timestamp, TUNIX_EV_REL,
+                          TUNIX_REL_Y, dy);
+    if (wheel) input_emit_at(TUNIX_INPUT_DEVICE_MOUSE, timestamp, TUNIX_EV_REL,
+                             TUNIX_REL_WHEEL, wheel);
+    mouse_emit_button(timestamp, changed, buttons, 0x01U, TUNIX_BTN_LEFT);
+    mouse_emit_button(timestamp, changed, buttons, 0x02U, TUNIX_BTN_RIGHT);
+    mouse_emit_button(timestamp, changed, buttons, 0x04U, TUNIX_BTN_MIDDLE);
+    mouse_buttons = buttons;
+    input_sync_at(TUNIX_INPUT_DEVICE_MOUSE, timestamp);
+}
+
 static int keyboard_handle_event_byte(uint8_t byte) {
     if (keyboard_pause_bytes) {
         keyboard_pause_bytes--;
@@ -458,6 +498,10 @@ void input_poll(void) {
     uint64_t flags = interrupt_save();
     input_drain_controller();
     interrupt_restore(flags);
+    /* Outside the interrupt-off window: the USB poll talks to a controller
+       over MMIO and waits on it, which is not work to do with interrupts
+       masked. It has no shared state with the PS/2 path above. */
+    xhci_poll();
 }
 
 void input_irq(void) {

@@ -9,6 +9,11 @@ struct tunix_input_device_info;
 
 void input_init(void);
 void input_poll(void);
+
+/* For keyboards and pointers that are not on the PS/2 controller: the USB HID
+   driver decodes reports into keycodes and hands them in here. */
+void input_external_key(uint16_t keycode, int released);
+void input_external_mouse(int dx, int dy, int wheel, uint8_t buttons);
 void input_irq(void);
 int input_mouse_available(void);
 int input_get_device_info(unsigned device_id, struct tunix_input_device_info *info);

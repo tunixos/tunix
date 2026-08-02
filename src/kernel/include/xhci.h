@@ -23,6 +23,11 @@ struct xhci_controller {
 int xhci_init(void);
 struct xhci_controller *xhci_get(void);
 
+/* Collect whatever the HID endpoints have reported and ask for more. Called
+   from the input layer's poll, so USB keys arrive by the same route PS/2 ones
+   do rather than needing an interrupt path of their own. */
+void xhci_poll(void);
+
 /* Register access. Wide reads are split in two on purpose; see the source. */
 uint32_t xhci_read32(uint64_t address);
 void xhci_write32(uint64_t address, uint32_t value);
