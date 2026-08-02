@@ -25,6 +25,7 @@
 #define BOOT_REQUEST_MEMORY_MAP 1U
 #define BOOT_REQUEST_COMMAND_LINE 3U
 #define BOOT_REQUEST_FRAMEBUFFER 5U
+#define BOOT_REQUEST_ACPI 6U
 
 /* Mirrors the loader's kinds. Only the first is memory the kernel may take. */
 #define BOOT_MEMORY_USABLE 0U
@@ -94,6 +95,19 @@ __attribute__((used, aligned(8)))
 static struct boot_request command_line_request = {
     {BOOT_REQUEST_MAGIC_LOW, BOOT_REQUEST_MAGIC_HIGH},
     BOOT_REQUEST_COMMAND_LINE, 0, NULL,
+};
+
+/* The address of the RSDP, which is where the interrupt controllers are
+   described. The loader has already decided the tables are believable. */
+struct boot_acpi_response {
+    uint64_t revision;
+    uint64_t rsdp;
+};
+
+__attribute__((used, aligned(8)))
+static struct boot_request acpi_request = {
+    {BOOT_REQUEST_MAGIC_LOW, BOOT_REQUEST_MAGIC_HIGH},
+    BOOT_REQUEST_ACPI, 0, NULL,
 };
 
 __attribute__((used, aligned(8)))
@@ -211,6 +225,14 @@ void tunix_boot_start(void);
 
 static uint64_t physical_of(const void *address) {
     return (uint64_t)(uintptr_t)address - KERNEL_VIRTUAL_BASE;
+}
+
+/* Where the firmware's ACPI tables start, or zero on a machine that has none.
+   kmain's arguments are what the old bootloader could supply and are not worth
+   widening for one pointer, so this is asked for rather than handed over. */
+uint64_t tunix_boot_rsdp(void) {
+    const struct boot_acpi_response *response = acpi_request.response;
+    return response ? response->rsdp : 0;
 }
 
 void tunix_boot_start(void) {
