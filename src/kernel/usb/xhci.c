@@ -90,6 +90,8 @@ extern void kprintf(const char *fmt, ...);
 #define TRB_TOGGLE_CYCLE (1U << 1)
 
 #define TRB_TYPE_LINK 6U
+#define TRB_TYPE_ENABLE_SLOT 9U
+#define TRB_TYPE_ADDRESS_DEVICE 11U
 #define TRB_TYPE_NO_OP_COMMAND 23U
 #define TRB_TYPE_COMMAND_COMPLETION 33U
 #define TRB_TYPE_PORT_STATUS_CHANGE 34U
@@ -107,6 +109,57 @@ extern void kprintf(const char *fmt, ...);
 
 #define COMMAND_TIMEOUT_NS (1000ULL * 1000ULL * 1000ULL)
 #define RUN_TIMEOUT_NS (1000ULL * 1000ULL * 1000ULL)
+#define PORT_RESET_TIMEOUT_NS (500ULL * 1000ULL * 1000ULL)
+/* The specification's recovery time after a port reset, before the device is
+   required to answer anything. */
+#define PORT_SETTLE_NS (20ULL * 1000ULL * 1000ULL)
+
+#define XHCI_PORTSC_BASE 0x400U
+#define XHCI_PORT_STRIDE 0x10U
+#define PORTSC_CONNECTED (1U << 0)
+#define PORTSC_ENABLED (1U << 1)
+#define PORTSC_RESET (1U << 4)
+#define PORTSC_POWER (1U << 9)
+#define PORTSC_SPEED_SHIFT 10U
+#define PORTSC_SPEED_MASK 0xFU
+/* Every status-change bit, and the enable bit, are write-one-to-clear. A plain
+   read-modify-write of this register therefore disables the port and throws
+   away the changes it was about to report; both have to be masked out first. */
+#define PORTSC_CHANGE_MASK 0x00FE0000U
+#define PORTSC_PRESERVE_MASK (~(PORTSC_CHANGE_MASK | PORTSC_ENABLED))
+
+#define USB_SPEED_FULL 1U
+#define USB_SPEED_LOW 2U
+#define USB_SPEED_HIGH 3U
+#define USB_SPEED_SUPER 4U
+
+/* What a control endpoint may carry before the device has been asked. Low and
+   full speed must start at eight; the real figure comes from the descriptor. */
+#define EP0_PACKET_LOW_FULL 8U
+#define EP0_PACKET_HIGH 64U
+#define EP0_PACKET_SUPER 512U
+
+/* Input context: a control context, then the slot, then the endpoints. */
+#define INPUT_CONTROL_INDEX 0U
+#define SLOT_CONTEXT_INDEX 1U
+#define EP0_CONTEXT_INDEX 2U
+#define INPUT_ADD_SLOT (1U << 0)
+#define INPUT_ADD_EP0 (1U << 1)
+
+#define SLOT_SPEED_SHIFT 20U
+#define SLOT_CONTEXT_ENTRIES_SHIFT 27U
+#define SLOT_ROOT_PORT_SHIFT 16U
+
+#define EP_TYPE_CONTROL 4U
+#define EP_TYPE_SHIFT 3U
+#define EP_ERROR_COUNT_SHIFT 1U
+#define EP_ERROR_COUNT 3U
+#define EP_MAX_PACKET_SHIFT 16U
+#define EP_DEQUEUE_CYCLE 1U
+
+#define COMMAND_SLOT_SHIFT 24U
+
+#define MAX_DEVICES 8U
 
 #define USBCMD_RUN (1U << 0)
 #define USBCMD_RESET (1U << 1)
@@ -152,7 +205,22 @@ struct event_ring {
     uint32_t cycle;
 };
 
+/* One attached device: its slot, the contexts the controller reads, and the
+   ring its control endpoint runs on. */
+struct xhci_device {
+    int used;
+    uint32_t slot;
+    uint32_t port;
+    uint32_t speed;
+    uint32_t packet_size;
+    uint64_t input_physical;
+    uint32_t *input_context;
+    uint64_t output_physical;
+    struct producer_ring control_ring;
+};
+
 static struct xhci_controller controller;
+static struct xhci_device devices[MAX_DEVICES];
 static struct producer_ring command_ring;
 static struct event_ring event_ring;
 static uint64_t *device_contexts;      /* the DCBAA */
@@ -389,6 +457,168 @@ static int wait_for_command(uint32_t *completion_code) {
     }
 }
 
+/* The command completion event also carries the slot the controller assigned,
+   which is the only way to learn it. */
+static int run_command(uint32_t type, uint64_t parameter, uint32_t control_extra,
+                       uint32_t *slot_out) {
+    struct trb *entry = &command_ring.entries[command_ring.index];
+    entry->parameter_low = (uint32_t)parameter;
+    entry->parameter_high = (uint32_t)(parameter >> 32);
+    entry->status = 0;
+    __asm__ volatile("" ::: "memory");
+    entry->control = (type << TRB_TYPE_SHIFT) | control_extra | command_ring.cycle;
+
+    command_ring.index++;
+    if (command_ring.index == RING_TRB_COUNT - 1) {
+        struct trb *link = &command_ring.entries[RING_TRB_COUNT - 1];
+        link->control = (link->control & ~TRB_CYCLE) | command_ring.cycle;
+        command_ring.index = 0;
+        command_ring.cycle ^= 1;
+    }
+    __asm__ volatile("" ::: "memory");
+    xhci_write32(controller.doorbell, 0);
+
+    uint64_t deadline = time_uptime_ns() + COMMAND_TIMEOUT_NS;
+    for (;;) {
+        struct trb event;
+        if (next_event(&event)) {
+            uint32_t event_type = (event.control >> TRB_TYPE_SHIFT) & TRB_TYPE_MASK;
+            if (event_type == TRB_TYPE_COMMAND_COMPLETION) {
+                if (slot_out) *slot_out = (event.control >> COMMAND_SLOT_SHIFT) & 0xFFU;
+                uint32_t code = (event.status >> TRB_COMPLETION_SHIFT) & TRB_COMPLETION_MASK;
+                return code == TRB_COMPLETION_SUCCESS ? 0 : -(int)code;
+            }
+        }
+        if (time_uptime_ns() >= deadline) return -1;
+        __asm__ volatile("pause");
+    }
+}
+
+static uint64_t port_register(uint32_t port) {
+    return controller.operational + XHCI_PORTSC_BASE + (uint64_t)(port - 1) * XHCI_PORT_STRIDE;
+}
+
+/* Drive a port through reset and report the speed the controller then sees.
+   USB 3 ports enable themselves on connect; USB 2 ports need the reset, and
+   the keyboard is on one of those. */
+static int reset_port(uint32_t port, uint32_t *speed_out) {
+    uint64_t address = port_register(port);
+    uint32_t status = xhci_read32(address);
+    if (!(status & PORTSC_CONNECTED)) return -1;
+
+    if (!(status & PORTSC_ENABLED)) {
+        xhci_write32(address, (status & PORTSC_PRESERVE_MASK) | PORTSC_RESET);
+        uint64_t deadline = time_uptime_ns() + PORT_RESET_TIMEOUT_NS;
+        for (;;) {
+            status = xhci_read32(address);
+            if (status & PORTSC_ENABLED) break;
+            if (time_uptime_ns() >= deadline) return -1;
+            __asm__ volatile("pause");
+        }
+        uint64_t settle = time_uptime_ns() + PORT_SETTLE_NS;
+        while (time_uptime_ns() < settle) __asm__ volatile("pause");
+    }
+
+    /* Acknowledge whatever changed, without disturbing the rest. */
+    status = xhci_read32(address);
+    xhci_write32(address, (status & PORTSC_PRESERVE_MASK) | (status & PORTSC_CHANGE_MASK));
+
+    *speed_out = (status >> PORTSC_SPEED_SHIFT) & PORTSC_SPEED_MASK;
+    return 0;
+}
+
+static uint32_t packet_size_for(uint32_t speed) {
+    switch (speed) {
+        case USB_SPEED_SUPER: return EP0_PACKET_SUPER;
+        case USB_SPEED_HIGH: return EP0_PACKET_HIGH;
+        default: return EP0_PACKET_LOW_FULL;
+    }
+}
+
+static uint32_t *context_at(uint32_t *base, uint32_t index) {
+    return base + (index * controller.context_bytes) / sizeof(uint32_t);
+}
+
+/* Describe the device to the controller and give it an address. The input
+   context says what to add -- the slot and its control endpoint -- and the
+   controller writes what it made of it into the output context. */
+static int address_device(struct xhci_device *device) {
+    uint64_t input_physical = 0;
+    device->input_context = dma_page(&input_physical);
+    if (!device->input_context) return -1;
+    device->input_physical = input_physical;
+
+    uint64_t output_physical = 0;
+    if (!dma_page(&output_physical)) return -1;
+    device->output_physical = output_physical;
+
+    device->control_ring.entries = dma_page(&device->control_ring.physical);
+    if (!device->control_ring.entries) return -1;
+    device->control_ring.index = 0;
+    device->control_ring.cycle = 1;
+    struct trb *link = &device->control_ring.entries[RING_TRB_COUNT - 1];
+    link->parameter_low = (uint32_t)device->control_ring.physical;
+    link->parameter_high = (uint32_t)(device->control_ring.physical >> 32);
+    link->control = (TRB_TYPE_LINK << TRB_TYPE_SHIFT) | TRB_TOGGLE_CYCLE;
+
+    uint32_t *control = context_at(device->input_context, INPUT_CONTROL_INDEX);
+    control[1] = INPUT_ADD_SLOT | INPUT_ADD_EP0;
+
+    uint32_t *slot = context_at(device->input_context, SLOT_CONTEXT_INDEX);
+    slot[0] = (device->speed << SLOT_SPEED_SHIFT) | (1U << SLOT_CONTEXT_ENTRIES_SHIFT);
+    slot[1] = device->port << SLOT_ROOT_PORT_SHIFT;
+
+    uint32_t *endpoint = context_at(device->input_context, EP0_CONTEXT_INDEX);
+    endpoint[1] = (EP_TYPE_CONTROL << EP_TYPE_SHIFT) |
+                  (EP_ERROR_COUNT << EP_ERROR_COUNT_SHIFT) |
+                  (device->packet_size << EP_MAX_PACKET_SHIFT);
+    endpoint[2] = (uint32_t)(device->control_ring.physical | EP_DEQUEUE_CYCLE);
+    endpoint[3] = (uint32_t)(device->control_ring.physical >> 32);
+
+    device_contexts[device->slot] = device->output_physical;
+
+    return run_command(TRB_TYPE_ADDRESS_DEVICE, input_physical,
+                       device->slot << COMMAND_SLOT_SHIFT, NULL);
+}
+
+/* Walk the root hub and bring up whatever is plugged in. */
+static void enumerate_ports(void) {
+    unsigned found = 0;
+    for (uint32_t port = 1; port <= controller.max_ports && found < MAX_DEVICES; port++) {
+        uint32_t status = xhci_read32(port_register(port));
+        if (!(status & PORTSC_CONNECTED)) continue;
+
+        uint32_t speed = 0;
+        if (reset_port(port, &speed) != 0) {
+            kprintf("XHCI: port %u would not reset\n", (unsigned)port);
+            continue;
+        }
+
+        struct xhci_device *device = &devices[found];
+        uint32_t slot = 0;
+        if (run_command(TRB_TYPE_ENABLE_SLOT, 0, 0, &slot) != 0 || !slot) {
+            kprintf("XHCI: port %u connected but no slot was given\n", (unsigned)port);
+            continue;
+        }
+
+        device->slot = slot;
+        device->port = port;
+        device->speed = speed;
+        device->packet_size = packet_size_for(speed);
+        if (address_device(device) != 0) {
+            kprintf("XHCI: port %u slot %u would not take an address\n",
+                    (unsigned)port, (unsigned)slot);
+            continue;
+        }
+
+        device->used = 1;
+        found++;
+        kprintf("XHCI: port %u addressed as slot %u, speed %u\n",
+                (unsigned)port, (unsigned)slot, (unsigned)speed);
+    }
+    if (!found) kprintf("XHCI: no devices attached\n");
+}
+
 /* Start the controller and prove the rings work, which a No-Op command does
    exactly: it asks the controller for nothing except an answer. */
 static int start_controller(void) {
@@ -471,5 +701,6 @@ int xhci_init(void) {
             (unsigned)(controller.version >> 8), (unsigned)(controller.version & 0xFF),
             (unsigned)controller.max_slots, (unsigned)controller.max_ports,
             (unsigned)controller.context_bytes);
+    enumerate_ports();
     return 0;
 }
