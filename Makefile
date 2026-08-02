@@ -1144,8 +1144,11 @@ $(BUILD)/idt.o: src/kernel/arch/x86_64/idt.c | $(BUILD)
 $(BUILD)/isr_handler.o: src/kernel/arch/x86_64/isr_handler.c src/kernel/include/input.h src/kernel/include/interrupt.h src/kernel/include/pic.h src/kernel/include/timer.h | $(BUILD)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
-$(KERNEL): $(KERNEL_OBJS)
-	$(CC) $(KERNEL_LDFLAGS) -o $@ $^
+# The linker script decides the layout and the reserved regions, so a change to
+# it has to relink. Without this the old binary survives an edit to it and looks
+# like the edit did nothing.
+$(KERNEL): $(KERNEL_OBJS) src/kernel/arch/x86_64/linker.ld
+	$(CC) $(KERNEL_LDFLAGS) -o $@ $(KERNEL_OBJS)
 	$(STRIP) --strip-all $@
 
 $(BUILD)/user/crt0.o: src/libc/crt0.S | $(BUILD)/user
