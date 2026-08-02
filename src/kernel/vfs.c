@@ -59,6 +59,38 @@ void vfs_release_data(struct vfs_node *node) {
     node->flags = (node->flags & ~VFS_OWNED_DATA) | VFS_LAZY_DATA;
 }
 
+/* Drop every file body that the disk can hand back, and say how many bytes that
+ * returned to the heap.
+ *
+ * Tunix keeps file contents in kmalloc'd buffers, and the heap never gives
+ * pages back to the PMM. So the first read or write of a file converts general
+ * memory into heap memory permanently: browse for a few minutes, and the
+ * browser's cache alone can push the heap to its ceiling, after which kmalloc
+ * returns NULL and nothing new can start -- the machine stays up and refuses to
+ * launch anything, which is a confusing way to run out of memory.
+ *
+ * Reclaiming is only dropping a cache. Writes are persisted as they happen
+ * (PERSIST(written, ...)), so the disk copy is authoritative and vfs_fault_in()
+ * pulls the bytes back on the next access. vfs_release_data() already declines
+ * the nodes where that is not true: anything with no disk inode behind it, and
+ * anything mapped into a process.
+ */
+uint64_t vfs_reclaim_file_data(struct vfs_node *node) {
+    if (!node) return 0;
+
+    uint64_t reclaimed = 0;
+    if ((node->flags & 0xFFU) == VFS_FILE) {
+        uint64_t held = node->capacity;
+        vfs_release_data(node);
+        if (!node->data) reclaimed += held;
+    }
+
+    for (struct vfs_node *child = node->children; child; child = child->next)
+        reclaimed += vfs_reclaim_file_data(child);
+
+    return reclaimed;
+}
+
 /* Pinned data is mapped into a process; releasing it would pull the pages out
    from under that mapping, so it is leaked instead. */
 static void free_node_data(struct vfs_node *node) {

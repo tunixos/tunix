@@ -124,6 +124,10 @@ void vfs_setup_memory_file(struct vfs_node *node);
 
 extern struct vfs_node *vfs_root;
 
+/* Release the cached contents of every file under `node` that can be read back
+   off the disk, returning the bytes handed back to the heap. */
+uint64_t vfs_reclaim_file_data(struct vfs_node *node);
+
 void vfs_init(void);
 struct vfs_node *vfs_alloc_node(const char *name, uint32_t flags);
 int vfs_attach(struct vfs_node *parent, struct vfs_node *child);

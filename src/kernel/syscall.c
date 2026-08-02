@@ -3744,6 +3744,11 @@ void syscall_dispatch(struct syscall_frame *frame) {
     if (!frame) return;
     process_account_runtime();
     process_reap_deferred();
+    /* File contents live in the heap, and the heap never returns pages to the
+       PMM. Entering a syscall is the one moment when no kernel path is holding
+       a pointer into a file's buffer, so it is the only safe place to drop
+       them; see vfs_reclaim_file_data(). */
+    if (heap_under_pressure()) vfs_reclaim_file_data(vfs_root);
     struct process *caller = process_current();
     uint64_t syscall_number = frame->rax;
     if (caller) caller->syscall_rewound = 0;
