@@ -1,16 +1,12 @@
 .intel_syntax noprefix
 .section .text
 .global kernel_entry
-.extern kmain
+.extern tunix_boot_start
 .extern __bss_start
 .extern kernel_end
 
 kernel_entry:
     cli
-    push rdi
-    push rsi
-    push rdx
-    push rcx
 
     mov rax, cr0
     and rax, -5
@@ -27,14 +23,9 @@ kernel_entry:
     xor eax, eax
     rep stosb
 
-    pop rcx
-    pop rdx
-    pop rsi
-    pop rdi
-
     lea rsp, [rip + stack_top]
     xor rbp, rbp
-    call kmain
+    call tunix_boot_start
 1:
     hlt
     jmp 1b

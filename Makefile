@@ -267,6 +267,7 @@ USER_LDFLAGS := -nostdlib -static -T src/userspace/linker.ld --build-id=none \
 	-z max-page-size=0x1000 --gc-sections
 
 KERNEL_OBJS := \
+	$(BUILD)/tunix_boot.o \
 	$(BUILD)/entry.o $(BUILD)/main.o $(BUILD)/serial.o \
 	$(BUILD)/kprintf.o $(BUILD)/kstring.o $(BUILD)/gdt.o \
 	$(BUILD)/idt.o $(BUILD)/isr.o $(BUILD)/isr_handler.o $(BUILD)/pic.o $(BUILD)/timer.o \
@@ -1040,13 +1041,33 @@ $(BUILD):
 $(BUILD)/user:
 	mkdir -p $@
 
-$(BUILD)/stage1.bin: src/bootloader/stage1/boot.asm | $(BUILD) $(BUILD)/.tools
-	$(NASM) -f bin $< -o $@
+# The bootloader is a project of its own with its own build system and its own
+# tests. What comes back here is the two pieces the image needs; everything
+# about how they are made lives over there.
+TUNIX_BOOT := tunix-boot
+TUNIX_BOOT_BUILD := $(TUNIX_BOOT)/build-bios
+TUNIX_BOOT_CROSS := meson/cross/x86_64-bios.txt
 
-$(BUILD)/stage2.bin: src/bootloader/stage2/stage2.asm | $(BUILD) $(BUILD)/.tools
-	$(NASM) -f bin $< -o $@
+.PHONY: bootloader
+bootloader:
+	@test -f $(TUNIX_BOOT)/meson.build || { \
+		echo "$(TUNIX_BOOT) is empty; run: git submodule update --init"; \
+		exit 1; }
+	@test -d $(TUNIX_BOOT_BUILD) || \
+		(cd $(TUNIX_BOOT) && meson setup build-bios --cross-file $(TUNIX_BOOT_CROSS))
+	ninja -C $(TUNIX_BOOT_BUILD)
+
+$(BUILD)/stage1.bin: bootloader | $(BUILD)
+	cp $(TUNIX_BOOT_BUILD)/src/fw/bios/stage1.bin $@
+
+$(BUILD)/stage2.bin: bootloader | $(BUILD)
+	cp $(TUNIX_BOOT_BUILD)/src/fw/bios/stage2.bin $@
 
 $(BUILD)/entry.o: src/kernel/arch/x86_64/entry.S | $(BUILD)
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD)/tunix_boot.o: src/kernel/arch/x86_64/tunix_boot.c \
+	src/kernel/include/boot_manifest.h src/kernel/include/boot_framebuffer.h | $(BUILD)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(BUILD)/isr.o: src/kernel/arch/x86_64/isr.S | $(BUILD)

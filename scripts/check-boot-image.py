@@ -9,7 +9,17 @@ import sys
 from pathlib import Path
 
 SECTOR_SIZE = 512
-MANIFEST_LBA = 64
+# Where build-image.py puts it: after the loader area and the FAT partition.
+# Kept as one definition by importing rather than repeating the arithmetic.
+import importlib.util as _importlib
+import pathlib as _pathlib
+
+_spec = _importlib.spec_from_file_location(
+    "tunix_build_image", _pathlib.Path(__file__).with_name("build-image.py"))
+_build_image = _importlib.module_from_spec(_spec)
+_spec.loader.exec_module(_build_image)
+
+MANIFEST_LBA = _build_image.MANIFEST_LBA
 MANIFEST_MAGIC = 0x4D414E49
 MANIFEST_VERSION = 3
 MANIFEST_FORMAT = "<IHHQIQIQQIQII"
