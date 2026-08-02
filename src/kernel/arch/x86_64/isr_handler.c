@@ -2,6 +2,7 @@
 #include "../../include/input.h"
 #include "../../include/interrupt.h"
 #include "../../include/pic.h"
+#include "../../include/apic.h"
 #include "../../include/process.h"
 #include "../../include/signal.h"
 #include "../../include/timer.h"
@@ -32,16 +33,23 @@ static int fault_signal(uint64_t vector) {
     }
 }
 
+/* Whoever is delivering is who must be told the interrupt is finished. The
+   two are never both live: apic_init masks the 8259s as it takes over. */
+static void interrupt_acknowledge(unsigned vector) {
+    if (apic_is_active()) apic_send_eoi();
+    else pic_send_eoi(vector);
+}
+
 void isr_handler(struct interrupt_frame *regs) {
     if (regs->int_no == PIC_MASTER_VECTOR) {
         timer_irq(regs);
-        pic_send_eoi((unsigned)regs->int_no);
+        interrupt_acknowledge((unsigned)regs->int_no);
         return;
     }
     if (regs->int_no == PIC_MASTER_VECTOR + 1U ||
         regs->int_no == PIC_SLAVE_VECTOR + 4U) {
         input_irq();
-        pic_send_eoi((unsigned)regs->int_no);
+        interrupt_acknowledge((unsigned)regs->int_no);
         return;
     }
     if (regs->int_no < 32) {

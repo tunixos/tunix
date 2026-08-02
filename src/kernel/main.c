@@ -27,6 +27,7 @@
 #include "include/terminal.h"
 #include "include/vmm.h"
 #include "include/acpi.h"
+#include "include/apic.h"
 #include "include/xhci.h"
 
 #define INITRAMFS_PHYSICAL 0x02000000ULL
@@ -174,8 +175,14 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
 #endif
     tty_init();
     input_init();
-    pic_unmask(1U);
-    if (input_mouse_available()) pic_unmask(12U);
+    /* Delivery moves here, after the handlers exist and before anything is
+       unmasked: the routing below has to go to whichever controller is live. */
+    int apic = apic_init() == 0;
+    if (apic) apic_route_legacy_irq(1U);
+    else pic_unmask(1U);
+    if (input_mouse_available()) {
+        if (apic) apic_route_legacy_irq(12U); else pic_unmask(12U);
+    }
     devfs_init();
     /* After devfs: the entries describe the devices it just attached. */
     sysfs_init();
@@ -188,7 +195,7 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
     syscall_init();
     if (!process_create_from_path("/sbin/init")) panic("cannot create /sbin/init");
     timer_init();
-    pic_unmask(0U);
+    if (apic_is_active()) apic_route_legacy_irq(0U); else pic_unmask(0U);
 #if TUNIX_BOOT_TIMINGS
     boot_log_stage("devices/process/init ELF", &stage_started);
     boot_log_cycles("kernel boot total", boot_read_tsc() - boot_started);
