@@ -40,6 +40,24 @@
 #define PAGE_WRITE_THROUGH (1ULL << 3)
 #define PAGE_UNCACHED (1ULL << 4)
 #define PAGE_HUGE     (1ULL << 7)
+/*
+ * Write-combining, for the framebuffer.
+ *
+ * Bit 7 is the PAT selector in a *page table* entry and the huge-page bit in a
+ * directory entry -- the same bit means two different things by level, which
+ * is why this shares a value with PAGE_HUGE and must only ever be passed for a
+ * 4 KiB mapping. With PWT and PCD clear it selects PAT entry 4, which
+ * vmm_init() reprograms to write-combining.
+ *
+ * On real hardware this is not a tuning knob. A framebuffer mapped write-back
+ * is wrong (the card never sees half the writes until something flushes) and
+ * mapped uncached is correct but roughly two orders of magnitude slower, one
+ * bus transaction per pixel. Write-combining is what makes a software-rendered
+ * desktop possible at all. In QEMU the framebuffer is ordinary RAM and none of
+ * this is observable, which is exactly why it is easy to get wrong and never
+ * notice.
+ */
+#define PAGE_WRITE_COMBINING (1ULL << 7)
 #define PAGE_DEVICE   (1ULL << 9)
 /* Software bit (the CPU ignores 9..11). Marks a page that fork shared instead
    of copying: it is mapped read-only in every owner, and the first write takes
@@ -59,6 +77,11 @@
 #define PAGE_NX       (1ULL << 63)
 
 void vmm_init(void);
+/* True once PAT entry 4 has been set to write-combining, which is what makes
+   PAGE_WRITE_COMBINING mean anything. False on a processor without PAT, where
+   the caller should map the framebuffer uncached and accept the cost. */
+int vmm_write_combining_available(void);
+
 void *vmm_phys_to_virt(uint64_t physical);
 uint64_t vmm_virt_to_phys_direct(const void *virtual_address);
 uint64_t vmm_kernel_cr3(void);

@@ -143,8 +143,46 @@ static uint64_t *next_table(uint64_t *table, uint16_t index,
     return new_table;
 }
 
+/*
+ * Put write-combining where a page table entry can ask for it.
+ *
+ * The PAT is eight slots, and a page selects one with three bits spread across
+ * its entry. The first four slots keep their power-on meanings so that every
+ * existing mapping keeps behaving exactly as it did; only slot 4 -- which no
+ * mapping selects until one sets bit 7 -- is changed from write-back to
+ * write-combining. That is the same slot Linux repurposes, and for the same
+ * reason: it is the one that can be changed without auditing everything else.
+ */
+#define IA32_PAT_MSR 0x277U
+#define CPUID_FEATURES_LEAF 1U
+#define CPUID_EDX_PAT (1U << 16)
+/* PA0..PA3 as the processor leaves them, PA4 write-combining, PA5..PA7 as
+   they were: WB, WT, UC-, UC, WC, WT, UC-, UC. */
+#define PAT_WITH_WRITE_COMBINING 0x0007040100070406ULL
+
+static int write_combining;
+
+static inline void write_msr(uint32_t msr, uint64_t value) {
+    __asm__ volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value),
+                                 "d"((uint32_t)(value >> 32)));
+}
+
+static void configure_page_attributes(void) {
+    uint32_t a = 0, b = 0, c = 0, d = 0;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                             : "a"(CPUID_FEATURES_LEAF), "c"(0));
+    if (!(d & CPUID_EDX_PAT)) return;
+    write_msr(IA32_PAT_MSR, PAT_WITH_WRITE_COMBINING);
+    write_combining = 1;
+}
+
+int vmm_write_combining_available(void) { return write_combining; }
+
 void vmm_init(void) {
     memset(address_spaces, 0, sizeof(address_spaces));
+    /* Before any mapping is made, so nothing is ever mapped through a slot
+       whose meaning is about to change under it. */
+    configure_page_attributes();
 
     kernel_cr3_physical = read_cr3();
     if (!pmm_page_is_allocated(kernel_cr3_physical) ||

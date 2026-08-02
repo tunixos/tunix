@@ -5,7 +5,10 @@
 #include "include/terminal.h"
 #include "include/usercopy.h"
 #include "include/vmm.h"
+
 #include "../include/tunix/framebuffer.h"
+
+extern void kprintf(const char *fmt, ...);
 
 /* Must sit ABOVE the kernel heap window, or the heap collides with it as it
    grows and stops early. The heap is [HEAP_START, HEAP_START+HEAP_MAX_SIZE) =
@@ -141,11 +144,24 @@ int framebuffer_init(const struct boot_framebuffer_info *boot_info) {
     uint64_t framebuffer_bytes = (uint64_t)boot_info->pitch * boot_info->height;
     if (framebuffer_bytes > UINT64_MAX - page_offset) return -1;
     uint64_t mapped_size = align_up_page(framebuffer_bytes + page_offset);
+    /* Write-combining where the processor can do it, uncached where it cannot.
+       Never write-back: this is a device's memory, and the writes have to
+       reach it rather than sit in a cache line waiting for an eviction. The
+       distinction costs nothing under emulation, where the framebuffer is
+       ordinary RAM, and is the difference between a usable desktop and an
+       unusable one on a real card. */
+    uint64_t cache_flags = vmm_write_combining_available() ? PAGE_WRITE_COMBINING
+                                                          : PAGE_UNCACHED;
     for (uint64_t offset = 0; offset < mapped_size; offset += 4096ULL) {
         int result = vmm_map_page_in(vmm_kernel_cr3(), FRAMEBUFFER_VIRTUAL_BASE + offset,
-                                     physical_page + offset, PAGE_WRITE | PAGE_DEVICE);
+                                     physical_page + offset,
+                                     PAGE_WRITE | PAGE_DEVICE | cache_flags);
         if (result != 0 && result != -2) return -1;
     }
+
+    kprintf("FB: %ux%u mapped %s\n", (unsigned)boot_info->width,
+            (unsigned)boot_info->height,
+            vmm_write_combining_available() ? "write-combining" : "uncached");
 
     framebuffer.base = (volatile uint8_t *)(FRAMEBUFFER_VIRTUAL_BASE + page_offset);
     framebuffer.physical_address = boot_info->physical_address;
@@ -399,7 +415,12 @@ int64_t framebuffer_device_mmap(struct vfs_node *node, struct file *file,
         length > framebuffer.mapping_size - offset) return -EINVAL;
 
     uint64_t mapped = 0;
-    uint64_t flags = page_flags | PAGE_USER | PAGE_DEVICE | PAGE_PRESENT | PAGE_NX;
+    /* The same caching decision as the kernel's own mapping, and it matters
+       more here: this is the mapping Xorg and weston draw a whole screen
+       through, a word at a time. */
+    uint64_t flags = page_flags | PAGE_USER | PAGE_DEVICE | PAGE_PRESENT | PAGE_NX |
+                     (vmm_write_combining_available() ? PAGE_WRITE_COMBINING
+                                                      : PAGE_UNCACHED);
     for (; mapped < length; mapped += 4096ULL) {
         int status = vmm_map_page_in(cr3, virtual_address + mapped,
                                      framebuffer.physical_page + offset + mapped,
