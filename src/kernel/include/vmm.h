@@ -9,6 +9,14 @@
    the direct map, which is what held the direct map -- and so the amount of
    RAM the machine could use -- to a single gigabyte. */
 #define HEAP_VIRTUAL_BASE 0xFFFFFF0000000000ULL
+/* Where device registers get mapped, at the very top of the address space.
+   It has to be up here: the direct map below runs from KERNEL_BASE to
+   KERNEL_BASE + PMM_DIRECT_MAP_LIMIT in 2 MiB pages, and a huge page is not
+   something a 4 KiB mapping can be placed inside. The framebuffer takes the
+   window that starts where the direct map ends; this sits above anything a
+   framebuffer could grow to. */
+#define DEVICE_MMIO_VIRTUAL_BASE 0xFFFFFFFFFF000000ULL
+#define DEVICE_MMIO_VIRTUAL_BYTES 0x01000000ULL
 #define USER_ADDRESS_LIMIT 0x0000800000000000ULL
 
 /*
@@ -26,6 +34,11 @@
 #define PAGE_PRESENT  (1ULL << 0)
 #define PAGE_WRITE    (1ULL << 1)
 #define PAGE_USER     (1ULL << 2)
+/* Registers are not memory: a cached mapping would let the processor answer a
+   read from a line it fetched earlier, and hide a write in a store buffer,
+   which is how a controller ends up looking dead when it is only unheard. */
+#define PAGE_WRITE_THROUGH (1ULL << 3)
+#define PAGE_UNCACHED (1ULL << 4)
 #define PAGE_HUGE     (1ULL << 7)
 #define PAGE_DEVICE   (1ULL << 9)
 /* Software bit (the CPU ignores 9..11). Marks a page that fork shared instead

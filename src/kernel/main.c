@@ -26,6 +26,7 @@
 #include "include/vfs.h"
 #include "include/terminal.h"
 #include "include/vmm.h"
+#include "include/xhci.h"
 
 #define INITRAMFS_PHYSICAL 0x02000000ULL
 
@@ -139,6 +140,10 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
     if (framebuffer_init(framebuffer_info) != 0) panic("framebuffer initialization failed");
     heap_init();
     net_init();
+    /* A machine with no PS/2 port has its keyboard here; one that has both
+       ends up with two, which the input layer already copes with. Absent or
+       broken is not fatal -- the rest of the system does not depend on it. */
+    (void)xhci_init();
 #if TUNIX_BOOT_TIMINGS
     boot_log_stage("memory/framebuffer/network init", &stage_started);
 #endif
