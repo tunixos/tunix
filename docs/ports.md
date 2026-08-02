@@ -124,9 +124,45 @@ One trap worth knowing about on a Windows working copy: libffi's
 scripts with CRLF line endings. `configure` then fails to source
 `configure.host`, which is not fatal — it silently leaves the architecture
 undetected and the build dies much later. Set `core.eol=lf` and re-check out
-the submodule; `ports/build-libffi.sh` detects the symptom and says so.
+the submodule; `ports/build-libffi.sh` detects the symptom and says so. nettle
+has the same `.gitattributes` habit, where it surfaces as `./.bootstrap:
+/bin/sh^M: bad interpreter`; `ports/build-nettle.sh` checks for it up front.
 
 Do not make a port install directly into `initrd/` or `build/rootfs/`. The Makefile owns final rootfs assembly.
+
+## TLS
+
+GIO does not implement TLS. `g_tls_backend_get_default()` returns whatever
+registered itself at the `gio-tls-backend` extension point, and nothing does
+until a module in `/usr/lib/gio/modules` is loaded. With that directory empty
+libsoup answers every `https://` with "TLS support is not available" and
+WebKit fails the load before a packet leaves the machine — a failure that
+looks nothing like its cause.
+
+Four ports fill it in, and they must be built in this order:
+
+| Port | What it is |
+| --- | --- |
+| `gmp` | bignums, from a release tarball — GMP's upstream is Mercurial |
+| `nettle` | ciphers, hashes and (as `hogweed`) the public-key half |
+| `gnutls` | the TLS implementation, from a release tarball |
+| `glib-networking` | the module that registers gnutls as GIO's backend |
+
+Certificates come from `/etc/ssl/cert.pem`, the bundle the image already ships
+for mbedTLS, compiled into gnutls as its default trust store. `https-get`,
+`curl` and the browser therefore agree on which roots are trusted.
+
+Two checks guard the seam, because "installed" and "loaded" are different
+claims. `ports/build-glib-networking.sh` runs `tools/gio-tls-test.c` against
+the module it just staged, under the cross loader, and fails if GIO does not
+come back with a backend. `ports/build-libsoup.sh` then asks the same question
+through libsoup's own `tls_check`. Both need `GIO_MODULE_DIR` pointed at the
+sysroot: the directory compiled into `libgio` names the *guest*
+`/usr/lib/gio/modules`, which on the build host is the host's own, full of
+glibc modules a musl process cannot load.
+
+On the guest, `gio-tls-check https://example.com` does the whole thing for
+real — handshake, protocol version, ciphersuite and the HTTP status line.
 
 ## Init (dinit)
 
