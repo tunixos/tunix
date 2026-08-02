@@ -16,7 +16,20 @@
  * comfortably inside the 1 GiB virtual window above HEAP_START and lets a clone
  * fit when QEMU is given enough RAM (see the run targets' -m). */
 #define HEAP_MAX_SIZE (768ULL * 1024 * 1024)
+/* Where "nearly full" starts. Reclaiming cached file data is not free -- the
+   bytes have to be read off the disk again -- so it should not begin the moment
+   the heap is merely busy, and it must begin early enough that the allocation
+   which actually needs the room still finds it. Three quarters leaves 192 MiB,
+   comfortably more than the largest single thing anything here allocates. */
+#define HEAP_PRESSURE_SIZE (HEAP_MAX_SIZE / 4 * 3)
 #define HEAP_PAGE_SIZE 4096ULL
+/* How big a free block has to be before its pages go back to the PMM.
+ * Unmapping and remapping costs a page-table walk per page, so doing it for
+ * every small allocation would tax the whole system to recover bytes that the
+ * next kmalloc reuses anyway. A megabyte is above anything allocated in a hot
+ * path and below the file buffers this exists for; smaller blocks still get
+ * there by coalescing with their neighbours. */
+#define HEAP_RELEASE_MIN (1024ULL * 1024ULL)
 /* Allocations this big come back page aligned: file contents land in them and
    mmap maps those pages straight into user processes. */
 #define HEAP_PAGE_ALIGN_MIN (64ULL * 1024)
@@ -39,6 +52,12 @@ typedef struct heap_block {
     uint32_t magic;
     uint32_t size;
     uint8_t is_free;
+    /* "Pages inside this block may not be mapped." Deliberately not "are not":
+       splitting and coalescing move the boundaries around, so the flag is a
+       hint to go and look rather than a record of which pages went. Every
+       remap consults the page tables page by page, which makes it idempotent
+       and immune to the boundaries having moved. */
+    uint8_t pages_released;
     struct heap_block* next;
     uint64_t reserved;   /* padding only: keeps sizeof a multiple of HEAP_ALIGN */
 } heap_block_t;
@@ -48,6 +67,9 @@ _Static_assert(sizeof(heap_block_t) % HEAP_ALIGN == 0,
 
 static heap_block_t* head = NULL;
 static uint64_t heap_size = 0;
+/* Bytes currently handed out. heap_size only ever grows, so it says nothing
+   about how much room is left; this does. */
+static uint64_t heap_allocated = 0;
 static spinlock_t heap_lock;
 
 extern void kprintf(const char *fmt, ...);
@@ -67,6 +89,7 @@ void heap_init(void) {
     head->magic = HEAP_MAGIC;
     head->size = HEAP_INITIAL_SIZE - sizeof(heap_block_t);
     head->is_free = 1;
+    head->pages_released = 0;
     head->next = NULL;
 }
 
@@ -110,6 +133,7 @@ static int heap_grow(size_t min_size) {
     new_block->magic = HEAP_MAGIC;
     new_block->size = (uint32_t)(growth - sizeof(heap_block_t));
     new_block->is_free = 1;
+    new_block->pages_released = 0;
     new_block->next = NULL;
 
     heap_block_t *tail = head;
@@ -122,6 +146,88 @@ static int heap_grow(size_t min_size) {
     }
 
     heap_size += growth;
+    return 0;
+}
+
+/*
+ * Give the pages inside a free block back to the physical allocator.
+ *
+ * Without this the heap is a one-way street: it takes pages from the PMM and
+ * never returns them, so every byte of file content that passes through it
+ * permanently stops being memory a process can use. Reading a few hundred
+ * megabytes -- which a browser does in minutes -- eventually leaves the machine
+ * up and unable to start anything at all.
+ *
+ * Only whole pages strictly inside the block go. The header must stay mapped
+ * because the allocator walks this list by following pointers into headers, and
+ * so must anything sharing the header's page or the next block's.
+ *
+ * Called on a block the moment it is freed and before it coalesces with its
+ * neighbours, which is the only point where its extent is exactly the buffer
+ * that was allocated: every page inside it is mapped, and every page inside it
+ * is now spare. Once blocks merge, "released" is true of the union as soon as
+ * it was true of either half, and a block that is mostly mapped would then
+ * never be looked at again -- which is precisely how this managed to release
+ * nothing at all on its first outing.
+ */
+static void heap_release_pages(heap_block_t *block) {
+    if (block->pages_released || block->size < HEAP_RELEASE_MIN) return;
+
+    uint64_t payload = (uint64_t)block + sizeof(heap_block_t);
+    uint64_t end = payload + block->size;
+    uint64_t first = (payload + HEAP_PAGE_SIZE - 1) & ~(HEAP_PAGE_SIZE - 1);
+    uint64_t last = end & ~(HEAP_PAGE_SIZE - 1);
+    if (last <= first) return;
+
+    uint64_t cr3 = vmm_kernel_cr3();
+    for (uint64_t page = first; page < last; page += HEAP_PAGE_SIZE) {
+        uint64_t physical = 0;
+        if (vmm_translate(cr3, page, &physical, NULL) != 0) continue;
+        if (vmm_unmap_page_in(cr3, page) != 0) continue;
+        pmm_free_page((void *)physical);
+    }
+    block->pages_released = 1;
+}
+
+/*
+ * Put pages back under as much of a released block as this allocation will
+ * touch, and no more: remapping a 200 MiB block to satisfy a 200-byte request
+ * would undo the point of having released it. What the allocator itself is
+ * about to write -- the split header just past the payload, and the page the
+ * alignment carve may skip over -- is included.
+ *
+ * Returns 0, or -1 if physical memory has run out. A partial remap is not
+ * unwound: the pages it did map are inside a block that is still free and
+ * still flagged, so they stay available to the heap and the next attempt
+ * simply finds fewer of them missing. Unwinding would have to distinguish the
+ * pages this call mapped from the ones that were already there, which the page
+ * tables alone cannot say.
+ */
+static int heap_reacquire_pages(heap_block_t *block, uint64_t size) {
+    if (!block->pages_released) return 0;
+
+    uint64_t payload = (uint64_t)block + sizeof(heap_block_t);
+    uint64_t end = payload + block->size;
+    /* Two pages of slack, not one: the alignment carve can push the payload a
+       whole page forward, and then a second if the skipped bytes are too few to
+       hold a header of their own. */
+    uint64_t wanted = payload + size + 2 * HEAP_PAGE_SIZE + sizeof(heap_block_t) + HEAP_ALIGN;
+    if (wanted > end) wanted = end;
+
+    uint64_t first = payload & ~(HEAP_PAGE_SIZE - 1);
+    uint64_t last = (wanted + HEAP_PAGE_SIZE - 1) & ~(HEAP_PAGE_SIZE - 1);
+    uint64_t cr3 = vmm_kernel_cr3();
+
+    for (uint64_t page = first; page < last; page += HEAP_PAGE_SIZE) {
+        if (vmm_translate(cr3, page, NULL, NULL) == 0) continue;
+        void *physical = pmm_alloc_page();
+        if (!physical) return -1;
+        if (vmm_map_page_in(cr3, page, (uint64_t)physical,
+                            PAGE_PRESENT | PAGE_WRITE) != 0) {
+            pmm_free_page(physical);
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -159,23 +265,36 @@ void* kmalloc(size_t size) {
         heap_block_t* curr = head;
         while (curr != NULL) {
             if (curr->is_free && curr->size >= size) {
+                /* Pages first: everything below writes headers into this block,
+                   and a released block has nothing behind those addresses. */
+                if (heap_reacquire_pages(curr, size) != 0) { curr = curr->next; continue; }
+                uint8_t released = curr->pages_released;
+
                 heap_block_t* chosen = curr;
                 if (page_aligned) {
                     chosen = split_for_page_alignment(curr, size);
                     if (!chosen) { curr = curr->next; continue; }
+                    curr->pages_released = 0;
+                    chosen->pages_released = released;
                 }
                 if (chosen->size > size + sizeof(heap_block_t) + 16) {
                     heap_block_t* new_block = (heap_block_t*)((uint8_t*)chosen + sizeof(heap_block_t) + size);
                     new_block->magic = HEAP_MAGIC;
                     new_block->size = chosen->size - size - sizeof(heap_block_t);
                     new_block->is_free = 1;
+                    /* Only as far as the request needed was mapped, so the
+                       remainder is the part that may still be short of pages. */
+                    new_block->pages_released = released;
                     new_block->next = chosen->next;
 
                     chosen->size = size;
                     chosen->next = new_block;
                 }
 
+                /* What is handed out is mapped for its whole length. */
+                chosen->pages_released = 0;
                 chosen->is_free = 0;
+                heap_allocated += chosen->size;
                 spinlock_release(&heap_lock);
                 return (void*)((uint8_t*)chosen + sizeof(heap_block_t));
             }
@@ -201,12 +320,18 @@ void kfree(void* ptr) {
         panic("HEAP: Invalid kfree magic!");
     }
 
+    /* Guarded rather than unconditional: a double free would otherwise take the
+       counter below zero and leave the heap permanently claiming to be empty. */
+    if (!block->is_free) heap_allocated -= block->size;
     block->is_free = 1;
+    heap_release_pages(block);
 
     heap_block_t* curr = head;
     while (curr != NULL) {
         if (curr->is_free && curr->next != NULL && curr->next->is_free) {
             curr->size += curr->next->size + sizeof(heap_block_t);
+            /* Either side may be short of pages, so the merged block is too. */
+            curr->pages_released |= curr->next->pages_released;
             curr->next = curr->next->next;
         } else {
             curr = curr->next;
@@ -214,4 +339,11 @@ void kfree(void* ptr) {
     }
 
     spinlock_release(&heap_lock);
+}
+
+int heap_under_pressure(void) {
+    spinlock_acquire(&heap_lock);
+    int pressed = heap_allocated >= HEAP_PRESSURE_SIZE;
+    spinlock_release(&heap_lock);
+    return pressed;
 }
