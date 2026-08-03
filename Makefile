@@ -91,6 +91,8 @@ XKEYBOARD_CONFIG_STAMP := $(PORT_OUT)/.xkeyboard-config-ready
 WAYLAND_PROTOCOLS_STAMP := $(PORT_OUT)/.wayland-protocols-ready
 LIBEVDEV_ROOT := $(PORT_OUT)/libevdev-root
 LIBEVDEV_STAMP := $(PORT_OUT)/.libevdev-ready
+ALSA_LIB_ROOT := $(PORT_OUT)/alsa-lib-root
+ALSA_LIB_STAMP := $(PORT_OUT)/.alsa-lib-ready
 LIBUDEV_ZERO_ROOT := $(PORT_OUT)/libudev-zero-root
 LIBUDEV_ZERO_STAMP := $(PORT_OUT)/.libudev-zero-ready
 LIBINPUT_ROOT := $(PORT_OUT)/libinput-root
@@ -424,6 +426,14 @@ $(LIBEVDEV_STAMP): $(MUSL_CROSS_STAMP) ports/build-libevdev.sh ports/lib/cross-p
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-libevdev.sh
 	@test -L $(LIBEVDEV_ROOT)/usr/lib/libevdev.so.2 || { echo "libevdev was not produced" >&2; exit 1; }
+	@touch $@
+
+$(ALSA_LIB_STAMP): $(MUSL_CROSS_STAMP) ports/build-alsa-lib.sh ports/lib/cross-port.sh \
+	tools/alsa-test.c ports/src/alsa-lib/configure.ac
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-alsa-lib.sh
+	@test -f $(ALSA_LIB_ROOT)/usr/share/alsa/alsa.conf || { echo "the alsa configuration tree was not produced" >&2; exit 1; }
+	@test -x $(ALSA_LIB_ROOT)/usr/bin/alsa-test || { echo "alsa-test was not produced" >&2; exit 1; }
 	@touch $@
 
 $(LIBUDEV_ZERO_STAMP): $(MUSL_CROSS_STAMP) ports/build-libudev-zero.sh \
@@ -1277,7 +1287,7 @@ $(SND_TEST): $(BUILD)/user/snd_test.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/snd_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(ALSA_LIB_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
@@ -1316,6 +1326,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	cp -R $(LIBXKBCOMMON_ROOT)/. $(ROOTFS)/
 	cp -R $(XKEYBOARD_CONFIG_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBEVDEV_ROOT)/. $(ROOTFS)/
+	cp -R $(ALSA_LIB_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBUDEV_ZERO_ROOT)/. $(ROOTFS)/
 	cp -R $(LIBINPUT_ROOT)/. $(ROOTFS)/
 	cp -R $(CAIRO_ROOT)/. $(ROOTFS)/
@@ -1545,6 +1556,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/bin/fb-test || { echo "framebuffer test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/glib-compat-test || { echo "GLib compatibility test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/snd-test || { echo "sound test was not installed" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/alsa-test || { echo "alsa-test was not installed" >&2; exit 1; }
+	@test -f $(ROOTFS)/usr/share/alsa/alsa.conf || { echo "the alsa configuration tree was not installed" >&2; exit 1; }
 	@test -L $(ROOTFS)/sbin/init || { echo "/sbin/init is not the dinit symlink" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .
