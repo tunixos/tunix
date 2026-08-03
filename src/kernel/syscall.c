@@ -3821,7 +3821,27 @@ void syscall_dispatch(struct syscall_frame *frame) {
             if (process_sigreturn(frame) != 0) frame->rax = (uint64_t)-(int64_t)EINVAL;
             skip_signal_delivery = 1;
             break;
-        case SYS_IOCTL: frame->rax = (uint64_t)sys_ioctl((int)frame->rdi, (unsigned long)frame->rsi, frame->rdx); break;
+        case SYS_IOCTL: {
+            int fd = (int)frame->rdi;
+            int64_t result = sys_ioctl(fd, (unsigned long)frame->rsi, frame->rdx);
+            struct file *file = file_from_fd(fd);
+            /*
+             * An ioctl that moves data can run out of room, and on a blocking
+             * descriptor it has to wait rather than fail -- ALSA fills its ring
+             * through SNDRV_PCM_IOCTL_WRITEI_FRAMES, and alsa-lib treats an
+             * EAGAIN from it as a hard error. Only devices that publish a
+             * write-readiness hook can block this way, which keeps every other
+             * ioctl in the tree on the path it had.
+             */
+            if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK) &&
+                file->kind == FILE_KIND_VFS && file->node &&
+                file->node->write_ready) {
+                block_and_retry(frame, SYS_IOCTL, file, 1);
+            } else {
+                frame->rax = (uint64_t)result;
+            }
+            break;
+        }
         case SYS_PREAD64: {
             struct process *process = process_current();
             int fd = (int)frame->rdi;
