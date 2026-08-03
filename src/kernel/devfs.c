@@ -292,8 +292,11 @@ void devfs_init(void) {
     if (sound_card_available()) {
         struct vfs_node *snd = vfs_mkdir_p("/dev/snd");
         if (snd) {
+            /* No read-readiness: read() on a control device delivers element
+               change events, and this driver never generates one. Claiming
+               POLLIN would spin any mixer that waits on it. */
             struct vfs_node *control = attach_device(snd, "controlC0",
-                VFS_CHARDEVICE, 0660, NULL, NULL, always_ready);
+                VFS_CHARDEVICE, 0660, NULL, NULL, NULL);
             if (control) {
                 control->dev_major = DEV_MAJOR_SOUND;
                 control->dev_minor = DEV_MINOR_SOUND_CONTROL;
