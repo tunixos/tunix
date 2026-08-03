@@ -8,6 +8,10 @@ STRIP ?= strip
 AR ?= ar
 PYTHON ?= python3
 QEMU ?= qemu-system-x86_64
+# The HDA controller the sound driver drives. The "none" backend still clocks
+# samples out in real time, so the driver is exercised exactly as it would be
+# with speakers; override QEMU_AUDIO with a real -audiodev to actually hear it.
+QEMU_AUDIO ?= -audiodev none,id=snd0 -device intel-hda -device hda-output,audiodev=snd0
 
 BUILD := build
 IMAGE := $(BUILD)/tunix.img
@@ -302,7 +306,8 @@ INPUT_TEST := $(BUILD)/user/input-test
 FB_TEST := $(BUILD)/user/fb-test
 FB_SHOT := $(BUILD)/user/fb-shot
 GLIB_COMPAT_TEST := $(BUILD)/user/glib-compat-test
-SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS) $(SLEEP) $(PREEMPT_TEST) $(INPUT_TEST) $(FB_TEST) $(FB_SHOT) $(GLIB_COMPAT_TEST)
+SND_TEST := $(BUILD)/user/snd-test
+SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS) $(SLEEP) $(PREEMPT_TEST) $(INPUT_TEST) $(FB_TEST) $(FB_SHOT) $(GLIB_COMPAT_TEST) $(SND_TEST)
 INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 
 .PHONY: all run headless qemu-ci terminal-font dynamic-runtime-check shared-image-codecs-check gl-check clean
@@ -1268,6 +1273,10 @@ $(GLIB_COMPAT_TEST): $(BUILD)/user/glib_compat_test.o $(USER_RUNTIME) src/usersp
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/glib_compat_test.o
 	$(STRIP) --strip-all $@
 
+$(SND_TEST): $(BUILD)/user/snd_test.o $(USER_RUNTIME) src/userspace/linker.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/snd_test.o
+	$(STRIP) --strip-all $@
+
 $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
@@ -1512,7 +1521,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 		$(ROOTFS)/bin/bash $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/tty-clock $(ROOTFS)/bin/tty-tetris $(ROOTFS)/bin/htop \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/startx $(ROOTFS)/bin/fb-shot $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
-		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test \
+		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test $(ROOTFS)/bin/snd-test \
 		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/fastfetch \
 		$(ROOTFS)/usr/bin/browse \
 		$(ROOTFS)/usr/bin/as $(ROOTFS)/usr/bin/ld $(ROOTFS)/usr/bin/ar \
@@ -1535,6 +1544,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/bin/input-test || { echo "input event test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/fb-test || { echo "framebuffer test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/glib-compat-test || { echo "GLib compatibility test was not installed" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/snd-test || { echo "sound test was not installed" >&2; exit 1; }
 	@test -L $(ROOTFS)/sbin/init || { echo "/sbin/init is not the dinit symlink" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .
@@ -1558,12 +1568,12 @@ run: $(IMAGE)
 	rm -f $(BUILD)/serial.log
 	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -m 2048M -drive format=raw,file=$(IMAGE) \
 		-serial file:$(BUILD)/serial.log -monitor none -no-reboot -no-shutdown \
-		-netdev user,id=net0 -device rtl8139,netdev=net0
+		-netdev user,id=net0 -device rtl8139,netdev=net0 $(QEMU_AUDIO)
 
 headless: $(IMAGE)
 	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -m 2048M -drive format=raw,file=$(IMAGE) \
 		-nographic -monitor none -serial stdio -no-reboot -no-shutdown \
-		-netdev user,id=net0 -device rtl8139,netdev=net0
+		-netdev user,id=net0 -device rtl8139,netdev=net0 $(QEMU_AUDIO)
 
 qemu-ci: $(IMAGE)
 	QEMU="$(QEMU)" bash .github/scripts/qemu-ci-smoke.sh $(IMAGE) $(BUILD)/qemu-ci.log

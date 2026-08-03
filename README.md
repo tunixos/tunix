@@ -15,6 +15,8 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
 - GNU userland (coreutils, grep, sed, gawk, findutils, diffutils, tar, gzip, make), Bash, TinyCC, binutils, nano, Lua, and selected libraries
 - Git, with an `https://` transport via a static libcurl built against mbedTLS
   (so `git clone https://…` works); `ssh://` remotes are not supported
+- Intel HD Audio playback behind ALSA's `/dev/snd` interface -- the one
+  alsa-lib and PipeWire speak; `snd-test` plays a tone through it
 - dinit as PID 1: services under `/etc/dinit.d`, controlled with `dinitctl`
 - A full Xfce desktop on Xorg (xfwm4, xfce4-panel, xfdesktop, Thunar and
   xfce4-terminal), started automatically at boot; a Weston (Wayland) session is
