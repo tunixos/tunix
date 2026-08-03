@@ -661,18 +661,28 @@ static void fill_status(struct snd_pcm_status *status) {
     status->suspended_state = SNDRV_PCM_STATE_SUSPENDED;
 }
 
+/*
+ * The pointer exchange, and the first thing alsa-lib asks for.
+ *
+ * It must answer before hw_params has ever been called: with the status page
+ * unmapped, alsa-lib reads the stream state through this ioctl, and it does so
+ * the moment the device is opened. Refusing an unconfigured stream here is a
+ * failed snd_pcm_open, several layers away from anything that mentions sync.
+ */
 static int64_t ioctl_sync_ptr(uint64_t user_argument) {
     struct snd_pcm_sync_ptr sync;
     if (copy_from_user(&sync, user_argument, sizeof(sync)) != 0) return -EFAULT;
-    if (!pcm.configured) return -EBADFD;
 
-    if (!(sync.flags & SNDRV_PCM_SYNC_PTR_APPL))
-        pcm.appl_ptr = sync.c.control.appl_ptr % pcm.boundary;
     if (!(sync.flags & SNDRV_PCM_SYNC_PTR_AVAIL_MIN))
         pcm.avail_min = sync.c.control.avail_min;
-
-    pcm_update_pointer();
-    pcm_maybe_start();
+    /* An application pointer means nothing until there is a ring to place it
+       in, and the wrap would be a division by zero. */
+    if (pcm.boundary) {
+        if (!(sync.flags & SNDRV_PCM_SYNC_PTR_APPL))
+            pcm.appl_ptr = sync.c.control.appl_ptr % pcm.boundary;
+        pcm_update_pointer();
+        pcm_maybe_start();
+    }
 
     uint64_t now = time_uptime_ns();
     memset(&sync.s, 0, sizeof(sync.s));
