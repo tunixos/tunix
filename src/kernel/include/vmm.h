@@ -17,6 +17,16 @@
    framebuffer could grow to. */
 #define DEVICE_MMIO_VIRTUAL_BASE 0xFFFFFFFFFF000000ULL
 #define DEVICE_MMIO_VIRTUAL_BYTES 0x01000000ULL
+/*
+ * Who owns what inside that window. Offsets are hard-coded by each driver, so
+ * this list is the only thing keeping two of them apart -- and a collision does
+ * not look like one: the second mapping just fails and the device looks absent.
+ *
+ *   0x000000  xHCI registers      (64 KiB)   src/kernel/usb/xhci.c
+ *   0x100000  ACPI tables         (2 MiB)    src/kernel/acpi.c
+ *   0x400000  local APIC, IOAPIC  (8 KiB)    src/kernel/apic.c
+ *   0x500000  HD Audio registers  (16 KiB)   src/kernel/audio/hda.c
+ */
 #define USER_ADDRESS_LIMIT 0x0000800000000000ULL
 
 /*

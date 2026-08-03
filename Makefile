@@ -290,6 +290,7 @@ KERNEL_OBJS := \
 	$(BUILD)/usercopy.o $(BUILD)/elf.o $(BUILD)/file.o \
 	$(BUILD)/pipe.o $(BUILD)/tty.o $(BUILD)/process.o $(BUILD)/procfs.o $(BUILD)/time.o $(BUILD)/random.o $(BUILD)/ata.o \
 	$(BUILD)/acpi.o $(BUILD)/apic.o $(BUILD)/xhci.o \
+	$(BUILD)/sound.o $(BUILD)/hda.o \
 	$(BUILD)/pci.o $(BUILD)/rtl8139.o $(BUILD)/net.o $(BUILD)/inet_socket.o $(BUILD)/netlink.o
 
 USER_RUNTIME := $(BUILD)/user/crt0.o $(BUILD)/user/libc.o $(BUILD)/user/sigreturn.o
@@ -1170,6 +1171,12 @@ $(BUILD)/rtl8139.o: src/kernel/net/rtl8139.c | $(BUILD)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(BUILD)/xhci.o: src/kernel/usb/xhci.c | $(BUILD)
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD)/sound.o: src/kernel/audio/sound.c | $(BUILD)
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD)/hda.o: src/kernel/audio/hda.c | $(BUILD)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(BUILD)/acpi.o: src/kernel/acpi.c | $(BUILD)
