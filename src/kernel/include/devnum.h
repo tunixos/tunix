@@ -15,5 +15,10 @@
 #define DEV_MINOR_INPUT_EVENT_BASE 64
 #define DEV_MAJOR_DRM 226
 #define DEV_MINOR_DRM_CARD0 0
+#define DEV_MAJOR_SOUND 116
+/* Card 0 takes minors 0..31: the control node at the bottom, playback PCMs
+   from 16 and capture ones from 24, as ALSA numbers them. */
+#define DEV_MINOR_SOUND_CONTROL 0
+#define DEV_MINOR_SOUND_PCM_PLAYBACK 16
 
 #endif

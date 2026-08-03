@@ -62,6 +62,11 @@ struct vfs_node {
     vfs_ioctl_fn ioctl;
     vfs_mmap_fn mmap;
     vfs_ready_fn read_ready;
+    /* Whether a write can make progress. Absent means always, which is right
+       for everything whose write cannot block -- but not for a device with a
+       fixed-size ring, where an unconditional POLLOUT turns a blocked write
+       into a spin. */
+    vfs_ready_fn write_ready;
     vfs_open_fn open;
     vfs_close_fn close;
     struct vfs_node *parent;

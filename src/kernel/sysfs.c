@@ -4,6 +4,7 @@
 #include "include/drm.h"
 
 #include "include/kstring.h"
+#include "include/sound.h"
 #include "include/sysfs.h"
 #include "include/vfs.h"
 
@@ -124,6 +125,15 @@ void sysfs_init(void) {
     if (drm_available())
         publish_device("card0", "dri/card0", "drm", NULL, DEV_MAJOR_DRM,
                        DEV_MINOR_DRM_CARD0);
+
+    /* PipeWire enumerates sound cards through udev rather than by scanning
+       /dev/snd, so a working card that is not published here is invisible. */
+    if (sound_card_available()) {
+        publish_device("controlC0", "snd/controlC0", "sound", NULL,
+                       DEV_MAJOR_SOUND, DEV_MINOR_SOUND_CONTROL);
+        publish_device("pcmC0D0p", "snd/pcmC0D0p", "sound", NULL,
+                       DEV_MAJOR_SOUND, DEV_MINOR_SOUND_PCM_PLAYBACK);
+    }
 
     /* devfs attaches a fixed pair of evdev nodes, event0 for the keyboard and
        event1 for the mouse; this mirrors that rather than inventing an

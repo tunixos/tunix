@@ -390,7 +390,8 @@ uint32_t file_poll_events(struct file *file, uint32_t requested) {
     } else if (file->kind == FILE_KIND_VFS && file->node) {
         if (file->node->read_ready ? file->node->read_ready(file->node) :
             ((file->node->flags & 0xFFU) != VFS_CHARDEVICE)) events |= pollin;
-        events |= pollout;
+        if (!file->node->write_ready || file->node->write_ready(file->node))
+            events |= pollout;
     } else {
         events |= pollerr;
     }

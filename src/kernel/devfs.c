@@ -10,6 +10,7 @@
 #include "include/drm.h"
 #include "include/pty.h"
 #include "include/random.h"
+#include "include/sound.h"
 #include "include/time.h"
 #include "include/tty.h"
 #include "include/usercopy.h"
@@ -281,6 +282,36 @@ void devfs_init(void) {
                    when the last client goes away. */
                 card->open = drm_device_open;
                 card->close = drm_device_close;
+            }
+        }
+    }
+
+    /* /dev/snd, laid out and numbered as ALSA does it: alsa-lib opens these
+       paths by name and nothing else will do. */
+    sound_init();
+    if (sound_card_available()) {
+        struct vfs_node *snd = vfs_mkdir_p("/dev/snd");
+        if (snd) {
+            struct vfs_node *control = attach_device(snd, "controlC0",
+                VFS_CHARDEVICE, 0660, NULL, NULL, always_ready);
+            if (control) {
+                control->dev_major = DEV_MAJOR_SOUND;
+                control->dev_minor = DEV_MINOR_SOUND_CONTROL;
+                control->ioctl = sound_control_ioctl;
+            }
+
+            struct vfs_node *playback = attach_device(snd, "pcmC0D0p",
+                VFS_CHARDEVICE, 0660, NULL, sound_pcm_write, NULL);
+            if (playback) {
+                playback->dev_major = DEV_MAJOR_SOUND;
+                playback->dev_minor = DEV_MINOR_SOUND_PCM_PLAYBACK;
+                playback->ioctl = sound_pcm_ioctl;
+                playback->mmap = sound_pcm_mmap;
+                /* Without this a full ring still reports POLLOUT, and a
+                   blocked write turns into a busy loop. */
+                playback->write_ready = sound_pcm_write_ready;
+                playback->open = sound_pcm_open;
+                playback->close = sound_pcm_close;
             }
         }
     }
