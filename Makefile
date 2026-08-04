@@ -299,7 +299,7 @@ KERNEL_OBJS := \
 	$(BUILD)/pmm.o $(BUILD)/vmm.o $(BUILD)/framebuffer.o $(BUILD)/terminal_font.o $(BUILD)/terminal.o $(BUILD)/input.o \
 	$(BUILD)/heap.o $(BUILD)/syscall.o $(BUILD)/syscall_entry.o \
 	$(BUILD)/eventfd.o $(BUILD)/timerfd.o $(BUILD)/epoll.o $(BUILD)/inotify.o \
-	$(BUILD)/memfd.o $(BUILD)/signalfd.o $(BUILD)/drm.o $(BUILD)/sysfs.o \
+	$(BUILD)/memfd.o $(BUILD)/sysvshm.o $(BUILD)/signalfd.o $(BUILD)/drm.o $(BUILD)/sysfs.o \
 	$(BUILD)/vfs.o $(BUILD)/tarfs.o $(BUILD)/ext2.o $(BUILD)/devfs.o $(BUILD)/unix_socket.o $(BUILD)/pty.o \
 	$(BUILD)/usercopy.o $(BUILD)/elf.o $(BUILD)/file.o \
 	$(BUILD)/pipe.o $(BUILD)/tty.o $(BUILD)/process.o $(BUILD)/procfs.o $(BUILD)/time.o $(BUILD)/random.o $(BUILD)/ata.o \
@@ -1195,6 +1195,7 @@ $(BUILD)/timerfd.o: src/kernel/include/timerfd.h src/kernel/include/time.h
 $(BUILD)/epoll.o: src/kernel/include/epoll.h src/kernel/include/file.h
 $(BUILD)/inotify.o: src/kernel/include/inotify.h src/kernel/include/vfs.h
 $(BUILD)/memfd.o: src/kernel/include/memfd.h src/kernel/include/pmm.h src/kernel/include/vmm.h
+$(BUILD)/sysvshm.o: src/kernel/include/sysvshm.h src/kernel/include/memfd.h src/kernel/include/file.h src/kernel/include/time.h
 $(BUILD)/signalfd.o: src/kernel/include/signalfd.h src/kernel/include/process.h
 $(BUILD)/pty.o: src/kernel/include/pty.h src/kernel/include/tty.h src/kernel/include/file.h
 $(BUILD)/file.o: src/kernel/include/file.h src/kernel/include/vfs.h src/kernel/include/pty.h src/kernel/include/input.h src/kernel/include/framebuffer.h src/kernel/include/eventfd.h src/kernel/include/timerfd.h src/kernel/include/epoll.h src/kernel/include/inotify.h src/kernel/include/memfd.h src/kernel/include/signalfd.h

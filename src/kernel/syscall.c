@@ -7,6 +7,7 @@
 #include "include/inotify.h"
 #include "include/memfd.h"
 #include "include/signalfd.h"
+#include "include/sysvshm.h"
 #include "include/framebuffer.h"
 #include "include/input.h"
 #include "include/heap.h"
@@ -64,6 +65,10 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_BRK 12
 #define SYS_MSYNC 26
 #define SYS_MADVISE 28
+#define SYS_SHMGET 29
+#define SYS_SHMAT 30
+#define SYS_SHMCTL 31
+#define SYS_SHMDT 67
 #define SYS_FADVISE64 221
 #define SYS_RT_SIGACTION 13
 #define SYS_RT_SIGPROCMASK 14
@@ -2831,6 +2836,105 @@ static int64_t sys_munmap(uint64_t address, uint64_t length) {
     return 0;
 }
 
+static int64_t sys_shmget(int32_t key, uint64_t size, int flags) {
+    return sysvshm_get(key, size, flags, (uint32_t)process_current_pid());
+}
+
+/*
+ * shmat(2). The segment's pages are mapped exactly the way a shared memfd is,
+ * and the area records the segment's file so that the reference counting which
+ * already survives fork and exit is what decides when the memory goes away.
+ */
+static int64_t sys_shmat(int id, uint64_t address, int flags) {
+    struct process *process = process_current();
+    if (!process) return -EINVAL;
+
+    uint64_t size = 0;
+    struct file *file = sysvshm_acquire(id, &size);
+    if (!file) return -EINVAL;
+    uint64_t length = align_up(size, 4096);
+    if (!length) { file_unref(file); return -EINVAL; }
+
+    uint64_t base;
+    int advance_mmap_base = 0;
+    if (address) {
+        if (address & 0xFFFULL) {
+            if (!(flags & SHM_RND)) { file_unref(file); return -EINVAL; }
+            address &= ~0xFFFULL;
+        }
+        base = address;
+    } else {
+        uint64_t start = process->memory ? process->memory->mmap_base : process->mmap_base;
+        if (find_mapping_range(process, start, length, &base) != 0) {
+            file_unref(file);
+            return -ENOMEM;
+        }
+        advance_mmap_base = 1;
+    }
+    if (base < 0x10000ULL || base >= USER_ADDRESS_LIMIT ||
+        length > USER_ADDRESS_LIMIT - base) {
+        file_unref(file);
+        return -EINVAL;
+    }
+
+    uint64_t page_flags = (flags & SHM_RDONLY) ? 0 : PAGE_WRITE;
+    if (nx_enabled) page_flags |= PAGE_NX;
+    if (map_shared_object(process, base, base + length, file->memfd, 0,
+                          page_flags, 0) != 0) {
+        unmap_pages(process, base, base + length);
+        file_unref(file);
+        return -ENOMEM;
+    }
+    if (process_map_area(base, base + length, page_flags, 0, file, 0) != 0) {
+        unmap_pages(process, base, base + length);
+        file_unref(file);
+        return -ENOMEM;
+    }
+    /* process_map_area took its own reference; this one has done its job. */
+    file_unref(file);
+
+    if (advance_mmap_base) {
+        process->mmap_base = base + length + 4096;
+        if (process->memory) process->memory->mmap_base = process->mmap_base;
+    }
+    sysvshm_touch(id, (uint32_t)process_current_pid(), 1);
+    return (int64_t)base;
+}
+
+static int64_t sys_shmdt(uint64_t address) {
+    struct process *process = process_current();
+    if (!process || (address & 0xFFFULL)) return -EINVAL;
+    struct vm_area *area = process_find_area(address);
+    if (!area || area->start != address) return -EINVAL;
+    unmap_pages(process, area->start, area->end);
+    return 0;
+}
+
+static int64_t sys_shmctl(int id, int command, uint64_t user_buffer) {
+    /* IPC_64 selects the 64-bit structures, which are the only ones here. */
+    command &= ~IPC_64;
+    switch (command) {
+        case IPC_RMID:
+            return sysvshm_remove(id);
+        case IPC_STAT: {
+            struct shm_id_ds value;
+            int status = sysvshm_stat(id, &value);
+            if (status != 0) return status;
+            if (!user_buffer) return -EFAULT;
+            if (copy_to_user(user_buffer, &value, sizeof(value)) != 0) return -EFAULT;
+            return 0;
+        }
+        case IPC_SET: {
+            struct shm_id_ds value;
+            if (!user_buffer) return -EFAULT;
+            if (copy_from_user(&value, user_buffer, sizeof(value)) != 0) return -EFAULT;
+            return sysvshm_set(id, value.mode, value.uid, value.gid);
+        }
+        default:
+            return -EINVAL;
+    }
+}
+
 /*
  * mremap(2), enough of it for a growing shm pool.
  *
@@ -3814,6 +3918,16 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_MSYNC: frame->rax = 0; break;
         case SYS_FADVISE64: frame->rax = 0; break;
         case SYS_MUNMAP: frame->rax = (uint64_t)sys_munmap(frame->rdi, frame->rsi); break;
+        case SYS_SHMGET:
+            frame->rax = (uint64_t)sys_shmget((int32_t)frame->rdi, frame->rsi, (int)frame->rdx);
+            break;
+        case SYS_SHMAT:
+            frame->rax = (uint64_t)sys_shmat((int)frame->rdi, frame->rsi, (int)frame->rdx);
+            break;
+        case SYS_SHMDT: frame->rax = (uint64_t)sys_shmdt(frame->rdi); break;
+        case SYS_SHMCTL:
+            frame->rax = (uint64_t)sys_shmctl((int)frame->rdi, (int)frame->rsi, frame->rdx);
+            break;
         case SYS_BRK: frame->rax = (uint64_t)sys_brk(frame->rdi); break;
         case SYS_RT_SIGACTION: frame->rax = (uint64_t)sys_sigaction((int)frame->rdi, frame->rsi, frame->rdx, frame->r10); break;
         case SYS_RT_SIGPROCMASK: frame->rax = (uint64_t)sys_sigprocmask((int)frame->rdi, frame->rsi, frame->rdx, frame->r10); break;
