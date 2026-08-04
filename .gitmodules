@@ -386,3 +386,7 @@
 [submodule "ports/src/alsa-lib"]
 	path = ports/src/alsa-lib
 	url = https://github.com/alsa-project/alsa-lib.git
+[submodule "ports/src/SDL2"]
+	path = ports/src/SDL2
+	url = https://github.com/libsdl-org/SDL.git
+	branch = SDL2
