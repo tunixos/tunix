@@ -390,3 +390,7 @@
 	path = ports/src/SDL2
 	url = https://github.com/libsdl-org/SDL.git
 	branch = SDL2
+[submodule "ports/src/SDL2_net"]
+	path = ports/src/SDL2_net
+	url = https://github.com/libsdl-org/SDL_net.git
+	branch = SDL2
