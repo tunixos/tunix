@@ -394,3 +394,7 @@
 	path = ports/src/SDL2_net
 	url = https://github.com/libsdl-org/SDL_net.git
 	branch = SDL2
+[submodule "ports/src/SDL2_mixer"]
+	path = ports/src/SDL2_mixer
+	url = https://github.com/libsdl-org/SDL_mixer.git
+	branch = SDL2
