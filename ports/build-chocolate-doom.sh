@@ -119,6 +119,15 @@ for game in Heretic Hexen Strife; do
     rm -rf "$ROOT_DIR/usr/share/doc/chocolate-$lower"
 done
 
+# The menu entry launches windowed. Upstream defaults to fullscreen, which under
+# a window manager means clicking a menu item takes the whole screen with no
+# decorations; Alt+Enter still toggles, and a terminal invocation is untouched.
+DESKTOP_ENTRY="$ROOT_DIR/usr/share/applications/org.chocolate_doom.Doom.desktop"
+[[ -f "$DESKTOP_ENTRY" ]] || cross_port_fail "the Doom desktop entry was not installed"
+sed -i 's/^Exec=chocolate-doom$/Exec=chocolate-doom -window/' "$DESKTOP_ENTRY"
+grep -Fxq 'Exec=chocolate-doom -window' "$DESKTOP_ENTRY" || \
+    cross_port_fail "could not rewrite the Exec line in $(basename "$DESKTOP_ENTRY")"
+
 WAD_DIR="$ROOT_DIR/usr/share/games/doom"
 mkdir -p "$WAD_DIR"
 python3 - "$FREEDOOM_ZIP" "$WAD_DIR" <<'PYTHON'
