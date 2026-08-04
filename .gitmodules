@@ -398,3 +398,6 @@
 	path = ports/src/SDL2_mixer
 	url = https://github.com/libsdl-org/SDL_mixer.git
 	branch = SDL2
+[submodule "ports/src/chocolate-doom"]
+	path = ports/src/chocolate-doom
+	url = https://github.com/chocolate-doom/chocolate-doom.git
