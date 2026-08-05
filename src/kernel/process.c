@@ -1496,6 +1496,7 @@ int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
 
 int64_t process_waitpid_from_syscall(struct syscall_frame *frame, int64_t pid,
                                      uint64_t status_user, int options) {
+    options &= ~(WNOTHREAD | WALLCHILDREN | WCLONE);
     if (!current || !frame || (options & ~(WNOHANG | WUNTRACED | WCONTINUED))) return -EINVAL;
     struct process *parent = current;
     int has_child = 0;
@@ -1692,6 +1693,7 @@ static int send_signal(int64_t pid, int signal_number, int checked) {
         if (!target) return -ESRCH;
         if (checked && !may_signal(target)) return -EPERM;
         signal_one_process(target, signal_number);
+        if (checked) target->signal_user_sent |= signal_bit(signal_number);
         return 0;
     }
 
@@ -1706,6 +1708,7 @@ static int send_signal(int64_t pid, int signal_number, int checked) {
             if (checked && !may_signal(target)) refused = 1;
             else {
                 signal_one_process(target, signal_number);
+                if (checked) target->signal_user_sent |= signal_bit(signal_number);
                 delivered = 1;
             }
         }
@@ -1825,7 +1828,42 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         !on_signal_stack(current, frame->user_rsp)) {
         stack_top = current->signal_stack_pointer + current->signal_stack_size;
     }
-    uint64_t new_rsp = (stack_top & ~15ULL) - 8;
+    /*
+     * SA_SIGINFO handlers are called as (signo, siginfo_t *, void *), and they
+     * dereference the second argument. sudo's event loop is one of them: with
+     * only rdi set it read its siginfo through whatever the interrupted frame
+     * left in rsi and faulted on every signal it was sent. Both structures are
+     * built on the user stack; the context is zeroed rather than filled,
+     * because nothing here inspects a machine context and reading zeroes beats
+     * reading rubbish.
+     */
+    uint64_t area = stack_top & ~15ULL;
+    uint64_t siginfo_address = 0;
+    uint64_t context_address = 0;
+    if (action->flags & SA_SIGINFO) {
+        uint8_t zeros[SIGNAL_CONTEXT_SIZE];
+        memset(zeros, 0, sizeof(zeros));
+        area -= SIGNAL_CONTEXT_SIZE;
+        context_address = area;
+        if (vmm_copy_to_space(current->cr3, context_address, zeros, SIGNAL_CONTEXT_SIZE) != 0) {
+            process_exit_from_signal(frame, SIGSEGV);
+            return;
+        }
+        int32_t info[SIGNAL_SIGINFO_SIZE / 4];
+        memset(info, 0, sizeof(info));
+        info[0] = signal_number;
+        info[2] = (current->signal_user_sent & bit) ? SI_USER : SI_KERNEL;
+        area -= SIGNAL_SIGINFO_SIZE;
+        siginfo_address = area;
+        if (vmm_copy_to_space(current->cr3, siginfo_address, info, SIGNAL_SIGINFO_SIZE) != 0) {
+            process_exit_from_signal(frame, SIGSEGV);
+            return;
+        }
+        area &= ~15ULL;
+    }
+    current->signal_user_sent &= ~bit;
+
+    uint64_t new_rsp = area - 8;
     if (vmm_copy_to_space(current->cr3, new_rsp, &action->restorer, sizeof(action->restorer)) != 0) {
         process_exit_from_signal(frame, SIGSEGV);
         return;
@@ -1837,6 +1875,8 @@ void process_prepare_user_return(struct syscall_frame *frame) {
     frame->user_rsp = new_rsp;
     frame->user_rip = action->handler;
     frame->rdi = (uint64_t)signal_number;
+    frame->rsi = siginfo_address;
+    frame->rdx = context_address;
     frame->rax = 0;
 }
 

@@ -2019,6 +2019,13 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
         tty_set_controlling_session(process->sid, (int)process->pgid);
         return 0;
     }
+    /* su(1) gives the terminal up before it becomes somebody else. */
+    if (request == TIOCNOTTY) {
+        struct process *process = process_current();
+        if (!process) return -ENOTTY;
+        tty_release_controlling_session(process->sid);
+        return 0;
+    }
     if (request == TIOCGETD || request == TIOCSETD) {
         int discipline = 0;
         if (request == TIOCSETD && copy_from_user(&discipline, user_argument, sizeof(discipline)) != 0) return -EFAULT;
@@ -2060,7 +2067,9 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
                     (kind == VFS_CHARDEVICE ? 0020000U :
                     (kind == VFS_BLOCKDEVICE ? 0060000U :
                     (kind == VFS_SYMLINK ? 0120000U : 0100000U)));
-    stat->st_mode = type | (node->mode & 0777U);
+    /* 07777, not 0777: the setuid, setgid and sticky bits are part of the mode
+       and a caller that cannot see them cannot tell su from any other program. */
+    stat->st_mode = type | (node->mode & 07777U);
     if (kind == VFS_CHARDEVICE || kind == VFS_BLOCKDEVICE) {
         /* Linux's encoding: 20 bits of minor split around 12 bits of major. */
         uint64_t major = node->dev_major;

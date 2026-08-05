@@ -30,8 +30,18 @@
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
 
+#define SA_SIGINFO 0x00000004ULL
 #define SA_ONSTACK 0x08000000ULL
 #define SA_RESTART 0x10000000ULL
+
+/* si_code: who raised the signal. Everything above zero means the kernel did. */
+#define SI_USER   0
+#define SI_KERNEL 0x80
+
+/* What a SA_SIGINFO handler is handed: Linux's siginfo_t, and a context that
+   is only ever read as a pointer here. */
+#define SIGNAL_SIGINFO_SIZE 128
+#define SIGNAL_CONTEXT_SIZE 1024
 
 #define SS_ONSTACK 1
 #define SS_DISABLE 2

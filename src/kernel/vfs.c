@@ -138,6 +138,7 @@ int vfs_attach(struct vfs_node *parent, struct vfs_node *child) {
 
 struct vfs_node *vfs_find_child(struct vfs_node *directory, const char *name) {
     if (!directory || !name || (directory->flags & 0xFFU) != VFS_DIRECTORY) return NULL;
+    if (directory->refresh) directory->refresh(directory);
     for (struct vfs_node *node = directory->children; node; node = node->next) {
         if (strcmp(node->name, name) == 0) return node;
     }
@@ -449,6 +450,25 @@ struct vfs_node *vfs_create_symlink(const char *path, const char *target,
     return node;
 }
 
+struct vfs_node *vfs_attach_symlink(struct vfs_node *parent, const char *name,
+                                    const char *target) {
+    if (!parent || !name || !target || !target[0]) return NULL;
+    struct vfs_node *node = vfs_alloc_node(name, VFS_SYMLINK | VFS_OWNED_DATA | VFS_VOLATILE);
+    if (!node) return NULL;
+    size_t length = strlen(target);
+    node->data = kmalloc(length + 1);
+    if (!node->data) { kfree(node); return NULL; }
+    memcpy(node->data, target, length + 1);
+    node->length = length;
+    node->capacity = length + 1;
+    if (vfs_attach(parent, node) != 0) {
+        kfree(node->data);
+        kfree(node);
+        return NULL;
+    }
+    return node;
+}
+
 int64_t vfs_readlink(struct vfs_node *node, void *buffer, size_t size) {
     if (!node || !buffer || (node->flags & 0xFFU) != VFS_SYMLINK || !node->data) return -1;
     size_t length = (size_t)node->length;
@@ -501,6 +521,13 @@ static int detach_child(struct vfs_node *parent, struct vfs_node *node) {
         previous = item;
     }
     return -1;
+}
+
+int vfs_detach_child(struct vfs_node *parent, struct vfs_node *node) {
+    if (!parent || !node) return -1;
+    if (detach_child(parent, node) != 0) return -1;
+    destroy_node(node);
+    return 0;
 }
 
 int vfs_remove(const char *path, int remove_directory) {
@@ -591,6 +618,7 @@ int64_t vfs_write(struct vfs_node *node, uint64_t offset, size_t size, const voi
 
 int vfs_readdir(struct vfs_node *directory, uint64_t index, struct dirent *out) {
     if (!directory || !out || (directory->flags & 0xFFU) != VFS_DIRECTORY) return -1;
+    if (directory->refresh) directory->refresh(directory);
     struct vfs_node *node = directory->children;
     while (node && index--) node = node->next;
     if (!node) return 0;

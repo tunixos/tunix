@@ -23,6 +23,12 @@
 #define WSTOPPED 2
 #define WEXITED 4
 #define WNOWAIT 0x01000000
+/* Thread-selection flags. Tunix has one kind of child, so they select the same
+   set either way -- but a caller that passes them (sudo does) must not be told
+   its arguments are invalid. */
+#define WNOTHREAD 0x20000000
+#define WALLCHILDREN 0x40000000
+#define WCLONE 0x80000000
 
 struct vfs_node;
 struct pty_pair;
@@ -167,6 +173,9 @@ struct process {
     uint64_t itimer_real_deadline_ns;
 
     uint64_t signal_pending;
+    /* Which pending signals came from a kill(2) rather than from the kernel;
+       it is the difference between SI_USER and SI_KERNEL in siginfo. */
+    uint64_t signal_user_sent;
     uint64_t signal_blocked;
     uint64_t signal_saved_mask;
     int in_signal;

@@ -744,3 +744,10 @@ void tty_set_controlling_session(uint64_t sid, int pgid) {
     console_foreground_pgid = pgid;
     input_interrupted = 0;
 }
+
+/* TIOCNOTTY. The foreground group is left alone: it is what Ctrl-C is aimed
+   at, and nothing takes over as the console's session until a login does. */
+void tty_release_controlling_session(uint64_t sid) {
+    if (console_session && console_session != sid) return;
+    console_session = 0;
+}

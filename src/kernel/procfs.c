@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "include/ext2.h"
+#include "include/file.h"
 #include "include/kstring.h"
 #include "include/pmm.h"
 #include "include/process.h"
@@ -502,10 +503,98 @@ static void task_path(uint64_t pid, const char *suffix, char output[PROC_PATH_MA
     output[at] = '\0';
 }
 
+/*
+ * /proc/<pid>/fd. The contents are the descriptor table as it stands right now,
+ * so they are rebuilt whenever the directory is searched or read rather than
+ * kept in step with every open and close.
+ *
+ * ttyname(3) is what needs this: musl answers it by reading the link for the
+ * descriptor and comparing the result with the descriptor itself, and su(1)
+ * refuses to run for a non-root caller whose terminal it cannot name.
+ */
+static void describe_file(const struct file *file, char *output, size_t capacity) {
+    output[0] = '\0';
+    if (!file) return;
+    if (file->kind == FILE_KIND_VFS && file->node) {
+        if (vfs_node_path(file->node, output, capacity) != 0) output[0] = '\0';
+        return;
+    }
+    const char *kind = "anon_inode:[unknown]";
+    switch (file->kind) {
+        case FILE_KIND_PIPE_READ:
+        case FILE_KIND_PIPE_WRITE: kind = "pipe:[0]"; break;
+        case FILE_KIND_SOCKET:
+        case FILE_KIND_INET_SOCKET:
+        case FILE_KIND_NETLINK_SOCKET: kind = "socket:[0]"; break;
+        case FILE_KIND_PTY_MASTER: kind = "/dev/ptmx"; break;
+        case FILE_KIND_EVENTFD: kind = "anon_inode:[eventfd]"; break;
+        case FILE_KIND_TIMERFD: kind = "anon_inode:[timerfd]"; break;
+        case FILE_KIND_EPOLL: kind = "anon_inode:[eventpoll]"; break;
+        case FILE_KIND_INOTIFY: kind = "anon_inode:inotify"; break;
+        case FILE_KIND_SIGNALFD: kind = "anon_inode:[signalfd]"; break;
+        case FILE_KIND_MEMFD: kind = "/memfd:tunix"; break;
+        default: break;
+    }
+    size_t at = 0;
+    while (kind[at] && at + 1 < capacity) { output[at] = kind[at]; at++; }
+    output[at] = '\0';
+}
+
+static void proc_fd_refresh(struct vfs_node *directory) {
+    /* Everything below walks the tree, and the tree walk comes back here. */
+    static int busy;
+    if (busy) return;
+    busy = 1;
+
+    while (directory->children)
+        (void)vfs_detach_child(directory, directory->children);
+
+    struct process *process = process_find(node_pid(directory));
+    if (process && process->files) {
+        for (int fd = 0; fd < PROCESS_MAX_FDS; fd++) {
+            struct file *file = process->files->fds[fd];
+            if (!file) continue;
+            char target[PROC_PATH_MAX];
+            describe_file(file, target, sizeof(target));
+            if (!target[0]) continue;
+            char name[16];
+            size_t at = path_append_decimal(name, 0, (uint64_t)fd);
+            name[at] = '\0';
+            (void)vfs_attach_symlink(directory, name, target);
+        }
+    }
+    busy = 0;
+}
+
+/* /proc/self points at whoever is asking, so it is rewritten every time /proc
+   is searched rather than being a fixed link. */
+static struct vfs_node *self_link;
+static struct vfs_node *thread_self_link;
+
+static void point_at_caller(struct vfs_node *link, uint64_t pid) {
+    /* The placeholder sizes the buffer: 20 digits plus its terminator. */
+    if (!link || !link->data || link->capacity < 21) return;
+    char *target = (char *)link->data;
+    size_t at = path_append_decimal(target, 0, pid);
+    target[at] = '\0';
+    link->length = at;
+}
+
+static void proc_root_refresh(struct vfs_node *directory) {
+    (void)directory;
+    point_at_caller(self_link, process_current_pid());
+    point_at_caller(thread_self_link, process_current_tid());
+}
+
 void procfs_init(void) {
     struct vfs_node *root = vfs_mkdir_p("/proc");
     if (!root) return;
     root->mode = 0555;
+    /* The placeholder is only there to size the buffer the refresh writes into;
+       no pid is longer than the widest 64-bit decimal. */
+    self_link = vfs_attach_symlink(root, "self", "18446744073709551615");
+    thread_self_link = vfs_attach_symlink(root, "thread-self", "18446744073709551615");
+    root->refresh = proc_root_refresh;
     virtual_file(root, "cpuinfo", proc_cpuinfo_read, 0);
     virtual_file(root, "meminfo", proc_meminfo_read, 0);
     virtual_file(root, "uptime", proc_uptime_read, 0);
@@ -548,6 +637,19 @@ void procfs_register_process(struct process *process) {
     directory->gid = process->cred.egid;
     populate_process_files(directory, process->pid);
 
+    struct vfs_node *descriptors = vfs_find_child(directory, "fd");
+    if (!descriptors) {
+        decimal_path(process->pid, "/fd", path);
+        descriptors = vfs_mkdir_p(path);
+        if (descriptors) {
+            descriptors->mode = 0500;
+            descriptors->uid = process->cred.euid;
+            descriptors->gid = process->cred.egid;
+            descriptors->data = (void *)(uintptr_t)process->pid;
+            descriptors->refresh = proc_fd_refresh;
+        }
+    }
+
     /* Linux always exposes a per-thread view under task/<tid>/, and tools such
        as htop read the main thread's stat from there rather than from
        /proc/<pid>/stat. Mirror the process as its own single task. */
@@ -572,5 +674,13 @@ void procfs_unregister_process(uint64_t pid) {
     decimal_path(pid, "/cmdline", path); (void)vfs_remove(path, 0);
     decimal_path(pid, "/statm", path); (void)vfs_remove(path, 0);
     decimal_path(pid, "/comm", path); (void)vfs_remove(path, 0);
+    decimal_path(pid, "/fd", path);
+    struct vfs_node *descriptors = vfs_lookup(path);
+    if (descriptors) {
+        descriptors->refresh = NULL;
+        while (descriptors->children)
+            (void)vfs_detach_child(descriptors, descriptors->children);
+        (void)vfs_remove(path, 1);
+    }
     decimal_path(pid, NULL, path); (void)vfs_remove(path, 1);
 }

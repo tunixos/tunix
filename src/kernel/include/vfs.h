@@ -69,6 +69,9 @@ struct vfs_node {
     vfs_ready_fn write_ready;
     vfs_open_fn open;
     vfs_close_fn close;
+    /* Rebuild a directory whose contents are computed rather than stored, run
+       before it is searched or read. /proc/<pid>/fd is the reason it exists. */
+    void (*refresh)(struct vfs_node *directory);
     struct vfs_node *parent;
     struct vfs_node *children;
     struct vfs_node *next;
@@ -146,6 +149,11 @@ struct vfs_node *vfs_create_file_node(const char *path, uint32_t mode);
 struct vfs_node *vfs_create_directory(const char *path, uint32_t mode);
 struct vfs_node *vfs_create_symlink(const char *path, const char *target,
                                     uint32_t flags);
+/* Attach directly to a parent node, for trees that are built rather than
+   named -- a refresh handler cannot look its own directory up by path. */
+struct vfs_node *vfs_attach_symlink(struct vfs_node *parent, const char *name,
+                                    const char *target);
+int vfs_detach_child(struct vfs_node *parent, struct vfs_node *node);
 int64_t vfs_readlink(struct vfs_node *node, void *buffer, size_t size);
 int vfs_remove(const char *path, int remove_directory);
 int vfs_rename(const char *old_path, const char *new_path);

@@ -423,6 +423,11 @@ int64_t pty_ioctl(struct pty_pair *pty, int master, unsigned long request,
         }
         return 0;
     }
+    if (request == TIOCNOTTY) {
+        struct process *process = process_current();
+        if (process && process->controlling_pty == pty) process->controlling_pty = NULL;
+        return 0;
+    }
     if (request == TCGETS) {
         return copy_to_user(user_argument, &pty->termios, sizeof(pty->termios)) == 0 ? 0 : -EFAULT;
     }
