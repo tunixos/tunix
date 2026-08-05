@@ -19,9 +19,13 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
   ported on top of it: `snd-test` drives the kernel ioctls directly and
   `alsa-test` goes through the library, mixer included
 - dinit as PID 1: services under `/etc/dinit.d`, controlled with `dinitctl`
+- Real users: per-process credentials, file permission checks, setuid binaries,
+  and a console `login` prompt. shadow-utils (`login`, `su`, `passwd`) and
+  `sudo` are ported. The image ships `root` / `root` and `tunix` / `tunix` —
+  see [Users and Permissions](docs/users-and-permissions.md)
 - A full Xfce desktop on Xorg (xfwm4, xfce4-panel, xfdesktop, Thunar and
-  xfce4-terminal), started automatically at boot; a Weston (Wayland) session is
-  also available
+  xfce4-terminal), started by the session of whoever logs in, so it runs as
+  that user; a Weston (Wayland) session is also available
 
 ## Quick Start
 
@@ -61,3 +65,4 @@ make clean
 - [Ports](docs/ports.md)
 - [Syscalls and Scheduler](docs/syscalls-and-scheduler.md)
 - [Persistent Filesystem](docs/persistent-filesystem.md)
+- [Users and Permissions](docs/users-and-permissions.md)

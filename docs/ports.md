@@ -216,6 +216,28 @@ Expected interpreter:
 /lib/ld-musl-x86_64.so.1
 ```
 
+## Accounts and Privilege
+
+`shadow` and `sudo` are static musl ports like the rest of the base userland,
+with two things worth knowing.
+
+shadow files its account tools (`passwd`, `chage`, `useradd`, …) under directory
+variables automake does not recognise, so `make install-exec` -- what
+`gnu_autotools_port` runs -- installs `login`, `su` and `groups` and silently
+skips everything else. `ports/build-shadow.sh` stages the rest explicitly.
+
+sudo writes its own makefiles rather than using automake, so it has no
+`install-exec` target at all and does not go through the shared helper. Its
+policy must be linked into the binary (`--enable-static-sudoers`), because a
+loadable plugin would need a dynamic loader that a static image does not have,
+and PIE has to be off: the hardening flags end in `-fPIE -pie`, which cannot
+link against the static non-PIE musl.
+
+Neither port can carry its own setuid bit. The staging tree lives on a drive
+that reports every file as 0777, so the modes come from
+`scripts/rootfs-permissions.conf` when the image is built -- that file, not the
+port script, is where `/bin/su` and `/usr/bin/sudo` become 4755.
+
 ## Common Fixes
 
 Initialize missing third-party sources:
