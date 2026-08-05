@@ -301,7 +301,7 @@ KERNEL_OBJS := \
 	$(BUILD)/eventfd.o $(BUILD)/timerfd.o $(BUILD)/epoll.o $(BUILD)/inotify.o \
 	$(BUILD)/memfd.o $(BUILD)/sysvshm.o $(BUILD)/signalfd.o $(BUILD)/drm.o $(BUILD)/sysfs.o \
 	$(BUILD)/vfs.o $(BUILD)/tarfs.o $(BUILD)/ext2.o $(BUILD)/devfs.o $(BUILD)/unix_socket.o $(BUILD)/pty.o \
-	$(BUILD)/usercopy.o $(BUILD)/elf.o $(BUILD)/file.o \
+	$(BUILD)/usercopy.o $(BUILD)/elf.o $(BUILD)/file.o $(BUILD)/cred.o \
 	$(BUILD)/pipe.o $(BUILD)/tty.o $(BUILD)/process.o $(BUILD)/procfs.o $(BUILD)/time.o $(BUILD)/random.o $(BUILD)/ata.o \
 	$(BUILD)/acpi.o $(BUILD)/apic.o $(BUILD)/xhci.o \
 	$(BUILD)/sound.o $(BUILD)/hda.o \

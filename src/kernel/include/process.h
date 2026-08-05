@@ -2,6 +2,7 @@
 #define TUNIX_PROCESS_H
 
 #include <stdint.h>
+#include "cred.h"
 #include "file.h"
 #include "signal.h"
 #include "syscall.h"
@@ -88,6 +89,7 @@ struct process {
     int stop_reported;
     int continued_pending;
     uint32_t umask;
+    struct credentials cred;
     uint64_t cr3;
     struct process_memory *memory;
     int is_thread;
@@ -218,13 +220,18 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame,
                                           uint64_t parent_tid_user,
                                           uint64_t child_tid_user,
                                           uint64_t flags);
+/* `credential_source` is the node whose set-user-ID bits the new image runs
+   with, or NULL when there is no transition (scripts never get one). */
 int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
-                                  const char *const argv[], const char *const envp[]);
+                                  const char *const argv[], const char *const envp[],
+                                  const struct vfs_node *credential_source);
 int64_t process_waitpid_from_syscall(struct syscall_frame *frame, int64_t pid,
                                      uint64_t status_user, int options);
 int64_t process_waitid_from_syscall(int64_t pid_spec, uint64_t info_user,
                                     int options);
 int process_send_signal(int64_t pid, int signal_number);
+/* kill(2): refuses targets the caller's identity has no business signalling. */
+int process_send_signal_checked(int64_t pid, int signal_number);
 int process_setpgid(int64_t pid, int64_t pgid);
 int64_t process_setsid(void);
 void process_prepare_user_return(struct syscall_frame *frame);

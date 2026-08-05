@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "include/cred.h"
 #include "include/file.h"
 #include "include/eventfd.h"
 #include "include/timerfd.h"
@@ -154,6 +155,11 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_FALLOCATE 285
 #define SYS_GETEGID 108
 #define SYS_GETGROUPS 115
+#define SYS_SETGROUPS 116
+#define SYS_GETRESUID 118
+#define SYS_GETRESGID 120
+#define SYS_SETFSUID 122
+#define SYS_SETFSGID 123
 #define SYS_SETPGID 109
 #define SYS_GETPPID 110
 #define SYS_GETPGRP 111
@@ -944,10 +950,23 @@ static int64_t open_at(int dirfd, uint64_t user_path, uint64_t flags, uint64_t m
     struct vfs_node *node = (flags & O_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
     if (!node && (flags & O_CREAT)) {
         if (flags & O_DIRECTORY) return -EINVAL;
+        int permitted = cred_may_write_parent(path);
+        if (permitted != 0) return permitted;
         node = vfs_create_file_node(path, mode_after_umask(mode));
         if (!node) return -ENOENT;
     } else if (!node) return -ENOENT;
     else if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
+    else {
+        uint32_t want = 0;
+        if (!(flags & O_PATH)) {
+            uint32_t access_mode = flags & O_ACCMODE;
+            if (access_mode == O_RDONLY || access_mode == O_RDWR) want |= CRED_READ;
+            if (access_mode == O_WRONLY || access_mode == O_RDWR) want |= CRED_WRITE;
+            if (flags & O_TRUNC) want |= CRED_WRITE;
+        }
+        int permitted = cred_may_path(path, node, want);
+        if (permitted != 0) return permitted;
+    }
 
     uint32_t kind = node->flags & 0xFFU;
     if ((flags & O_NOFOLLOW) && kind == VFS_SYMLINK && !(flags & O_PATH)) return -ELOOP;
@@ -1813,17 +1832,73 @@ static int64_t sys_fallocate(int fd, int mode, uint64_t offset, uint64_t length)
 
 /* Resolves the descriptor and takes the lock; the blocking retry lives in the
    dispatcher, where the syscall frame is available to rewind. */
-/* uid_t is 32 bits, so "leave this one alone" arrives as 0xFFFFFFFF. */
-#define UNCHANGED_ID ((uint64_t)0xFFFFFFFFU)
+/* access(2) judges with the real ids, faccessat(AT_EACCESS) with the effective
+   ones; the file checks always read fsuid/fsgid, so swap them for the former. */
+static int64_t sys_faccess_at(int dirfd, uint64_t user_path, int mode, int flags) {
+    if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW)) return -EINVAL;
+    if (mode & ~7) return -EINVAL;
+    char path[256];
+    int status = copy_path_at(dirfd, user_path, path);
+    if (status != 0) return status;
+    struct vfs_node *node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path)
+                                                          : vfs_lookup(path);
+    if (!node) return -ENOENT;
 
-/* True when every supplied id is root or "unchanged"; see the setuid cases. */
-static int identity_change_allowed(uint64_t first, uint64_t second, uint64_t third) {
-    const uint64_t values[3] = { first, second, third };
-    for (int index = 0; index < 3; index++) {
-        uint32_t value = (uint32_t)values[index];
-        if (value != 0U && value != 0xFFFFFFFFU) return 0;
+    uint32_t want = 0;
+    if (mode & 4) want |= CRED_READ;
+    if (mode & 2) want |= CRED_WRITE;
+    if (mode & 1) want |= CRED_EXEC;
+    if ((want & CRED_WRITE) && (node->flags & VFS_READONLY)) return -EROFS;
+
+    struct credentials *cred = cred_current();
+    uint32_t saved_uid = 0, saved_gid = 0;
+    int swapped = cred && !(flags & AT_EACCESS);
+    if (swapped) {
+        saved_uid = cred->fsuid;
+        saved_gid = cred->fsgid;
+        cred->fsuid = cred->uid;
+        cred->fsgid = cred->gid;
     }
-    return 1;
+    int permitted = cred_may_path(path, node, want);
+    if (swapped) {
+        cred->fsuid = saved_uid;
+        cred->fsgid = saved_gid;
+    }
+    return permitted;
+}
+
+static int64_t sys_getresuid(uint64_t real_user, uint64_t effective_user,
+                             uint64_t saved_user, int group) {
+    const struct credentials *cred = cred_current();
+    if (!cred) return -EINVAL;
+    uint32_t values[3];
+    if (group) { values[0] = cred->gid; values[1] = cred->egid; values[2] = cred->sgid; }
+    else { values[0] = cred->uid; values[1] = cred->euid; values[2] = cred->suid; }
+    if (copy_to_user(real_user, &values[0], sizeof(values[0])) != 0 ||
+        copy_to_user(effective_user, &values[1], sizeof(values[1])) != 0 ||
+        copy_to_user(saved_user, &values[2], sizeof(values[2])) != 0)
+        return -EFAULT;
+    return 0;
+}
+
+static int64_t sys_getgroups(int64_t size, uint64_t user_list) {
+    const struct credentials *cred = cred_current();
+    if (!cred) return 0;
+    if (size < 0) return -EINVAL;
+    if (size == 0) return (int64_t)cred->group_count;
+    if ((uint32_t)size < cred->group_count) return -EINVAL;
+    if (cred->group_count &&
+        copy_to_user(user_list, cred->groups, cred->group_count * sizeof(uint32_t)) != 0)
+        return -EFAULT;
+    return (int64_t)cred->group_count;
+}
+
+static int64_t sys_setgroups(int64_t size, uint64_t user_list) {
+    if (size < 0 || size > CRED_MAX_GROUPS) return -EINVAL;
+    uint32_t groups[CRED_MAX_GROUPS];
+    if (size && copy_from_user(groups, user_list, (size_t)size * sizeof(uint32_t)) != 0)
+        return -EFAULT;
+    return cred_set_groups((uint32_t)size, groups);
 }
 
 static int64_t sys_flock(int fd, int operation) {
@@ -2254,6 +2329,8 @@ static int64_t sys_chdir(uint64_t user_path) {
     struct vfs_node *node = vfs_lookup(path);
     if (!node) return -ENOENT;
     if ((node->flags & 0xFFU) != VFS_DIRECTORY) return -ENOTDIR;
+    int permitted = cred_may_path(path, node, CRED_EXEC);
+    if (permitted != 0) return permitted;
     set_cwd(process_current(), node);
     return 0;
 }
@@ -2272,6 +2349,8 @@ static int64_t sys_mkdir_at(int dirfd, uint64_t user_path, uint64_t mode) {
     int status = copy_path_at(dirfd, user_path, path);
     if (status != 0) return status;
     if (vfs_lookup(path)) return -EEXIST;
+    int permitted = cred_may_write_parent(path);
+    if (permitted != 0) return permitted;
     return vfs_create_directory(path, mode_after_umask(mode)) ? 0 : -ENOENT;
 }
 
@@ -2310,6 +2389,8 @@ static int64_t sys_unlink_at(int dirfd, uint64_t user_path, int flags) {
     if ((flags & AT_REMOVEDIR) && kind != VFS_DIRECTORY) return -ENOTDIR;
     if (!(flags & AT_REMOVEDIR) && kind == VFS_DIRECTORY) return -EISDIR;
     if ((flags & AT_REMOVEDIR) && node->children) return -ENOTEMPTY;
+    int permitted = cred_may_remove(path, node);
+    if (permitted != 0) return permitted;
     return vfs_remove(path, (flags & AT_REMOVEDIR) != 0) == 0 ? 0 : -EIO;
 }
 
@@ -2325,6 +2406,12 @@ static int64_t sys_rename_at(int old_dirfd, uint64_t user_old_path,
     struct vfs_node *node = vfs_lookup_nofollow(old_path);
     if (!node) return -ENOENT;
     if (node->flags & VFS_READONLY) return -EROFS;
+    int permitted = cred_may_remove(old_path, node);
+    if (permitted != 0) return permitted;
+    struct vfs_node *existing = vfs_lookup_nofollow(new_path);
+    permitted = existing ? cred_may_remove(new_path, existing)
+                         : cred_may_write_parent(new_path);
+    if (permitted != 0) return permitted;
     return vfs_rename(old_path, new_path) == 0 ? 0 : -EIO;
 }
 
@@ -2335,7 +2422,48 @@ static int64_t sys_symlink_at(uint64_t user_target, int new_dirfd,
     int status = copy_path_at(new_dirfd, user_link_path, link_path);
     if (status != 0) return status;
     if (vfs_lookup_nofollow(link_path)) return -EEXIST;
+    int permitted = cred_may_write_parent(link_path);
+    if (permitted != 0) return permitted;
     return vfs_create_symlink(link_path, target, 0) ? 0 : -EIO;
+}
+
+/* Only the owner and root may change a mode; a non-root owner also loses the
+   set-group-ID bit when the file's group is not one of theirs. */
+static int64_t change_mode(struct vfs_node *node, uint32_t mode) {
+    if (node->flags & VFS_READONLY) return -EROFS;
+    const struct credentials *cred = cred_current();
+    if (cred && cred->euid != 0 && cred->euid != node->uid) return -EPERM;
+    mode &= 07777U;
+    if (cred && cred->euid != 0 && !cred_has_group(node->gid)) mode &= ~02000U;
+    node->mode = mode;
+    vfs_stamp_times(node, VFS_TIME_CTIME);
+    vfs_notify_meta_changed(node);
+    return 0;
+}
+
+/*
+ * chown proper. Changing the owner is root-only; the owner may hand the file to
+ * one of their own groups. Either way a successful change strips the setuid and
+ * setgid bits off an executable, which is what stops a privileged binary from
+ * being handed over intact.
+ */
+static int64_t change_owner(struct vfs_node *node, uint32_t uid, uint32_t gid) {
+    if (node->flags & VFS_READONLY) return -EROFS;
+    if (uid == CRED_UNCHANGED && gid == CRED_UNCHANGED) return 0;
+    const struct credentials *cred = cred_current();
+    if (cred && cred->euid != 0) {
+        if (uid != CRED_UNCHANGED && uid != node->uid) return -EPERM;
+        if (gid != CRED_UNCHANGED) {
+            if (cred->euid != node->uid) return -EPERM;
+            if (!cred_has_group(gid)) return -EPERM;
+        }
+    }
+    if (uid != CRED_UNCHANGED) node->uid = uid;
+    if (gid != CRED_UNCHANGED) node->gid = gid;
+    if (node->mode & 0111U) node->mode &= ~06000U;
+    vfs_stamp_times(node, VFS_TIME_CTIME);
+    vfs_notify_meta_changed(node);
+    return 0;
 }
 
 static int64_t sys_chmod_at(int dirfd, uint64_t user_path, uint32_t mode, int flags) {
@@ -2345,35 +2473,30 @@ static int64_t sys_chmod_at(int dirfd, uint64_t user_path, uint32_t mode, int fl
     if (status != 0) return status;
     struct vfs_node *node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
     if (!node) return -ENOENT;
-    if (node->flags & VFS_READONLY) return -EROFS;
-    node->mode = mode & 07777U;
-    vfs_notify_meta_changed(node);
-    return 0;
+    int permitted = cred_may_search(path);
+    if (permitted != 0) return permitted;
+    return change_mode(node, mode);
 }
 
-/*
- * The chown family. Tunix is single-user: everything is uid 0, gid 0, and
- * stat reports exactly that, so any ownership a caller asks for is already
- * a no-op or unrepresentable. The path/descriptor is still validated --
- * "chown a file that is not there" must keep failing -- but nothing is
- * recorded. dinit is the caller that made this matter: it fchown()s every
- * service logfile it opens and treats failure as fatal for the service.
- */
-static int64_t sys_chown_at(int dirfd, uint64_t user_path, int flags) {
+static int64_t sys_chown_at(int dirfd, uint64_t user_path, uint32_t uid,
+                            uint32_t gid, int flags) {
     if (flags & ~AT_SYMLINK_NOFOLLOW) return -EINVAL;
     char path[256];
     int status = copy_path_at(dirfd, user_path, path);
     if (status != 0) return status;
     struct vfs_node *node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
     if (!node) return -ENOENT;
-    if (node->flags & VFS_READONLY) return -EROFS;
-    return 0;
+    int permitted = cred_may_search(path);
+    if (permitted != 0) return permitted;
+    return change_owner(node, uid, gid);
 }
 
-static int64_t sys_fchown(int fd) {
+static int64_t sys_fchown(int fd, uint32_t uid, uint32_t gid) {
     struct process *process = process_current();
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->files->fds[fd]) return -EBADF;
-    return 0;
+    struct file *file = process->files->fds[fd];
+    if (file->kind != FILE_KIND_VFS || !file->node) return 0;
+    return change_owner(file->node, uid, gid);
 }
 
 static int64_t sys_fchmod(int fd, uint32_t mode) {
@@ -2381,10 +2504,7 @@ static int64_t sys_fchmod(int fd, uint32_t mode) {
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->files->fds[fd]) return -EBADF;
     struct file *file = process->files->fds[fd];
     if (file->kind != FILE_KIND_VFS || !file->node) return -EBADF;
-    if (file->node->flags & VFS_READONLY) return -EROFS;
-    file->node->mode = mode & 07777U;
-    vfs_notify_meta_changed(file->node);
-    return 0;
+    return change_mode(file->node, mode);
 }
 
 #define UTIME_NOW 0x3FFFFFFF
@@ -2414,6 +2534,10 @@ static int64_t sys_utimens_at(int dirfd, uint64_t user_path, uint64_t user_times
         if (!node) return -ENOENT;
     }
     if (node->flags & VFS_READONLY) return -EROFS;
+    /* Setting explicit times needs ownership; "set both to now" only needs
+       write permission. */
+    if (!cred_owns(node) && (user_times || cred_may(node, CRED_WRITE) != 0))
+        return -EPERM;
 
     /* A NULL times array means "both to now"; musl also folds an explicit
        UTIME_NOW/UTIME_NOW pair into that form before issuing the syscall. */
@@ -3209,6 +3333,11 @@ static int64_t sys_execve(struct syscall_frame *frame, uint64_t user_path, uint6
         kfree(arguments);
         return -EACCES;
     }
+    int permitted = cred_may_path(path, file, CRED_EXEC);
+    if (permitted != 0) {
+        kfree(arguments);
+        return permitted;
+    }
 
     char interpreter[MAX_EXEC_STRING];
     char optional_argument[MAX_EXEC_STRING];
@@ -3224,6 +3353,11 @@ static int64_t sys_execve(struct syscall_frame *frame, uint64_t user_path, uint6
             kfree(arguments);
             return -ENOENT;
         }
+        permitted = cred_may_path(interpreter, interpreter_file, CRED_EXEC);
+        if (permitted != 0) {
+            kfree(arguments);
+            return permitted;
+        }
         int rewritten = rewrite_script_arguments(arguments, argc, path, interpreter,
                                                  optional_argument);
         if (rewritten < 0) {
@@ -3231,12 +3365,13 @@ static int64_t sys_execve(struct syscall_frame *frame, uint64_t user_path, uint6
             return rewritten;
         }
         int64_t result = process_exec_from_syscall(frame, interpreter,
-                                                   arguments->argv, arguments->envp);
+                                                   arguments->argv, arguments->envp, NULL);
         kfree(arguments);
         return result == -1 ? -ENOEXEC : result;
     }
 
-    int64_t result = process_exec_from_syscall(frame, path, arguments->argv, arguments->envp);
+    int64_t result = process_exec_from_syscall(frame, path, arguments->argv,
+                                               arguments->envp, file);
     kfree(arguments);
     return result == -1 ? -ENOEXEC : result;
 }
@@ -3995,12 +4130,9 @@ void syscall_dispatch(struct syscall_frame *frame) {
                 frame->rax = (uint64_t)result;
             break;
         }
-        case SYS_ACCESS: {
-            char path[256];
-            int status = copy_path_at(AT_FDCWD, frame->rdi, path);
-            frame->rax = (uint64_t)(status != 0 ? status : (vfs_lookup(path) ? 0 : -ENOENT));
+        case SYS_ACCESS:
+            frame->rax = (uint64_t)sys_faccess_at(AT_FDCWD, frame->rdi, (int)frame->rsi, 0);
             break;
-        }
         case SYS_PSELECT6: {
             int64_t timeout_ns = read_timespec_timeout_ns(frame->r8);
             if (timeout_ns < -1) {
@@ -4035,12 +4167,10 @@ void syscall_dispatch(struct syscall_frame *frame) {
             }
             break;
         }
-        case SYS_FACCESSAT: {
-            char path[256];
-            int status = copy_path_at((int)frame->rdi, frame->rsi, path);
-            frame->rax = (uint64_t)(status != 0 ? status : (vfs_lookup(path) ? 0 : -ENOENT));
+        case SYS_FACCESSAT:
+            frame->rax = (uint64_t)sys_faccess_at((int)frame->rdi, frame->rsi,
+                                                  (int)frame->rdx, 0);
             break;
-        }
         case SYS_PIPE: frame->rax = (uint64_t)sys_pipe(frame->rdi, 0); break;
         case SYS_SELECT: {
             int64_t timeout_ns = read_timeval_timeout_ns(frame->r8);
@@ -4312,11 +4442,11 @@ void syscall_dispatch(struct syscall_frame *frame) {
             }
             break;
         }
-        case SYS_KILL: frame->rax = (uint64_t)process_send_signal((int64_t)frame->rdi, (int)frame->rsi); break;
+        case SYS_KILL: frame->rax = (uint64_t)process_send_signal_checked((int64_t)frame->rdi, (int)frame->rsi); break;
         /* Single-threaded here: a tid is a pid, so tkill(tid,sig) is kill(pid,sig).
          * musl's raise()/abort() route through tkill. */
-        case SYS_TKILL: frame->rax = (uint64_t)process_send_signal((int64_t)frame->rdi, (int)frame->rsi); break;
-        case SYS_TGKILL: frame->rax = (uint64_t)process_send_signal((int64_t)frame->rsi, (int)frame->rdx); break;
+        case SYS_TKILL: frame->rax = (uint64_t)process_send_signal_checked((int64_t)frame->rdi, (int)frame->rsi); break;
+        case SYS_TGKILL: frame->rax = (uint64_t)process_send_signal_checked((int64_t)frame->rsi, (int)frame->rdx); break;
         case SYS_UNAME: frame->rax = (uint64_t)sys_uname(frame->rdi); break;
         case SYS_FCNTL: {
             struct process *process = process_current();
@@ -4395,10 +4525,22 @@ void syscall_dispatch(struct syscall_frame *frame) {
         case SYS_READLINK: frame->rax = (uint64_t)sys_readlink_at(AT_FDCWD, frame->rdi, frame->rsi, (size_t)frame->rdx); break;
         case SYS_CHMOD: frame->rax = (uint64_t)sys_chmod_at(AT_FDCWD, frame->rdi, (uint32_t)frame->rsi, 0); break;
         case SYS_FCHMOD: frame->rax = (uint64_t)sys_fchmod((int)frame->rdi, (uint32_t)frame->rsi); break;
-        case SYS_CHOWN: frame->rax = (uint64_t)sys_chown_at(AT_FDCWD, frame->rdi, 0); break;
-        case SYS_LCHOWN: frame->rax = (uint64_t)sys_chown_at(AT_FDCWD, frame->rdi, AT_SYMLINK_NOFOLLOW); break;
-        case SYS_FCHOWN: frame->rax = (uint64_t)sys_fchown((int)frame->rdi); break;
-        case SYS_FCHOWNAT: frame->rax = (uint64_t)sys_chown_at((int)frame->rdi, frame->rsi, (int)frame->r8); break;
+        case SYS_CHOWN:
+            frame->rax = (uint64_t)sys_chown_at(AT_FDCWD, frame->rdi, (uint32_t)frame->rsi,
+                                                (uint32_t)frame->rdx, 0);
+            break;
+        case SYS_LCHOWN:
+            frame->rax = (uint64_t)sys_chown_at(AT_FDCWD, frame->rdi, (uint32_t)frame->rsi,
+                                                (uint32_t)frame->rdx, AT_SYMLINK_NOFOLLOW);
+            break;
+        case SYS_FCHOWN:
+            frame->rax = (uint64_t)sys_fchown((int)frame->rdi, (uint32_t)frame->rsi,
+                                              (uint32_t)frame->rdx);
+            break;
+        case SYS_FCHOWNAT:
+            frame->rax = (uint64_t)sys_chown_at((int)frame->rdi, frame->rsi, (uint32_t)frame->rdx,
+                                                (uint32_t)frame->r10, (int)frame->r8);
+            break;
         case SYS_UMASK: frame->rax = process_set_umask((uint32_t)frame->rdi); break;
         case SYS_GETTIMEOFDAY: frame->rax = (uint64_t)sys_gettimeofday(frame->rdi); break;
         case SYS_GETRLIMIT: frame->rax = (uint64_t)sys_prlimit(frame->rdi, frame->rsi); break;
@@ -4407,40 +4549,35 @@ void syscall_dispatch(struct syscall_frame *frame) {
             frame->rax = copy_to_user(frame->rsi, zero, sizeof(zero)) == 0 ? 0 : (uint64_t)-(int64_t)EFAULT;
             break;
         }
-        case SYS_GETUID:
-        case SYS_GETGID:
-        case SYS_GETEUID:
-        case SYS_GETEGID: frame->rax = 0; break;
-        /*
-         * Tunix has exactly one identity: everything runs as root and the
-         * getuid family above always answers 0. So the setters can only ever
-         * be asked to stay where they are -- 0, or -1 for "leave unchanged".
-         * Both succeed; anything else is a request to become a user that does
-         * not exist, which is EPERM.
-         *
-         * These matter because ordinary programs drop privileges as a matter of
-         * course. Weston calls seteuid() before spawning its helper clients,
-         * musl implements that as setresuid(-1, uid, -1), and without it the
-         * helpers die and the compositor quits with "cannot run at all".
-         */
-        case SYS_SETUID:
-        case SYS_SETGID:
-            frame->rax = identity_change_allowed(frame->rdi, UNCHANGED_ID, UNCHANGED_ID) ?
-                0 : (uint64_t)-(int64_t)EPERM;
-            break;
+        case SYS_GETUID: frame->rax = cred_current() ? cred_current()->uid : 0; break;
+        case SYS_GETGID: frame->rax = cred_current() ? cred_current()->gid : 0; break;
+        case SYS_GETEUID: frame->rax = cred_current() ? cred_current()->euid : 0; break;
+        case SYS_GETEGID: frame->rax = cred_current() ? cred_current()->egid : 0; break;
+        case SYS_SETUID: frame->rax = (uint64_t)cred_set_uid((uint32_t)frame->rdi); break;
+        case SYS_SETGID: frame->rax = (uint64_t)cred_set_gid((uint32_t)frame->rdi); break;
         case SYS_SETREUID:
+            frame->rax = (uint64_t)cred_set_reuid((uint32_t)frame->rdi, (uint32_t)frame->rsi);
+            break;
         case SYS_SETREGID:
-            frame->rax = identity_change_allowed(frame->rdi, frame->rsi, UNCHANGED_ID) ?
-                0 : (uint64_t)-(int64_t)EPERM;
+            frame->rax = (uint64_t)cred_set_regid((uint32_t)frame->rdi, (uint32_t)frame->rsi);
             break;
         case SYS_SETRESUID:
-        case SYS_SETRESGID:
-            frame->rax = identity_change_allowed(frame->rdi, frame->rsi, frame->rdx) ?
-                0 : (uint64_t)-(int64_t)EPERM;
+            frame->rax = (uint64_t)cred_set_resuid((uint32_t)frame->rdi, (uint32_t)frame->rsi,
+                                                   (uint32_t)frame->rdx);
             break;
+        case SYS_SETRESGID:
+            frame->rax = (uint64_t)cred_set_resgid((uint32_t)frame->rdi, (uint32_t)frame->rsi,
+                                                   (uint32_t)frame->rdx);
+            break;
+        case SYS_GETRESUID: frame->rax = (uint64_t)sys_getresuid(frame->rdi, frame->rsi, frame->rdx, 0); break;
+        case SYS_GETRESGID: frame->rax = (uint64_t)sys_getresuid(frame->rdi, frame->rsi, frame->rdx, 1); break;
+        case SYS_SETFSUID: frame->rax = (uint64_t)cred_set_fsuid((uint32_t)frame->rdi); break;
+        case SYS_SETFSGID: frame->rax = (uint64_t)cred_set_fsgid((uint32_t)frame->rdi); break;
         case SYS_GETGROUPS:
-            if ((int64_t)frame->rdi < 0) frame->rax = (uint64_t)-(int64_t)EINVAL;
-            else frame->rax = 0;
+            frame->rax = (uint64_t)sys_getgroups((int64_t)frame->rdi, frame->rsi);
+            break;
+        case SYS_SETGROUPS:
+            frame->rax = (uint64_t)sys_setgroups((int64_t)frame->rdi, frame->rsi);
             break;
         case SYS_SETPGID: frame->rax = (uint64_t)process_setpgid((int64_t)frame->rdi, (int64_t)frame->rsi); break;
         case SYS_GETPPID: frame->rax = process_current_ppid(); break;
@@ -4601,24 +4738,10 @@ void syscall_dispatch(struct syscall_frame *frame) {
                                              (uint32_t)frame->r10, frame->r8);
             break;
         case SYS_RSEQ: frame->rax = (uint64_t)-(int64_t)ENOSYS; break;
-        case SYS_FACCESSAT2: {
-            unsigned flags = (unsigned)frame->r10;
-            if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW)) {
-                frame->rax = (uint64_t)-(int64_t)EINVAL;
-            } else {
-                char path[256];
-                int status = copy_path_at((int)frame->rdi, frame->rsi, path);
-                if (status != 0) {
-                    frame->rax = (uint64_t)status;
-                } else {
-                    struct vfs_node *node = (flags & AT_SYMLINK_NOFOLLOW)
-                        ? vfs_lookup_nofollow(path)
-                        : vfs_lookup(path);
-                    frame->rax = (uint64_t)(node ? 0 : -(int64_t)ENOENT);
-                }
-            }
+        case SYS_FACCESSAT2:
+            frame->rax = (uint64_t)sys_faccess_at((int)frame->rdi, frame->rsi,
+                                                  (int)frame->rdx, (int)frame->r10);
             break;
-        }
         case SYS_CLOSE_RANGE: {
             struct process *process = process_current();
             uint64_t first = frame->rdi, last = frame->rsi, flags = frame->rdx;

@@ -341,9 +341,22 @@ static int64_t proc_status_read(struct vfs_node *node, uint64_t offset,
     text_string(&text, "Tgid:\t"); text_unsigned(&text, process->tgid); text_char(&text, '\n');
     text_string(&text, "Pid:\t"); text_unsigned(&text, process->pid); text_char(&text, '\n');
     text_string(&text, "PPid:\t"); text_unsigned(&text, process->ppid); text_char(&text, '\n');
-    /* Tunix runs everything as root; getuid(2) reports 0 to match. */
-    text_string(&text, "Uid:\t0\t0\t0\t0\n");
-    text_string(&text, "Gid:\t0\t0\t0\t0\n");
+    text_string(&text, "Uid:\t");
+    text_unsigned(&text, process->cred.uid); text_char(&text, '\t');
+    text_unsigned(&text, process->cred.euid); text_char(&text, '\t');
+    text_unsigned(&text, process->cred.suid); text_char(&text, '\t');
+    text_unsigned(&text, process->cred.fsuid); text_char(&text, '\n');
+    text_string(&text, "Gid:\t");
+    text_unsigned(&text, process->cred.gid); text_char(&text, '\t');
+    text_unsigned(&text, process->cred.egid); text_char(&text, '\t');
+    text_unsigned(&text, process->cred.sgid); text_char(&text, '\t');
+    text_unsigned(&text, process->cred.fsgid); text_char(&text, '\n');
+    text_string(&text, "Groups:\t");
+    for (uint32_t index = 0; index < process->cred.group_count; index++) {
+        text_unsigned(&text, process->cred.groups[index]);
+        text_char(&text, ' ');
+    }
+    text_char(&text, '\n');
     text_string(&text, "Pgid:\t"); text_unsigned(&text, process->pgid); text_char(&text, '\n');
     text_string(&text, "Sid:\t"); text_unsigned(&text, process->sid); text_char(&text, '\n');
     text_string(&text, "VmSize:\t"); text_unsigned(&text, memory_kb); text_string(&text, " kB\n");
@@ -531,6 +544,8 @@ void procfs_register_process(struct process *process) {
     struct vfs_node *directory = vfs_mkdir_p(path);
     if (!directory) return;
     directory->mode = 0555;
+    directory->uid = process->cred.euid;
+    directory->gid = process->cred.egid;
     populate_process_files(directory, process->pid);
 
     /* Linux always exposes a per-thread view under task/<tid>/, and tools such

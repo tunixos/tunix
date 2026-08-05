@@ -1,5 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "include/cred.h"
+#include "include/devnum.h"
 #include "include/file.h"
 #include "include/kstring.h"
 #include "include/process.h"
@@ -258,6 +260,14 @@ struct file *pty_open_master(struct vfs_node *node, uint32_t flags) {
         if (pty->allocated) continue;
         pty->allocated = 1;
         reset_pair(pty);
+        /* What devpts does for grantpt(): the slave belongs to whoever opened
+           the master, or no unprivileged terminal emulator could use it. */
+        if (pty->slave_node) {
+            const struct credentials *cred = cred_current();
+            pty->slave_node->uid = cred ? cred->euid : 0;
+            pty->slave_node->gid = DEV_GROUP_TTY;
+            pty->slave_node->mode = 0620;
+        }
         struct file *file = file_create_pty_endpoint(pty, 1, node, flags);
         if (!file) {
             pty->allocated = 0;

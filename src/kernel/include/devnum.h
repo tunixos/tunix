@@ -21,4 +21,16 @@
 #define DEV_MINOR_SOUND_CONTROL 0
 #define DEV_MINOR_SOUND_PCM_PLAYBACK 16
 
+/*
+ * The groups a device node belongs to. They are how a normal user reaches the
+ * hardware at all: the desktop needs the display and the input devices, and
+ * without these it would need to be root to have them. /etc/group carries the
+ * same numbers.
+ */
+#define DEV_GROUP_TTY 5
+#define DEV_GROUP_DISK 6
+#define DEV_GROUP_AUDIO 29
+#define DEV_GROUP_VIDEO 44
+#define DEV_GROUP_INPUT 45
+
 #endif

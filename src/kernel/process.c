@@ -1139,6 +1139,7 @@ int64_t process_fork_from_syscall(struct syscall_frame *frame) {
     vfs_node_ref(child->cwd);
     child->controlling_pty = parent->controlling_pty;
     child->umask = parent->umask;
+    child->cred = parent->cred;
     child->signal_stack_pointer = parent->signal_stack_pointer;
     child->signal_stack_size = parent->signal_stack_size;
     child->signal_stack_flags = parent->signal_stack_flags;
@@ -1233,6 +1234,7 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame,
     vfs_node_ref(child->cwd);
     child->controlling_pty = parent->controlling_pty;
     child->umask = parent->umask;
+    child->cred = parent->cred;
     child->signal_stack_flags = SS_DISABLE;
     child->dumpable = parent->dumpable;
     child->no_new_privs = parent->no_new_privs;
@@ -1419,7 +1421,8 @@ void process_exit_group_from_syscall(struct syscall_frame *frame, int status) {
 }
 
 int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
-                                  const char *const argv[], const char *const envp[]) {
+                                  const char *const argv[], const char *const envp[],
+                                  const struct vfs_node *credential_source) {
     if (!current || !frame || !path) return -EINVAL;
     struct vfs_node *file = vfs_lookup(path);
     if (!file) return -1;
@@ -1461,7 +1464,11 @@ int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
     current->signal_stack_flags = SS_DISABLE;
     current->robust_list_head = 0;
     current->robust_list_length = 0;
-    current->dumpable = 1;
+    cred_apply_exec(&current->cred, credential_source, current->no_new_privs);
+    /* A program that gained privileges must not be inspectable by the identity
+       that started it. */
+    current->dumpable = (current->cred.euid == current->cred.uid &&
+                         current->cred.egid == current->cred.gid);
     strncpy(current->name, file->name, sizeof(current->name) - 1);
     strncpy(current->exe_path, path, sizeof(current->exe_path) - 1);
     set_process_cmdline(current, path, argv);
@@ -1670,28 +1677,50 @@ static void signal_one_process(struct process *target, int signal_number) {
     }
 }
 
-int process_send_signal(int64_t pid, int signal_number) {
+/* An unprivileged sender may only signal processes of its own identity. */
+static int may_signal(const struct process *target) {
+    const struct credentials *sender = &current->cred;
+    if (sender->euid == 0) return 1;
+    return sender->uid == target->cred.uid || sender->uid == target->cred.suid ||
+           sender->euid == target->cred.uid || sender->euid == target->cred.suid;
+}
+
+static int send_signal(int64_t pid, int signal_number, int checked) {
     if (signal_number < 0 || signal_number > TUNIX_NSIG || !current) return -EINVAL;
     if (pid > 0) {
         struct process *target = process_find((uint64_t)pid);
         if (!target) return -ESRCH;
+        if (checked && !may_signal(target)) return -EPERM;
         signal_one_process(target, signal_number);
         return 0;
     }
 
     uint64_t group = pid == 0 ? current->pgid : (uint64_t)(-pid);
     int delivered = 0;
+    int refused = 0;
     if (!queue) return -ESRCH;
     struct process *target = queue;
     do {
         int match = pid == -1 ? target->pid != 1 : target->pgid == group;
         if (match && target->state != PROCESS_DEAD) {
-            signal_one_process(target, signal_number);
-            delivered = 1;
+            if (checked && !may_signal(target)) refused = 1;
+            else {
+                signal_one_process(target, signal_number);
+                delivered = 1;
+            }
         }
         target = target->next;
     } while (target != queue);
-    return delivered ? 0 : -ESRCH;
+    if (delivered) return 0;
+    return refused ? -EPERM : -ESRCH;
+}
+
+int process_send_signal(int64_t pid, int signal_number) {
+    return send_signal(pid, signal_number, 0);
+}
+
+int process_send_signal_checked(int64_t pid, int signal_number) {
+    return send_signal(pid, signal_number, 1);
 }
 
 int process_setpgid(int64_t pid, int64_t pgid) {

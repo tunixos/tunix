@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "include/cred.h"
 #include "include/heap.h"
 #include "include/inotify.h"
 #include "include/kstring.h"
@@ -393,6 +394,7 @@ struct vfs_node *vfs_create_file_node(const char *path, uint32_t mode) {
         kfree(node);
         return NULL;
     }
+    cred_stamp_new_node(node);
     inotify_notify(parent, TUNIX_IN_CREATE, name, 0);
     PERSIST(created, node);
     return node;
@@ -413,6 +415,7 @@ struct vfs_node *vfs_create_directory(const char *path, uint32_t mode) {
         kfree(node);
         return NULL;
     }
+    cred_stamp_new_node(node);
     inotify_notify(parent, TUNIX_IN_CREATE, name, 0);
     PERSIST(created, node);
     return node;
@@ -440,6 +443,7 @@ struct vfs_node *vfs_create_symlink(const char *path, const char *target,
         kfree(node);
         return NULL;
     }
+    cred_stamp_new_node(node);
     inotify_notify(parent, TUNIX_IN_CREATE, name, 0);
     PERSIST(created, node);
     return node;

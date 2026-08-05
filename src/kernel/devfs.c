@@ -250,7 +250,10 @@ void devfs_init(void) {
     if (sectors) {
         struct vfs_node *disk = attach_device(dev, "sda",
             VFS_BLOCKDEVICE | VFS_READONLY, 0440, disk_read, NULL, NULL);
-        if (disk) disk->length = (uint64_t)sectors * 512ULL;
+        if (disk) {
+            disk->length = (uint64_t)sectors * 512ULL;
+            disk->gid = DEV_GROUP_DISK;
+        }
     }
 
     if (framebuffer_available()) {
@@ -259,6 +262,7 @@ void devfs_init(void) {
         if (fb) {
             fb->length = framebuffer_byte_length();
             fb->mmap = framebuffer_device_mmap;
+            fb->gid = DEV_GROUP_VIDEO;
         }
     }
 
@@ -276,6 +280,7 @@ void devfs_init(void) {
             if (card) {
                 card->dev_major = DEV_MAJOR_DRM;
                 card->dev_minor = DEV_MINOR_DRM_CARD0;
+                card->gid = DEV_GROUP_VIDEO;
                 card->ioctl = drm_node_ioctl;
                 card->mmap = drm_device_mmap;
                 /* Open/close counting is how the console gets the display back
@@ -301,6 +306,7 @@ void devfs_init(void) {
                 control->dev_major = DEV_MAJOR_SOUND;
                 control->dev_minor = DEV_MINOR_SOUND_CONTROL;
                 control->ioctl = sound_control_ioctl;
+                control->gid = DEV_GROUP_AUDIO;
             }
 
             struct vfs_node *playback = attach_device(snd, "pcmC0D0p",
@@ -315,6 +321,7 @@ void devfs_init(void) {
                 playback->write_ready = sound_pcm_write_ready;
                 playback->open = sound_pcm_open;
                 playback->close = sound_pcm_close;
+                playback->gid = DEV_GROUP_AUDIO;
             }
         }
     }
@@ -338,6 +345,7 @@ void devfs_init(void) {
             event0->ioctl = input_event_ioctl;
             event0->dev_major = DEV_MAJOR_INPUT;
             event0->dev_minor = DEV_MINOR_INPUT_EVENT_BASE + 0U;
+            event0->gid = DEV_GROUP_INPUT;
         }
 
         if (input_mouse_available()) {
@@ -348,6 +356,7 @@ void devfs_init(void) {
                 event1->ioctl = input_event_ioctl;
                 event1->dev_major = DEV_MAJOR_INPUT;
                 event1->dev_minor = DEV_MINOR_INPUT_EVENT_BASE + 1U;
+                event1->gid = DEV_GROUP_INPUT;
             }
             (void)vfs_create_symlink("/dev/input/mouse0", "/dev/input/event1", 0);
         }
