@@ -83,10 +83,14 @@ int tarfs_unpack(uint64_t initramfs_physical_address, uint64_t initramfs_size) {
         normalize_path(path, header);
         if (path[1]) {
             uint32_t mode = (uint32_t)parse_octal(header->mode, sizeof(header->mode));
+            uint32_t uid = (uint32_t)parse_octal(header->uid, sizeof(header->uid));
+            uint32_t gid = (uint32_t)parse_octal(header->gid, sizeof(header->gid));
             if (header->typeflag == '5') {
                 struct vfs_node *directory = vfs_mkdir_p(path);
                 if (!directory) return -1;
                 if (mode) directory->mode = mode & 07777U;
+                directory->uid = uid;
+                directory->gid = gid;
             } else if (header->typeflag == '2') {
                 char target[101];
                 size_t target_length = 0;
@@ -96,12 +100,16 @@ int tarfs_unpack(uint64_t initramfs_physical_address, uint64_t initramfs_size) {
                 struct vfs_node *link = vfs_create_symlink(path, target, 0);
                 if (!link) return -1;
                 if (mode) link->mode = mode & 07777U;
+                link->uid = uid;
+                link->gid = gid;
                 files++;
                 KDEBUG("TarFS: %s -> %s\n", path, target);
             } else if (header->typeflag == '0' || header->typeflag == '\0') {
                 struct vfs_node *file = vfs_create_file(path, archive + offset + 512, size, 0, 0);
                 if (!file) return -1;
                 if (mode) file->mode = mode & 07777U;
+                file->uid = uid;
+                file->gid = gid;
                 files++;
                 KDEBUG("TarFS: %s (%u bytes)\n", path, (unsigned)size);
             }

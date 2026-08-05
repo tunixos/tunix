@@ -1606,6 +1606,10 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -L $(ROOTFS)/sbin/init || { echo "/sbin/init is not the dinit symlink" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .
+	# The staging tree lives on a Windows drive, which reports every file as
+	# 0777 root:root, so the real modes and owners are stamped onto the archive
+	# instead of being carried by it.
+	$(PYTHON) scripts/apply-permissions.py $@ scripts/rootfs-permissions.conf
 
 $(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts/build-image.py $(BOOT_CONFIG_STAMP)
 	$(PYTHON) scripts/build-image.py $@ $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS)

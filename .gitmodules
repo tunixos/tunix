@@ -401,3 +401,9 @@
 [submodule "ports/src/chocolate-doom"]
 	path = ports/src/chocolate-doom
 	url = https://github.com/chocolate-doom/chocolate-doom.git
+[submodule "ports/src/shadow"]
+	path = ports/src/shadow
+	url = https://github.com/shadow-maint/shadow
+[submodule "ports/src/sudo"]
+	path = ports/src/sudo
+	url = https://github.com/sudo-project/sudo
