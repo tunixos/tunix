@@ -16,6 +16,11 @@ extern void serial_write_char(char c);
 
 static struct tunix_termios console_termios;
 static int console_foreground_pgid;
+/* The session that has claimed the console as its controlling terminal, or 0
+   while nobody has. Job control only applies inside that session: a process
+   from anywhere else -- login before it has claimed the terminal, a service
+   reading the console -- is simply allowed to read. */
+static uint64_t console_session;
 static char canonical_buffer[1024];
 static size_t canonical_length;
 static size_t canonical_offset;
@@ -623,7 +628,8 @@ static int refill_canonical(void) {
 int64_t tty_read(size_t size, void *buffer) {
     if (!buffer || size == 0) return 0;
     struct process *reader = process_current();
-    if (reader && console_foreground_pgid > 0 &&
+    if (reader && console_session > 0 && reader->sid == console_session &&
+        console_foreground_pgid > 0 &&
         reader->pgid != (uint64_t)console_foreground_pgid) {
         (void)process_send_signal(-(int64_t)reader->pgid, SIGTTIN);
         return -EINTR;
@@ -729,6 +735,12 @@ int tty_ioctl(unsigned long request, void *argument) {
 
 int tty_foreground_pgid(void) { return console_foreground_pgid; }
 void tty_set_foreground_pgid(int pgid) {
+    console_foreground_pgid = pgid;
+    input_interrupted = 0;
+}
+
+void tty_set_controlling_session(uint64_t sid, int pgid) {
+    console_session = sid;
     console_foreground_pgid = pgid;
     input_interrupted = 0;
 }

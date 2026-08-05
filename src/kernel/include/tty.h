@@ -9,6 +9,7 @@
 #define TCSETS      0x5402UL
 #define TCSETSW     0x5403UL
 #define TCSETSF     0x5404UL
+#define TIOCSCTTY   0x540EUL
 #define TIOCGPGRP   0x540FUL
 #define TIOCSPGRP   0x5410UL
 #define TIOCGWINSZ  0x5413UL
@@ -49,6 +50,9 @@ void tty_init(void);
 int tty_ioctl(unsigned long request, void *argument);
 int tty_foreground_pgid(void);
 void tty_set_foreground_pgid(int pgid);
+/* TIOCSCTTY: the session takes the console, and its leader takes the
+   foreground. Job control is only enforced against this session. */
+void tty_set_controlling_session(uint64_t sid, int pgid);
 int tty_input_ready(void);
 void tty_poll_inputs(void);
 void tty_handle_scancode(uint8_t scancode);

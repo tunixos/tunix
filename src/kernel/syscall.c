@@ -1095,7 +1095,12 @@ static int64_t sys_socket(int domain, int type, int protocol) {
         struct unix_socket *socket =
             unix_socket_create(base_type == TUNIX_SOCK_SEQPACKET);
         if (!socket) return -ENOMEM;
-        unix_socket_set_credentials(socket, process ? (int32_t)process->pid : 0, 0, 0);
+        /* The identity the peer will read back through SO_PEERCRED. D-Bus
+           authenticates with it: a client announces its uid over EXTERNAL and
+           the bus rejects it unless the socket agrees. */
+        unix_socket_set_credentials(socket, process ? (int32_t)process->pid : 0,
+                                    process ? process->cred.euid : 0,
+                                    process ? process->cred.egid : 0);
         struct file *file = file_create_socket(socket);
         if (!file) { unix_socket_unref(socket); return -ENOMEM; }
         file->flags = (uint32_t)(type_flags & SOCK_NONBLOCK);
@@ -1138,8 +1143,10 @@ static int64_t sys_socketpair(int domain, int type, int protocol,
     if (status < 0) return status;
     struct process *process = process_current();
     int32_t pid = process ? (int32_t)process->pid : 0;
-    unix_socket_set_credentials(first, pid, 0, 0);
-    unix_socket_set_credentials(second, pid, 0, 0);
+    uint32_t uid = process ? process->cred.euid : 0;
+    uint32_t gid = process ? process->cred.egid : 0;
+    unix_socket_set_credentials(first, pid, uid, gid);
+    unix_socket_set_credentials(second, pid, uid, gid);
     struct file *first_file = file_create_socket(first);
     struct file *second_file = file_create_socket(second);
     if (!first_file || !second_file) {
@@ -2003,6 +2010,14 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
         int pgid;
         if (copy_from_user(&pgid, user_argument, sizeof(pgid)) != 0) return -EFAULT;
         return tty_ioctl(request, &pgid) == 0 ? 0 : -ENOTTY;
+    }
+    /* login(1) claims the console as its session's controlling terminal before
+       handing it to the user's shell. */
+    if (request == TIOCSCTTY) {
+        struct process *process = process_current();
+        if (!process) return -ENOTTY;
+        tty_set_controlling_session(process->sid, (int)process->pgid);
+        return 0;
     }
     if (request == TIOCGETD || request == TIOCSETD) {
         int discipline = 0;
