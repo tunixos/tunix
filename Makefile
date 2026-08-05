@@ -265,6 +265,12 @@ THUNAR_STAMP := $(PORT_OUT)/.thunar-ready
 # statically so init can never break on a missing loader or libstdc++.
 DINIT_ROOT := $(PORT_OUT)/dinit-root
 DINIT_STAMP := $(PORT_OUT)/.dinit-ready
+# Accounts and privilege: shadow owns /etc/shadow and the login/su/passwd
+# family, sudo is the setuid path to root.
+SHADOW_ROOT := $(PORT_OUT)/shadow-root
+SHADOW_STAMP := $(PORT_OUT)/.shadow-ready
+SUDO_ROOT := $(PORT_OUT)/sudo-root
+SUDO_STAMP := $(PORT_OUT)/.sudo-ready
 BOOT_CONFIG_STAMP := $(BUILD)/.boot-config-ready
 MUSL_SHARED_STAMP := $(PORT_OUT)/.musl-shared-ready
 MBEDTLS_ROOT := $(PORT_OUT)/mbedtls-root
@@ -1056,6 +1062,18 @@ $(GNUMAKE_STAMP): $(BASH) ports/build-make.sh ports/lib/gnu-port.sh | $(BUILD)/.
 	@test -x $(GNUMAKE_ROOT)/usr/bin/make || { echo "make was not produced" >&2; exit 1; }
 	@touch $@
 
+$(SHADOW_STAMP): $(BASH) ports/build-shadow.sh ports/lib/gnu-port.sh | $(BUILD)/.tools
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-shadow.sh
+	@test -x $(SHADOW_ROOT)/bin/login || { echo "shadow login was not produced" >&2; exit 1; }
+	@touch $@
+
+$(SUDO_STAMP): $(BASH) ports/build-sudo.sh ports/lib/gnu-port.sh | $(BUILD)/.tools
+	@mkdir -p $(PORT_OUT)
+	OUT="$(abspath $(PORT_OUT))" bash ports/build-sudo.sh
+	@test -x $(SUDO_ROOT)/usr/bin/sudo || { echo "sudo was not produced" >&2; exit 1; }
+	@touch $@
+
 # iproute2's ip/ss drive the kernel AF_NETLINK/rtnetlink implementation
 # (src/kernel/net/netlink.c). Not an autotools port -- its own configure/make.
 $(IPROUTE2_STAMP): $(BASH) ports/build-iproute2.sh ports/lib/gnu-port.sh | $(BUILD)/.tools
@@ -1328,18 +1346,26 @@ $(SND_TEST): $(BUILD)/user/snd_test.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/snd_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(ALSA_LIB_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(SDL2_STAMP) $(SDL2_NET_STAMP) $(SDL2_MIXER_STAMP) $(CHOCOLATE_DOOM_STAMP) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(ALSA_LIB_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(SDL2_STAMP) $(SDL2_NET_STAMP) $(SDL2_MIXER_STAMP) $(CHOCOLATE_DOOM_STAMP) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
-		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/var/tmp \
-		$(ROOTFS)/home/root/.config $(ROOTFS)/home/root/.cache
-	chmod 1777 $(ROOTFS)/tmp $(ROOTFS)/var/tmp
-	chmod 0700 $(ROOTFS)/run/user/0 $(ROOTFS)/home/root \
-		$(ROOTFS)/home/root/.config $(ROOTFS)/home/root/.cache
+		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/run/user/1000 \
+		$(ROOTFS)/var/tmp $(ROOTFS)/var/log $(ROOTFS)/var/lib/sudo \
+		$(ROOTFS)/root/.config $(ROOTFS)/root/.cache \
+		$(ROOTFS)/home/tunix/.config $(ROOTFS)/home/tunix/.cache \
+		$(ROOTFS)/home/tunix/.local/share $(ROOTFS)/etc/sudoers.d
 	ln -sfn ../run $(ROOTFS)/var/run
 	cp -R initrd/. $(ROOTFS)/
+	cp -R initrd/etc/skel/. $(ROOTFS)/home/tunix/
+	cp -R initrd/etc/skel/. $(ROOTFS)/root/
 	cp -R $(DINIT_ROOT)/. $(ROOTFS)/
 	ln -sfn ../usr/bin/dinit $(ROOTFS)/sbin/init
+	cp -R $(SHADOW_ROOT)/. $(ROOTFS)/
+	cp -R $(SUDO_ROOT)/. $(ROOTFS)/
+	# shadow ships its own login.defs and sudo its own sudoers; both land in
+	# /etc after the initrd copy, so the Tunix versions are put back on top.
+	cp initrd/etc/login.defs $(ROOTFS)/etc/login.defs
+	cp initrd/etc/sudoers $(ROOTFS)/etc/sudoers
 	cp $(BASH) $(ROOTFS)/bin/bash
 	cp $(NANO) $(ROOTFS)/bin/nano
 	cp $(TTY_CLOCK) $(ROOTFS)/bin/tty-clock
@@ -1552,7 +1578,17 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 	@test -x $(ROOTFS)/usr/bin/xfce4-session || { echo "xfce4-session was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfdesktop || { echo "xfdesktop was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfsettingsd || { echo "xfsettingsd was not installed into the rootfs" >&2; exit 1; }
-	@test -x $(ROOTFS)/bin/xfce-session || { echo "the xfce-session launcher was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/tunix-session || { echo "the Tunix session launcher was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/console-login || { echo "the console login wrapper was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/login || { echo "shadow login was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/su || { echo "su was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/passwd || { echo "passwd was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/sbin/useradd || { echo "the shadow account tools were not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/bin/sudo || { echo "sudo was not installed into the rootfs" >&2; exit 1; }
+	@test -x $(ROOTFS)/usr/sbin/visudo || { echo "visudo was not installed into the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/etc/shadow || { echo "/etc/shadow is missing from the rootfs" >&2; exit 1; }
+	@test -f $(ROOTFS)/etc/sudoers || { echo "/etc/sudoers is missing from the rootfs" >&2; exit 1; }
+	@grep -q '^tunix:' $(ROOTFS)/etc/passwd || { echo "the tunix account is missing from /etc/passwd" >&2; exit 1; }
 	@test -x $(ROOTFS)/usr/bin/xfce4-terminal || { echo "xfce4-terminal was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libvte-2.91.so.0 || { echo "vte was not installed into the rootfs" >&2; exit 1; }
 	@test -e $(ROOTFS)/usr/lib/libicuuc.so.77 || { echo "ICU (libvte's Unicode dependency) was not installed into the rootfs" >&2; exit 1; }
@@ -1576,7 +1612,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUT
 		$(ROOTFS)/etc/rc.d/rcS $(ROOTFS)/etc/rc.d/rc.keymap \
 		$(ROOTFS)/bin/bash $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/tty-clock $(ROOTFS)/bin/tty-tetris $(ROOTFS)/bin/htop \
-		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/startx $(ROOTFS)/bin/fb-shot $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
+		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/startx $(ROOTFS)/bin/tunix-session $(ROOTFS)/bin/console-login $(ROOTFS)/bin/fb-shot $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
 		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test $(ROOTFS)/bin/snd-test \
 		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/fastfetch \
 		$(ROOTFS)/usr/bin/browse \

@@ -1,0 +1,6 @@
+#!/bin/sh
+# What a getty would do on a machine with virtual terminals: put the console on
+# the standard descriptors and hand it to login(1). dinit restarts this when the
+# session ends, so logging out brings the prompt back.
+exec </dev/console >/dev/console 2>&1
+exec /bin/login

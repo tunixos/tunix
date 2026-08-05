@@ -1,7 +1,8 @@
-# Loaded by dinit (PID 1) at startup; every service inherits these. This is
-# the environment the old C init exported before spawning the shell.
-PATH=/bin:/usr/bin
-HOME=/home/root
+# Loaded by dinit (PID 1) at startup; every service inherits these. Services
+# run as root, so this is root's environment -- a user session gets its own
+# from login(1) and /etc/profile instead.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+HOME=/root
 SHELL=/bin/bash
 USER=root
 LOGNAME=root
@@ -9,5 +10,5 @@ LANG=C.UTF-8
 TERM=tunix-256color
 TERMINFO=/usr/share/terminfo
 XDG_RUNTIME_DIR=/run/user/0
-XDG_CONFIG_HOME=/home/root/.config
-XDG_CACHE_HOME=/home/root/.cache
+XDG_CONFIG_HOME=/root/.config
+XDG_CACHE_HOME=/root/.cache

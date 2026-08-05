@@ -1,12 +1,17 @@
-export PATH=/usr/bin:/usr/sbin:/bin:/sbin
-export HOME=/home
-export USER=root
-export LOGNAME=root
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export SHELL=/bin/bash
 export TERM=tunix-256color
 export TERMINFO=/usr/share/terminfo
 export COLORTERM=truecolor
 export INPUTRC=/etc/inputrc
-export HISTFILE=/home/.bash_history
+export HISTFILE="${HOME:-/tmp}/.bash_history"
 [ -r /etc/bashrc ] && . /etc/bashrc
 [ -r /etc/motd ] && cat /etc/motd
+
+# The console login is what starts the desktop: a login shell with no display
+# of its own, on a machine where no X server is running yet, is the one on the
+# console. A login shell inside a terminal emulator sees the socket and stays a
+# shell.
+if [ -z "${DISPLAY:-}" ] && [ ! -e /tmp/.X11-unix/X0 ] && [ -x /bin/tunix-session ]; then
+    exec /bin/tunix-session
+fi
