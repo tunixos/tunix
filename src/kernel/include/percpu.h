@@ -51,5 +51,6 @@ struct cpu *percpu_slot(unsigned index);
 void percpu_activate(unsigned index);
 unsigned percpu_online_count(void);
 void percpu_mark_online(unsigned index);
+uint64_t percpu_boot_stack(unsigned index);
 
 #endif

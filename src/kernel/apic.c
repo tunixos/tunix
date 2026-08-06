@@ -18,6 +18,7 @@
 #include "include/acpi.h"
 #include "include/apic.h"
 #include "include/pic.h"
+#include "include/time.h"
 #include "include/vmm.h"
 
 extern void kprintf(const char *fmt, ...);
@@ -31,6 +32,30 @@ extern void kprintf(const char *fmt, ...);
 #define LAPIC_ID 0x020U
 #define LAPIC_EOI 0x0B0U
 #define LAPIC_SPURIOUS 0x0F0U
+/* The interrupt command register, which is how one processor talks to
+   another. The high half names the destination and must be written first:
+   writing the low half is what sends. */
+#define LAPIC_ICR_LOW 0x300U
+#define LAPIC_ICR_HIGH 0x310U
+#define LAPIC_LVT_TIMER 0x320U
+#define LAPIC_TIMER_INITIAL 0x380U
+#define LAPIC_TIMER_CURRENT 0x390U
+#define LAPIC_TIMER_DIVIDE 0x3E0U
+
+#define ICR_DELIVERY_PENDING (1U << 12)
+#define ICR_LEVEL_ASSERT (1U << 14)
+#define ICR_MODE_INIT (5U << 8)
+#define ICR_MODE_STARTUP (6U << 8)
+#define ICR_SHORTHAND_OTHERS (3U << 18)
+#define ICR_DESTINATION_SHIFT 24U
+
+#define LVT_MASKED (1U << 16)
+#define LVT_PERIODIC (1U << 17)
+/* Divide by 16. The encoding scatters its three bits, which is why it is not
+   the number it looks like. */
+#define TIMER_DIVIDE_16 0x3U
+#define TIMER_DIVISOR 16U
+#define CALIBRATION_MS 20ULL
 #define LAPIC_SPURIOUS_ENABLE (1U << 8)
 /* The vector delivered when an interrupt is withdrawn before it is taken. It
    must have its low four bits set on some older parts, so 0xFF it is. */
@@ -121,6 +146,84 @@ void apic_send_eoi(void) {
 }
 
 int apic_is_active(void) { return active; }
+
+static void lapic_write(uint32_t offset, uint32_t value) {
+    local_apic[offset / sizeof(uint32_t)] = value;
+}
+
+static uint32_t lapic_read(uint32_t offset) {
+    return local_apic[offset / sizeof(uint32_t)];
+}
+
+/* Whichever processor asks -- the register is one address that answers
+   differently on each of them, which is the whole point of it. */
+uint32_t apic_local_id(void) {
+    return active ? lapic_read(LAPIC_ID) >> LAPIC_ID_SHIFT : 0;
+}
+
+/* Until this bit is set the processor accepts nothing at all, and every
+   processor has to set its own. */
+void apic_enable_local(void) {
+    if (!active) return;
+    lapic_write(LAPIC_SPURIOUS, LAPIC_SPURIOUS_ENABLE | LAPIC_SPURIOUS_VECTOR);
+}
+
+static void wait_for_delivery(void) {
+    while (lapic_read(LAPIC_ICR_LOW) & ICR_DELIVERY_PENDING) __asm__ volatile("pause");
+}
+
+static void send_command(uint32_t destination, uint32_t command) {
+    lapic_write(LAPIC_ICR_HIGH, destination << ICR_DESTINATION_SHIFT);
+    lapic_write(LAPIC_ICR_LOW, command);
+    wait_for_delivery();
+}
+
+void apic_send_init(uint32_t apic_id) {
+    if (active) send_command(apic_id, ICR_MODE_INIT | ICR_LEVEL_ASSERT);
+}
+
+/* The vector is a page number, not an address: the processor starts executing
+   in real mode at vector * 4096. */
+void apic_send_startup(uint32_t apic_id, uint8_t page) {
+    if (active) send_command(apic_id, ICR_MODE_STARTUP | ICR_LEVEL_ASSERT | page);
+}
+
+void apic_send_ipi_to_others(uint8_t vector) {
+    if (!active) return;
+    lapic_write(LAPIC_ICR_LOW, ICR_SHORTHAND_OTHERS | ICR_LEVEL_ASSERT | vector);
+    wait_for_delivery();
+}
+
+/*
+ * The local timer, which is the only clock an application processor has: the
+ * PIT is a single device wired to one processor, so every other one is
+ * preempted by this instead.
+ *
+ * Its rate is the bus clock divided down, and nothing reports what that is, so
+ * it is measured against the TSC -- counting down from the top for a known
+ * number of milliseconds and seeing how far it got.
+ */
+void apic_timer_start(uint32_t hz, uint8_t vector) {
+    if (!active || !hz) return;
+
+    lapic_write(LAPIC_TIMER_DIVIDE, TIMER_DIVIDE_16);
+    lapic_write(LAPIC_LVT_TIMER, LVT_MASKED);
+    lapic_write(LAPIC_TIMER_INITIAL, 0xFFFFFFFFU);
+
+    uint64_t deadline = time_uptime_ns() + CALIBRATION_MS * 1000000ULL;
+    while (time_uptime_ns() < deadline) __asm__ volatile("pause");
+
+    uint32_t remaining = lapic_read(LAPIC_TIMER_CURRENT);
+    lapic_write(LAPIC_TIMER_INITIAL, 0);
+
+    uint64_t elapsed = 0xFFFFFFFFULL - remaining;
+    uint64_t per_second = (elapsed * 1000ULL) / CALIBRATION_MS;
+    uint32_t count = per_second > hz ? (uint32_t)(per_second / hz) : 1U;
+
+    lapic_write(LAPIC_TIMER_DIVIDE, TIMER_DIVIDE_16);
+    lapic_write(LAPIC_LVT_TIMER, LVT_PERIODIC | vector);
+    lapic_write(LAPIC_TIMER_INITIAL, count);
+}
 
 int apic_init(void) {
     const struct acpi_machine *machine = acpi_describe_machine();

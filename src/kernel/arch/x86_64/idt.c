@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "../../include/idt.h"
+#include "../../include/smp.h"
 
 struct idt_entry {
     uint16_t base_low;
@@ -66,6 +67,7 @@ extern void isr31(void);
 extern void irq0(void);
 extern void irq1(void);
 extern void irq12(void);
+extern void irq_lapic_timer(void);
 
 void idt_init(void) {
     idtp.limit = (sizeof(struct idt_entry) * 256) - 1;
@@ -110,6 +112,7 @@ void idt_init(void) {
     idt_set_gate(32, (uint64_t)irq0, 0x08, 0x8E, 0);
     idt_set_gate(33, (uint64_t)irq1, 0x08, 0x8E, 0);
     idt_set_gate(44, (uint64_t)irq12, 0x08, 0x8E, 0);
+    idt_set_gate(SMP_TIMER_VECTOR, (uint64_t)irq_lapic_timer, 0x08, 0x8E, 0);
 
     idt_load((uint64_t)&idtp);
 }

@@ -37,6 +37,13 @@ void percpu_activate(unsigned index) {
     write_msr(IA32_KERNEL_GS_BASE, 0);
 }
 
+/* The stack a processor starts on, wanted before it exists and so before it
+   can be asked for its own. */
+uint64_t percpu_boot_stack(unsigned index) {
+    if (index >= SMP_MAX_CPUS) return 0;
+    return (uint64_t)(idle_stacks[index] + IDLE_STACK_BYTES);
+}
+
 void percpu_mark_online(unsigned index) {
     if (index < SMP_MAX_CPUS) cpus[index].online = 1;
 }

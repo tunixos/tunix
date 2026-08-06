@@ -1,6 +1,8 @@
 #ifndef TUNIX_APIC_H
 #define TUNIX_APIC_H
 
+#include <stdint.h>
+
 /* Enable the local APIC, mask the 8259 pair, and take over delivery. Returns
    -1 on a machine whose tables do not describe an IOAPIC, where the caller
    should stay on the PIC. */
@@ -19,5 +21,22 @@ int apic_route_legacy_irq(unsigned irq);
    reading its own routing, once there is anything that does. */
 int apic_route_irq(unsigned global, unsigned vector, int active_low,
                    int level_triggered);
+
+/* The identity of whichever processor asks. */
+uint32_t apic_local_id(void);
+/* Every processor has to enable its own local APIC before it can be sent
+   anything, including a timer interrupt of its own. */
+void apic_enable_local(void);
+
+/* Waking another processor: an INIT resets it, and a startup names the page it
+   begins executing at, in real mode. */
+void apic_send_init(uint32_t apic_id);
+void apic_send_startup(uint32_t apic_id, uint8_t page);
+/* To every processor except the one sending, without naming any of them. */
+void apic_send_ipi_to_others(uint8_t vector);
+
+/* The per-processor timer, measured against the TSC because nothing reports
+   the rate it counts at. */
+void apic_timer_start(uint32_t hz, uint8_t vector);
 
 #endif

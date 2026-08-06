@@ -28,6 +28,7 @@
 #include "include/vmm.h"
 #include "include/acpi.h"
 #include "include/apic.h"
+#include "include/smp.h"
 #include "include/xhci.h"
 
 #define INITRAMFS_PHYSICAL 0x02000000ULL
@@ -196,6 +197,10 @@ void kmain(uint32_t mmap_count, uint64_t mmap_address, uint64_t manifest_address
     if (!process_create_from_path("/sbin/init")) panic("cannot create /sbin/init");
     timer_init();
     if (apic_is_active()) apic_route_legacy_irq(0U); else pic_unmask(0U);
+    /* Last, and after the timer: the processors this starts come up idle and
+       start taking work off the queue immediately, so everything they might
+       touch has to already exist. */
+    smp_init();
 #if TUNIX_BOOT_TIMINGS
     boot_log_stage("devices/process/init ELF", &stage_started);
     boot_log_cycles("kernel boot total", boot_read_tsc() - boot_started);

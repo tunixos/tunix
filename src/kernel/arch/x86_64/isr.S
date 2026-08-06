@@ -330,3 +330,12 @@ irq12:
     push 0
     push 44
     jmp isr_common_stub
+
+/* The local APIC timer, which is what preempts every processor the PIT is not
+   wired to. */
+.global irq_lapic_timer
+irq_lapic_timer:
+    cli
+    push 0
+    push 0xF0
+    jmp isr_common_stub

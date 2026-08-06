@@ -6,6 +6,7 @@
 #include "../../include/apic.h"
 #include "../../include/process.h"
 #include "../../include/signal.h"
+#include "../../include/smp.h"
 #include "../../include/timer.h"
 
 extern void kprintf(const char *fmt, ...);
@@ -50,6 +51,11 @@ static void isr_dispatch(struct interrupt_frame *regs) {
     if (regs->int_no == PIC_MASTER_VECTOR) {
         interrupt_acknowledge((unsigned)regs->int_no);
         timer_irq(regs);
+        return;
+    }
+    if (regs->int_no == SMP_TIMER_VECTOR) {
+        apic_send_eoi();
+        process_timer_interrupt(regs);
         return;
     }
     if (regs->int_no == PIC_MASTER_VECTOR + 1U ||
