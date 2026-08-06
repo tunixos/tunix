@@ -622,8 +622,8 @@ static int switch_to_next(struct syscall_frame *frame, struct process *after) {
 /*
  * Nothing left to run here. The processor drops the process it was holding,
  * goes back to the kernel address space so the process's own can be torn down,
- * and parks on its idle stack with interrupts on. Its next timer tick -- or a
- * reschedule from another processor -- is what wakes it up with work.
+ * and parks on its idle stack with interrupts on. Its next timer tick is what
+ * wakes it up with work.
  *
  * The kernel stack it was using is abandoned rather than unwound: everything
  * worth keeping is already in the process, which is the same reason a blocking
@@ -1471,6 +1471,21 @@ int process_futex_wake(uint64_t address, int maximum) {
  * gigabyte each, and their sockets open, so the helper processes on the far
  * end never saw the end-of-file that tells them to exit either.
  */
+/*
+ * Take the rest of the thread group down with this thread.
+ *
+ * A sibling that is PROCESS_RUNNING is loaded on another processor and is
+ * executing its own user code right now. Tearing it down from here -- closing
+ * its files, marking it dead so it can be reaped and its address space freed --
+ * pulls the ground out from under a thread that is still standing on it, and
+ * the first thing that processor does with it turns into a kernel panic rather
+ * than a signal. On one processor the case could not arise: a sibling was
+ * always ready or blocked, never actually executing.
+ *
+ * So such a thread is told to leave instead of being made to. It reads the flag
+ * on its own next return to user mode -- its own timer tick at the latest --
+ * and runs the same exit path it would have run for itself.
+ */
 static void terminate_sibling_threads(int status) {
     if (!current || !queue) return;
     uint64_t group = current->tgid;
@@ -1478,6 +1493,11 @@ static void terminate_sibling_threads(int status) {
     do {
         if (item != current && item->tgid == group && item->state != PROCESS_DEAD) {
             item->exit_status = status;
+            if (item->state == PROCESS_RUNNING) {
+                item->group_exit_pending = 1;
+                item = item->next;
+                continue;
+            }
             process_handle_robust_list(item);
             if (item->clear_child_tid_user) {
                 uint64_t clear_address = item->clear_child_tid_user;
@@ -1853,7 +1873,15 @@ static int on_signal_stack(const struct process *process, uint64_t user_rsp) {
 }
 
 void process_prepare_user_return(struct syscall_frame *frame) {
-    if (!current || !frame || current->state != PROCESS_RUNNING || current->in_signal) return;
+    if (!current || !frame || current->state != PROCESS_RUNNING) return;
+    /* Before signals, and regardless of in_signal: the group is already gone
+       and there is nothing left for a handler to run on. */
+    if (current->group_exit_pending) {
+        current->group_exit_pending = 0;
+        process_exit_from_syscall(frame, current->exit_status);
+        return;
+    }
+    if (current->in_signal) return;
     int signal_number = next_pending_signal(current);
     if (!signal_number) return;
     uint64_t bit = signal_bit(signal_number);

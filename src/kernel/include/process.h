@@ -99,6 +99,10 @@ struct process {
     uint64_t cr3;
     struct process_memory *memory;
     int is_thread;
+    /* Set by another thread of the group that has exited, when this one was
+       running on a different processor and so could not be torn down from
+       there. It leaves on its own next return to user mode. */
+    int group_exit_pending;
     uint64_t entry;
     uint64_t user_stack_top;
     uint64_t kernel_stack_base;
