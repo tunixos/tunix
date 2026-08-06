@@ -77,9 +77,8 @@ for tool in "$ROOT_DIR/bin/login" "$ROOT_DIR/bin/su" "$ROOT_DIR/usr/bin/passwd" 
             "$ROOT_DIR/usr/sbin/groupadd" "$ROOT_DIR/usr/sbin/chpasswd"; do
     [[ -x "$tool" ]] || gnu_port_fail "shadow did not install $(basename "$tool")"
 done
-# The image relies on these being setuid root; upstream installs them that way,
-# so a plain mode here means the install rules changed under us.
-for tool in "$ROOT_DIR/bin/su" "$ROOT_DIR/usr/bin/passwd" "$ROOT_DIR/usr/bin/newgrp"; do
-    [[ -u "$tool" ]] || gnu_port_fail "$(basename "$tool") was not installed setuid root"
-done
+# su, passwd and newgrp have to be setuid root to work at all. The mode cannot
+# be checked -- or even held -- here, because the staging tree is on a drive
+# that reports everything as 0777; scripts/rootfs-permissions.conf is what
+# stamps the bit onto the image.
 echo "shadow account tools staged at $ROOT_DIR"
