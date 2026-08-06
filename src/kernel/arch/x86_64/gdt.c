@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "../../include/gdt.h"
+#include "../../include/percpu.h"
 
 struct gdt_entry {
     uint16_t limit_low;
@@ -27,18 +28,34 @@ struct gdt_ptr {
     uint64_t base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt[7];
-static struct tss_entry tss;
-static struct gdt_ptr gp;
+/*
+ * A GDT and a TSS per processor.
+ *
+ * The descriptors are identical everywhere and could be shared, but the TSS
+ * cannot be: rsp0 is the kernel stack the processor switches to when an
+ * interrupt arrives from user mode, and that is whichever process *this*
+ * processor is running. One shared TSS would send two processors into the same
+ * kernel stack the moment they both took an interrupt. The task register also
+ * marks its TSS descriptor busy, and a second `ltr` on the same descriptor
+ * faults, so the descriptor has to be private as well.
+ */
+struct cpu_tables {
+    struct gdt_entry gdt[7];
+    struct tss_entry tss;
+    struct gdt_ptr pointer;
+};
+
+static struct cpu_tables tables[SMP_MAX_CPUS];
 
 extern void gdt_flush(uint64_t);
 extern void tss_flush(void);
 
 void set_kernel_stack(uint64_t stack) {
-    tss.rsp0 = stack;
+    tables[cpu_current()->index].tss.rsp0 = stack;
 }
 
-static void gdt_set_gate(int num, uint64_t base, uint32_t limit, uint8_t access, uint8_t gran) {
+static void gdt_set_gate(struct gdt_entry *gdt, int num, uint64_t base,
+                         uint32_t limit, uint8_t access, uint8_t gran) {
     gdt[num].base_low = (base & 0xFFFF);
     gdt[num].base_middle = (base >> 16) & 0xFF;
     gdt[num].base_high = (base >> 24) & 0xFF;
@@ -47,8 +64,8 @@ static void gdt_set_gate(int num, uint64_t base, uint32_t limit, uint8_t access,
     gdt[num].access = access;
 }
 
-static void gdt_set_tss(int num, uint64_t base, uint32_t limit) {
-    gdt_set_gate(num, base, limit, 0x89, 0x00);
+static void gdt_set_tss(struct gdt_entry *gdt, int num, uint64_t base, uint32_t limit) {
+    gdt_set_gate(gdt, num, base, limit, 0x89, 0x00);
     struct gdt_entry *tss_high = (struct gdt_entry *)&gdt[num + 1];
     uint64_t base_high = base >> 32;
     tss_high->limit_low = base_high & 0xFFFF;
@@ -59,24 +76,30 @@ static void gdt_set_tss(int num, uint64_t base, uint32_t limit) {
     tss_high->base_high = 0;
 }
 
-void gdt_init(void) {
-    gp.limit = (sizeof(struct gdt_entry) * 7) - 1;
-    gp.base = (uint64_t)&gdt;
+void gdt_init_cpu(unsigned index) {
+    if (index >= SMP_MAX_CPUS) return;
+    struct cpu_tables *self = &tables[index];
+    struct gdt_entry *gdt = self->gdt;
 
-    gdt_set_gate(0, 0, 0, 0, 0);
-    gdt_set_gate(1, 0, 0xFFFFF, 0x9A, 0x20);
-    gdt_set_gate(2, 0, 0xFFFFF, 0x92, 0x00);
-    gdt_set_gate(3, 0, 0xFFFFF, 0xF2, 0x00);
-    gdt_set_gate(4, 0, 0xFFFFF, 0xFA, 0x20);
+    self->pointer.limit = (sizeof(struct gdt_entry) * 7) - 1;
+    self->pointer.base = (uint64_t)gdt;
 
-    uint64_t tss_base = (uint64_t)&tss;
-    uint32_t tss_limit = sizeof(tss) - 1;
-    
-    __builtin_memset(&tss, 0, sizeof(tss));
-    tss.iopb_offset = sizeof(tss);
-    
-    gdt_set_tss(5, tss_base, tss_limit);
+    gdt_set_gate(gdt, 0, 0, 0, 0, 0);
+    gdt_set_gate(gdt, 1, 0, 0xFFFFF, 0x9A, 0x20);
+    gdt_set_gate(gdt, 2, 0, 0xFFFFF, 0x92, 0x00);
+    gdt_set_gate(gdt, 3, 0, 0xFFFFF, 0xF2, 0x00);
+    gdt_set_gate(gdt, 4, 0, 0xFFFFF, 0xFA, 0x20);
 
-    gdt_flush((uint64_t)&gp);
+    __builtin_memset(&self->tss, 0, sizeof(self->tss));
+    self->tss.iopb_offset = sizeof(self->tss);
+    gdt_set_tss(gdt, 5, (uint64_t)&self->tss, sizeof(self->tss) - 1);
+
+    gdt_flush((uint64_t)&self->pointer);
     tss_flush();
+    /* After the flush, not before: a segment load clears the GS base. */
+    percpu_activate(index);
+}
+
+void gdt_init(void) {
+    gdt_init_cpu(0);
 }

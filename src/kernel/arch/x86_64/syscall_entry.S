@@ -1,25 +1,26 @@
 .intel_syntax noprefix
-.section .bss
-.align 16
-syscall_kernel_rsp:
-    .quad 0
-syscall_user_rsp:
-    .quad 0
-
 .section .text
 .global syscall_entry
-.global syscall_set_kernel_stack
 .global process_enter_user
 .extern syscall_dispatch
+
+/* struct cpu, as percpu.h lays it out. */
+.set CPU_KERNEL_RSP, 0
+.set CPU_USER_RSP, 8
 
 /*
  * SYSCALL overwrites RCX with the return RIP and R11 with RFLAGS.  Tunix uses
  * an iretq return path so the scheduler can resume contexts captured either by
  * SYSCALL or by a timer interrupt with one common process frame.
+ *
+ * The stack to switch to is per-processor and has to be found before there is
+ * a stack to find it with, which is what GS is for: swapgs brings this
+ * processor's block into reach without touching a register the caller owns.
  */
 syscall_entry:
-    mov qword ptr [rip + syscall_user_rsp], rsp
-    mov rsp, qword ptr [rip + syscall_kernel_rsp]
+    swapgs
+    mov qword ptr gs:[CPU_USER_RSP], rsp
+    mov rsp, qword ptr gs:[CPU_KERNEL_RSP]
     test rsp, rsp
     jz syscall_fatal
 
@@ -43,7 +44,7 @@ syscall_entry:
     mov qword ptr [rsp + 112], r11
     mov qword ptr [rsp + 120], rcx
     mov qword ptr [rsp + 128], r11
-    mov rax, qword ptr [rip + syscall_user_rsp]
+    mov rax, qword ptr gs:[CPU_USER_RSP]
     mov qword ptr [rsp + 136], rax
 
     mov rdi, rsp
@@ -72,6 +73,7 @@ syscall_entry:
     mov rax, qword ptr [r11 + 96]
     mov rcx, qword ptr [r11 + 104]
     mov r11, qword ptr [r11 + 112]
+    swapgs
     iretq
 
 syscall_fatal:
@@ -80,14 +82,13 @@ syscall_fatal:
     hlt
     jmp 1b
 
-syscall_set_kernel_stack:
-    mov qword ptr [rip + syscall_kernel_rsp], rdi
-    ret
-
 process_enter_user:
     cli
     mov rax, rdx
     mov cr3, rax
+    /* Before the segment loads, because loading GS clears its base and the
+       block must be moved to the kernel side while it is still reachable. */
+    swapgs
     mov ax, 0x1b
     mov ds, ax
     mov es, ax

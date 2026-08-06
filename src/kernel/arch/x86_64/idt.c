@@ -113,3 +113,13 @@ void idt_init(void) {
 
     idt_load((uint64_t)&idtp);
 }
+
+/* The table itself is shared -- every processor answers the same vectors with
+   the same handlers -- but each has its own IDTR to point at it. */
+void idt_activate(void) {
+    idt_load((uint64_t)&idtp);
+}
+
+void idt_set_handler(uint8_t vector, void (*handler)(void)) {
+    idt_set_gate(vector, (uint64_t)handler, 0x08, 0x8E, 0);
+}

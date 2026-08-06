@@ -245,7 +245,19 @@ isr31:
     push 31
     jmp isr_common_stub
 
+/*
+ * Whether GS has to be swapped is decided by the privilege the frame came
+ * from, and on the way out by the privilege it is going to -- which are not
+ * always the same frame. An interrupt taken in the idle loop arrives at CPL 0
+ * with the block already in GS, and leaves through a process's frame at CPL 3,
+ * so it swaps on the way out and not on the way in. Reading each end's own CS
+ * is what makes that work without a special case.
+ */
 isr_common_stub:
+    test byte ptr [rsp + 24], 3
+    jz 1f
+    swapgs
+1:
     push r15
     push r14
     push r13
@@ -289,6 +301,10 @@ isr_common_stub:
     pop r14
     pop r15
     add rsp, 16
+    test byte ptr [rsp + 8], 3
+    jz 2f
+    swapgs
+2:
     iretq
 
 /* Legacy 8259 PIC IRQ0 timer, remapped to IDT vector 0x20. */

@@ -7,6 +7,7 @@
 #include "include/heap.h"
 #include "include/interrupt.h"
 #include "include/kstring.h"
+#include "include/percpu.h"
 #include "include/pmm.h"
 #include "include/process.h"
 #include "include/procfs.h"
@@ -44,8 +45,17 @@ extern void panic(const char *msg) __attribute__((noreturn));
 #endif
 
 static struct process *queue;
-static struct process *current;
 static uint64_t next_pid = 1;
+
+/*
+ * The running process, which is a different one on every processor.
+ *
+ * A macro rather than an accessor because it is written as often as it is
+ * read, and because reading it must never be hoisted across a context switch:
+ * `current` after activate_process() is the process that just came in, not the
+ * one that went out, and the GS-relative load makes that literally true.
+ */
+#define current (cpu_current()->current)
 
 static void signal_one_process(struct process *target, int signal_number);
 
