@@ -8,6 +8,10 @@
    extras silently would be a lie. */
 #define ACPI_MAX_IO_APICS 4U
 #define ACPI_MAX_OVERRIDES 16U
+/* The MADT may list more; the extras are counted and dropped, and the count is
+   what /proc/cpuinfo reports, so an over-long table is visible rather than
+   silently rounded down. */
+#define ACPI_MAX_CPUS 32U
 
 struct acpi_io_apic {
     uint8_t id;
@@ -26,9 +30,21 @@ struct acpi_override {
     uint8_t level_triggered;
 };
 
+/* One processor the firmware says exists. `apic_id` is what an INIT/SIPI pair
+   is addressed to, and it is not the index: firmware is free to number the
+   processors however it likes, and on a machine with hyperthreading disabled
+   in the BIOS the ids that remain are not contiguous. */
+struct acpi_cpu {
+    uint8_t acpi_id;
+    uint8_t apic_id;
+    uint8_t usable;
+};
+
 struct acpi_machine {
     uint32_t local_apic;
     uint32_t cpu_count;
+    uint32_t cpu_listed;
+    struct acpi_cpu cpus[ACPI_MAX_CPUS];
     uint32_t io_apic_count;
     struct acpi_io_apic io_apics[ACPI_MAX_IO_APICS];
     uint32_t override_count;

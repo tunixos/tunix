@@ -34,6 +34,13 @@ extern uint64_t tunix_boot_rsdp(void);
 #define MADT_IO_APIC 1U
 #define MADT_INTERRUPT_OVERRIDE 2U
 
+/* A processor entry describes a socket that may be empty. Enabled means it is
+   there and running; online-capable means the firmware could bring it up
+   later. Anything with neither bit is a hole in the table, and sending it an
+   INIT would wait for a processor that never answers. */
+#define MADT_CPU_ENABLED 1U
+#define MADT_CPU_ONLINE_CAPABLE 2U
+
 #define MADT_HEADER_BYTES 44U
 #define MADT_LOCAL_APIC_ADDRESS_OFFSET 36U
 
@@ -144,7 +151,13 @@ static void parse_madt(const struct acpi_header *madt) {
                 ((flags >> OVERRIDE_TRIGGER_SHIFT) & OVERRIDE_TRIGGER_MASK) ==
                 OVERRIDE_TRIGGER_LEVEL;
         } else if (type == MADT_LOCAL_APIC) {
-            machine.cpu_count++;
+            machine.cpu_listed++;
+            if (machine.cpu_count >= ACPI_MAX_CPUS) { offset += length; continue; }
+            uint32_t flags = *(const uint32_t *)(entry + 4);
+            struct acpi_cpu *cpu = &machine.cpus[machine.cpu_count++];
+            cpu->acpi_id = entry[2];
+            cpu->apic_id = entry[3];
+            cpu->usable = (flags & (MADT_CPU_ENABLED | MADT_CPU_ONLINE_CAPABLE)) != 0;
         }
         offset += length;
     }
@@ -200,6 +213,9 @@ const struct acpi_machine *acpi_describe_machine(void) {
     parse_madt(madt);
     if (!machine.local_apic || !machine.io_apic_count) return NULL;
 
+    if (machine.cpu_listed > machine.cpu_count)
+        kprintf("ACPI: table lists %u cpus, only %u recorded\n",
+                (unsigned)machine.cpu_listed, (unsigned)machine.cpu_count);
     kprintf("ACPI: %u cpu(s), local apic at %x, %u ioapic(s), %u override(s)\n",
             (unsigned)machine.cpu_count, (unsigned)machine.local_apic,
             (unsigned)machine.io_apic_count, (unsigned)machine.override_count);
