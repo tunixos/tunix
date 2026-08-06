@@ -6,6 +6,7 @@
 #include "include/pmm.h"
 #include "include/process.h"
 #include "include/procfs.h"
+#include "include/smp.h"
 #include "include/time.h"
 #include "include/vfs.h"
 #include "include/vmm.h"
@@ -106,20 +107,27 @@ static int64_t proc_cpuinfo_read(struct vfs_node *node, uint64_t offset,
     cpu_model(model);
     uint64_t frequency = time_tsc_frequency();
 
-    text_string(&text, "processor\t: 0\n");
-    text_string(&text, "vendor_id\t: "); text_string(&text, vendor); text_char(&text, '\n');
-    text_string(&text, "model name\t: "); text_string(&text, model); text_char(&text, '\n');
-    text_string(&text, "cpu MHz\t\t: ");
-    text_unsigned(&text, frequency / 1000000ULL);
-    text_char(&text, '.');
-    uint64_t fraction = (frequency % 1000000ULL) / 1000ULL;
-    if (fraction < 100) text_char(&text, '0');
-    if (fraction < 10) text_char(&text, '0');
-    text_unsigned(&text, fraction);
-    text_char(&text, '\n');
-    text_string(&text, "cpu cores\t: 1\n");
-    text_string(&text, "address sizes\t: 48 bits virtual\n");
-    text_string(&text, "flags\t\t: fpu tsc msr pae apic mtrr cmov pat mmx fxsr sse sse2 syscall nx lm\n");
+    /* One stanza per running processor. Everything but the number is the same
+       on all of them, and a reader that counts stanzas -- which is what
+       nproc, make -j and every thread pool do -- has to see them all. */
+    unsigned cpus = smp_cpu_count();
+    for (unsigned index = 0; index < cpus; index++) {
+        text_string(&text, "processor\t: "); text_unsigned(&text, index); text_char(&text, '\n');
+        text_string(&text, "vendor_id\t: "); text_string(&text, vendor); text_char(&text, '\n');
+        text_string(&text, "model name\t: "); text_string(&text, model); text_char(&text, '\n');
+        text_string(&text, "cpu MHz\t\t: ");
+        text_unsigned(&text, frequency / 1000000ULL);
+        text_char(&text, '.');
+        uint64_t fraction = (frequency % 1000000ULL) / 1000ULL;
+        if (fraction < 100) text_char(&text, '0');
+        if (fraction < 10) text_char(&text, '0');
+        text_unsigned(&text, fraction);
+        text_char(&text, '\n');
+        text_string(&text, "cpu cores\t: "); text_unsigned(&text, cpus); text_char(&text, '\n');
+        text_string(&text, "address sizes\t: 48 bits virtual\n");
+        text_string(&text, "flags\t\t: fpu tsc msr pae apic mtrr cmov pat mmx fxsr sse sse2 syscall nx lm\n");
+        text_char(&text, '\n');
+    }
     return text_read(&text, offset, size, output);
 }
 
@@ -186,11 +194,17 @@ static int64_t proc_stat_read(struct vfs_node *node, uint64_t offset,
     text_string(&text, "cpu  "); text_unsigned(&text, runtime_ticks);
     text_string(&text, " 0 0 "); text_unsigned(&text, idle_ticks);
     text_string(&text, " 0 0 0 0 0 0\n");
-    /* Tunix is uniprocessor, but the aggregate "cpu" line alone leaves per-CPU
-       consumers (htop's CPU meter) reading zeroes, so mirror it as cpu0. */
-    text_string(&text, "cpu0 "); text_unsigned(&text, runtime_ticks);
-    text_string(&text, " 0 0 "); text_unsigned(&text, idle_ticks);
-    text_string(&text, " 0 0 0 0 0 0\n");
+    /* The aggregate line alone leaves per-CPU consumers (htop's CPU meter)
+       reading zeroes, so each processor gets a line. The kernel does not
+       account time per processor, so each gets an even share of the total
+       rather than a made-up one. */
+    unsigned cpus = smp_cpu_count();
+    for (unsigned index = 0; index < cpus; index++) {
+        text_string(&text, "cpu"); text_unsigned(&text, index); text_char(&text, ' ');
+        text_unsigned(&text, runtime_ticks / cpus);
+        text_string(&text, " 0 0 "); text_unsigned(&text, idle_ticks / cpus);
+        text_string(&text, " 0 0 0 0 0 0\n");
+    }
     uint64_t now = time_epoch_seconds();
     uint64_t uptime_seconds = time_uptime_ns() / 1000000000ULL;
     text_string(&text, "btime ");

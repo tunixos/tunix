@@ -14,6 +14,7 @@
 #include "include/heap.h"
 #include "include/klock.h"
 #include "include/percpu.h"
+#include "include/smp.h"
 #include "include/kstring.h"
 #include "include/pipe.h"
 #include "include/pty.h"
@@ -85,6 +86,8 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_PIPE 22
 #define SYS_SELECT 23
 #define SYS_SCHED_YIELD 24
+#define SYS_SCHED_SETAFFINITY 203
+#define SYS_SCHED_GETAFFINITY 204
 #define SYS_EPOLL_CREATE 213
 #define SYS_DUP 32
 #define SYS_DUP2 33
@@ -3533,6 +3536,31 @@ static int64_t sys_getrandom(uint64_t user_buffer, size_t length, unsigned flags
     return (int64_t)completed;
 }
 
+/*
+ * The set of processors a task may run on, which is all of them.
+ *
+ * nproc, and every thread pool that sizes itself, asks this before it looks at
+ * /proc/cpuinfo -- so a kernel that answers ENOSYS here reports one processor
+ * however many it is running. The return value is the number of bytes written,
+ * not zero, which is the part callers actually read.
+ */
+static int64_t sys_sched_getaffinity(size_t size, uint64_t user_mask) {
+    if (!user_mask) return -EFAULT;
+    if (size < sizeof(uint64_t) || (size & (sizeof(uint64_t) - 1))) return -EINVAL;
+
+    unsigned cpus = smp_cpu_count();
+    if (cpus > 64) cpus = 64;
+    uint64_t mask = cpus >= 64 ? ~0ULL : (1ULL << cpus) - 1ULL;
+
+    size_t bytes = size > sizeof(uint64_t) ? sizeof(uint64_t) : size;
+    if (copy_to_user(user_mask, &mask, bytes) != 0) return -EFAULT;
+    for (size_t offset = sizeof(uint64_t); offset < size; offset += sizeof(uint64_t)) {
+        uint64_t zero = 0;
+        if (copy_to_user(user_mask + offset, &zero, sizeof(zero)) != 0) return -EFAULT;
+    }
+    return (int64_t)size;
+}
+
 static int64_t sys_arch_prctl(int code, uint64_t address) {
     if (code == ARCH_SET_FS) {
         if (address >= USER_ADDRESS_LIMIT) return -EINVAL;
@@ -4217,6 +4245,13 @@ static void syscall_dispatch_locked(struct syscall_frame *frame) {
             break;
         }
         case SYS_SCHED_YIELD: frame->rax = 0; process_yield_from_syscall(frame); break;
+        case SYS_SCHED_GETAFFINITY:
+            frame->rax = (uint64_t)sys_sched_getaffinity((size_t)frame->rsi, frame->rdx);
+            break;
+        /* Every processor is equal here and nothing is pinned, so the only
+           honest answer to a request to narrow the set is that it changed
+           nothing -- which is what a caller asking for the default gets. */
+        case SYS_SCHED_SETAFFINITY: frame->rax = 0; break;
         case SYS_EPOLL_CREATE:
             frame->rax = frame->rdi == 0 ? (uint64_t)-(int64_t)EINVAL :
                          (uint64_t)sys_epoll_create(0);
