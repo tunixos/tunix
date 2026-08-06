@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "../../include/input.h"
 #include "../../include/interrupt.h"
+#include "../../include/klock.h"
 #include "../../include/pic.h"
 #include "../../include/apic.h"
 #include "../../include/process.h"
@@ -40,7 +41,7 @@ static void interrupt_acknowledge(unsigned vector) {
     else pic_send_eoi(vector);
 }
 
-void isr_handler(struct interrupt_frame *regs) {
+static void isr_dispatch(struct interrupt_frame *regs) {
     if (regs->int_no == PIC_MASTER_VECTOR) {
         timer_irq(regs);
         interrupt_acknowledge((unsigned)regs->int_no);
@@ -98,4 +99,10 @@ void isr_handler(struct interrupt_frame *regs) {
         panic(exception_messages[regs->int_no]);
     }
     kprintf("Received interrupt: %d\n", regs->int_no);
+}
+
+void isr_handler(struct interrupt_frame *regs) {
+    kernel_lock();
+    isr_dispatch(regs);
+    kernel_unlock();
 }

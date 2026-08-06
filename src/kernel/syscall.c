@@ -12,6 +12,7 @@
 #include "include/framebuffer.h"
 #include "include/input.h"
 #include "include/heap.h"
+#include "include/klock.h"
 #include "include/kstring.h"
 #include "include/pipe.h"
 #include "include/pty.h"
@@ -4003,7 +4004,7 @@ static int64_t sys_inotify_rm_watch(int fd, int descriptor) {
     return inotify_remove_watch(file->inotify, descriptor);
 }
 
-void syscall_dispatch(struct syscall_frame *frame) {
+static void syscall_dispatch_locked(struct syscall_frame *frame) {
     if (!frame) return;
     process_account_runtime();
     process_reap_deferred();
@@ -4801,4 +4802,10 @@ void syscall_dispatch(struct syscall_frame *frame) {
     }
 
     if (!skip_signal_delivery) process_prepare_user_return(frame);
+}
+
+void syscall_dispatch(struct syscall_frame *frame) {
+    kernel_lock();
+    syscall_dispatch_locked(frame);
+    kernel_unlock();
 }
