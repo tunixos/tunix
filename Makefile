@@ -318,12 +318,13 @@ PROCUTIL := $(BUILD)/user/procutil.o
 LOADKEYS := $(BUILD)/user/loadkeys
 SLEEP := $(BUILD)/user/sleep
 PREEMPT_TEST := $(BUILD)/user/preempt-test
+SMP_TEST := $(BUILD)/user/smp-test
 INPUT_TEST := $(BUILD)/user/input-test
 FB_TEST := $(BUILD)/user/fb-test
 FB_SHOT := $(BUILD)/user/fb-shot
 GLIB_COMPAT_TEST := $(BUILD)/user/glib-compat-test
 SND_TEST := $(BUILD)/user/snd-test
-SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS) $(SLEEP) $(PREEMPT_TEST) $(INPUT_TEST) $(FB_TEST) $(FB_SHOT) $(GLIB_COMPAT_TEST) $(SND_TEST)
+SYSTEM_TOOLS := $(BUILD)/user/ps $(BUILD)/user/free $(BUILD)/user/uptime $(BUILD)/user/top $(LOADKEYS) $(SLEEP) $(PREEMPT_TEST) $(SMP_TEST) $(INPUT_TEST) $(FB_TEST) $(FB_SHOT) $(GLIB_COMPAT_TEST) $(SND_TEST)
 INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 
 .PHONY: all run headless qemu-ci terminal-font dynamic-runtime-check shared-image-codecs-check gl-check clean
@@ -1332,6 +1333,10 @@ $(PREEMPT_TEST): $(BUILD)/user/preempt_test.o $(USER_RUNTIME) src/userspace/link
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/preempt_test.o
 	$(STRIP) --strip-all $@
 
+$(SMP_TEST): $(BUILD)/user/smp_test.o $(USER_RUNTIME) src/userspace/linker.ld
+	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/smp_test.o
+	$(STRIP) --strip-all $@
+
 $(INPUT_TEST): $(BUILD)/user/input_test.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/input_test.o
 	$(STRIP) --strip-all $@
@@ -1619,7 +1624,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(SYSTEM_TOOLS) $(BAS
 		$(ROOTFS)/bin/bash $(ROOTFS)/bin/nano \
 		$(ROOTFS)/bin/tty-clock $(ROOTFS)/bin/tty-tetris $(ROOTFS)/bin/htop \
 		$(ROOTFS)/bin/neofetch $(ROOTFS)/bin/startx $(ROOTFS)/bin/tunix-session $(ROOTFS)/bin/console-login $(ROOTFS)/bin/fb-shot $(ROOTFS)/bin/ps $(ROOTFS)/bin/free \
-		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test $(ROOTFS)/bin/snd-test \
+		$(ROOTFS)/bin/uptime $(ROOTFS)/bin/top $(ROOTFS)/bin/loadkeys $(ROOTFS)/bin/sleep $(ROOTFS)/bin/preempt-test $(ROOTFS)/bin/smp-test $(ROOTFS)/bin/input-test $(ROOTFS)/bin/fb-test $(ROOTFS)/bin/glib-compat-test $(ROOTFS)/bin/snd-test \
 		$(ROOTFS)/usr/bin/tcc $(ROOTFS)/usr/bin/lua $(ROOTFS)/usr/bin/fastfetch \
 		$(ROOTFS)/usr/bin/browse \
 		$(ROOTFS)/usr/bin/as $(ROOTFS)/usr/bin/ld $(ROOTFS)/usr/bin/ar \
@@ -1639,6 +1644,7 @@ $(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(SYSTEM_TOOLS) $(BAS
 	@test -x $(ROOTFS)/bin/clear || { echo "ncurses clear was not installed into the rootfs" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/sleep || { echo "native sleep utility was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/preempt-test || { echo "scheduler preemption test was not installed" >&2; exit 1; }
+	@test -x $(ROOTFS)/bin/smp-test || { echo "multiprocessor test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/input-test || { echo "input event test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/fb-test || { echo "framebuffer test was not installed" >&2; exit 1; }
 	@test -x $(ROOTFS)/bin/glib-compat-test || { echo "GLib compatibility test was not installed" >&2; exit 1; }
@@ -1668,14 +1674,18 @@ $(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts
 # (llvmpipe + X core), which is unusably slow under plain TCG emulation. KVM runs
 # the guest at near-native speed. Falls back to TCG automatically if /dev/kvm is
 # absent (accel kvm:tcg).
+# -smp: the kernel starts every processor the firmware describes and schedules
+# across all of them. Override QEMU_SMP=1 to run the machine as it was before
+# there was more than one.
+QEMU_SMP ?= 4
 run: $(IMAGE)
 	rm -f $(BUILD)/serial.log
-	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -m 2048M -drive format=raw,file=$(IMAGE) \
+	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -smp $(QEMU_SMP) -m 2048M -drive format=raw,file=$(IMAGE) \
 		-serial file:$(BUILD)/serial.log -monitor none -no-reboot -no-shutdown \
 		-netdev user,id=net0 -device rtl8139,netdev=net0 $(QEMU_AUDIO)
 
 headless: $(IMAGE)
-	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -m 2048M -drive format=raw,file=$(IMAGE) \
+	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -smp $(QEMU_SMP) -m 2048M -drive format=raw,file=$(IMAGE) \
 		-nographic -monitor none -serial stdio -no-reboot -no-shutdown \
 		-netdev user,id=net0 -device rtl8139,netdev=net0 $(QEMU_AUDIO)
 
