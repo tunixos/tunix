@@ -70,6 +70,12 @@ void smp_service_flush(void) {
     __atomic_store_n(&self->flush_pending, 0, __ATOMIC_RELEASE);
 }
 
+/* What the interrupt itself runs. Deliberately short and lock-free. */
+void smp_flush_interrupt(void) {
+    apic_send_eoi();
+    smp_service_flush();
+}
+
 void smp_flush_address_space(uint64_t cr3) {
     if (online_cpus < 2 || !cr3) return;
 
@@ -215,7 +221,7 @@ void smp_init(void) {
 
     unmap_trampoline_page();
     online_cpus = percpu_online_count();
-    kernel_unlock();
     kprintf("SMP: %u of %u processors running\n", online_cpus,
             (unsigned)machine->cpu_count);
+    kernel_unlock();
 }

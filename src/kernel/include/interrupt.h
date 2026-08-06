@@ -34,4 +34,9 @@ struct interrupt_frame {
     uint64_t ss;
 };
 
+/* isr.S relocates the frame by this much, and reads `cs` at offset 152. */
+_Static_assert(sizeof(struct interrupt_frame) == 184, "isr.S assumes 184");
+_Static_assert(__builtin_offsetof(struct interrupt_frame, cs) == 152,
+               "isr.S reads cs at 152");
+
 #endif

@@ -12,8 +12,9 @@
  * only while in kernel mode -- the entry and exit stubs swapgs, and the user
  * side of the pair is whatever the process had.
  *
- * kernel_rsp and user_rsp are read by syscall_entry.S at these exact offsets,
- * before it has a stack to call anything with, so they must stay first.
+ * kernel_rsp and user_rsp are read by the entry and exit stubs at these exact
+ * offsets, before there is a stack to call anything with, so they must stay
+ * first; the assertions below are what say so.
  */
 #define SMP_MAX_CPUS 8
 
@@ -36,7 +37,6 @@ struct cpu {
     /* Written by the processor itself once it has finished coming up, read by
        the one that started it, which is why it is volatile. */
     volatile int online;
-    uint64_t ticks;
 };
 
 _Static_assert(__builtin_offsetof(struct cpu, kernel_rsp) == 0, "syscall_entry.S reads gs:0");

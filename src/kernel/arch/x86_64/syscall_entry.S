@@ -3,6 +3,7 @@
 .global syscall_entry
 .global process_enter_user
 .extern syscall_dispatch
+.extern kernel_unlock
 
 /* struct cpu, as percpu.h lays it out. */
 .set CPU_KERNEL_RSP, 0
@@ -49,6 +50,15 @@ syscall_entry:
 
     mov rdi, rsp
     call syscall_dispatch
+
+    /* The frame may have been moved onto the kernel stack of a different
+       process while the lock was held -- see syscall_dispatch. Follow it, and
+       only then let go of the lock: everything touched from here on, the
+       return addresses included, has to be on a stack no other processor can
+       be standing on. */
+    mov rsp, qword ptr gs:[CPU_KERNEL_RSP]
+    sub rsp, 144
+    call kernel_unlock
 
     /* Build an iretq frame below the saved process context. */
     mov r11, rsp

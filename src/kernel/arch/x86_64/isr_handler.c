@@ -2,6 +2,7 @@
 #include "../../include/input.h"
 #include "../../include/interrupt.h"
 #include "../../include/klock.h"
+#include "../../include/percpu.h"
 #include "../../include/pic.h"
 #include "../../include/apic.h"
 #include "../../include/process.h"
@@ -70,6 +71,7 @@ static void isr_dispatch(struct interrupt_frame *regs) {
            reading afterwards would report the wrong RIP. */
         uint64_t fault_rip = regs->rip;
         uint64_t fault_error = regs->err_code;
+        uint64_t fault_cs = regs->cs;
         uint64_t fault_address = 0;
         if (regs->int_no == 14) /* page fault: CR2 holds the bad address */
             __asm__ volatile("mov %%cr2, %0" : "=r"(fault_address));
@@ -104,23 +106,33 @@ static void isr_dispatch(struct interrupt_frame *regs) {
                     (void *)fault_address, fault_error);
             return;
         }
+        /* The captured values, not the ones still in the frame: a handler that
+           switched process left the next process's registers there, and
+           reporting those sends the reader looking in the wrong place. */
         kprintf("Exception: %s\n", exception_messages[regs->int_no]);
-        kprintf("Error Code: %x\n", regs->err_code);
-        kprintf("RIP: %p\n", (void*)regs->rip);
+        kprintf("Error Code: %x  CS: %x\n", (unsigned)fault_error, (unsigned)fault_cs);
+        kprintf("RIP: %p  addr: %p\n", (void *)fault_rip, (void *)fault_address);
         panic(exception_messages[regs->int_no]);
     }
     kprintf("Received interrupt: %d\n", regs->int_no);
 }
 
+/* Returns with the lock still held; isr.S drops it once rsp is somewhere the
+   next process cannot be standing on. See syscall_dispatch. */
 void isr_handler(struct interrupt_frame *regs) {
-    /* Before the lock, and never taking it: the processor that sent this is
-       holding the lock and waiting for the answer. */
-    if (regs->int_no == SMP_INVALIDATE_VECTOR) {
-        apic_send_eoi();
-        smp_service_flush();
-        return;
-    }
     kernel_lock();
     isr_dispatch(regs);
-    kernel_unlock();
+    /* Same move as the syscall return makes, and for the same reason: the
+       frame may be sitting on the kernel stack of a process this processor
+       has just given up. Only frames going back to user mode need it; one
+       going back to the idle loop is already on a stack of this processor's
+       own. */
+    if ((regs->cs & 3U) == 3U) {
+        uint64_t stack_top = cpu_current()->kernel_rsp;
+        if (stack_top) {
+            struct interrupt_frame *resumed =
+                (struct interrupt_frame *)(stack_top - sizeof(*regs));
+            if (resumed != regs) *resumed = *regs;
+        }
+    }
 }

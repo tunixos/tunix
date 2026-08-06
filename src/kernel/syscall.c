@@ -13,6 +13,7 @@
 #include "include/input.h"
 #include "include/heap.h"
 #include "include/klock.h"
+#include "include/percpu.h"
 #include "include/kstring.h"
 #include "include/pipe.h"
 #include "include/pty.h"
@@ -4804,8 +4805,34 @@ static void syscall_dispatch_locked(struct syscall_frame *frame) {
     if (!skip_signal_delivery) process_prepare_user_return(frame);
 }
 
+/*
+ * The frame arrived on the kernel stack of the process that made the call, and
+ * that process may not be the one this return path is heading back to: a
+ * blocking syscall gives its processor away and the return frame becomes
+ * somebody else's. The stack it is sitting on then belongs to a process that
+ * another processor is free to schedule -- and the first thing that process
+ * does on entering the kernel is write over exactly these bytes.
+ *
+ * So the frame is moved onto the kernel stack of whichever process is running
+ * here now -- a stack nobody else can enter while this processor holds the
+ * process -- and syscall_entry.S reloads rsp from the same per-CPU field, so
+ * the two always agree. When nothing was switched, source and destination are
+ * the same address and no copy happens.
+ *
+ * This function does not drop the lock. It cannot: its own return address is
+ * on the stack it is trying to get off, and a `ret` executed after the lock is
+ * gone reads a stack that may already have been reaped and its pages given
+ * back. syscall_entry.S drops it, once rsp is somewhere safe.
+ */
+_Static_assert(sizeof(struct syscall_frame) == 144, "syscall_entry.S assumes 144");
+
 void syscall_dispatch(struct syscall_frame *frame) {
     kernel_lock();
     syscall_dispatch_locked(frame);
-    kernel_unlock();
+    uint64_t stack_top = cpu_current()->kernel_rsp;
+    if (stack_top) {
+        struct syscall_frame *resumed =
+            (struct syscall_frame *)(stack_top - sizeof(*frame));
+        if (resumed != frame) *resumed = *frame;
+    }
 }

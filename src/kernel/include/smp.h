@@ -26,9 +26,11 @@ unsigned smp_cpu_count(void);
  * interrupts off -- answers the request in its wait loop instead.
  */
 void smp_flush_address_space(uint64_t cr3);
-/* Answer a request if one is outstanding. Called from the interrupt that asks
-   and from the kernel lock's wait loop, which are the two places a processor
-   can be reached. */
+/* Answer a request if one is outstanding. Called from the kernel lock's wait
+   loop and from the interrupt that asks -- the two places a processor can be
+   reached. */
 void smp_service_flush(void);
+/* The interrupt handler's own half of it, called from isr.S. */
+void smp_flush_interrupt(void);
 
 #endif

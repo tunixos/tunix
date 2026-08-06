@@ -4,6 +4,14 @@
 .global tss_flush
 .global idt_load
 .extern isr_handler
+.extern kernel_unlock
+.extern smp_flush_interrupt
+
+/* struct cpu, as percpu.h lays it out. */
+.set CPU_KERNEL_RSP, 0
+/* struct interrupt_frame, as interrupt.h lays it out. */
+.set FRAME_BYTES, 184
+.set FRAME_CS, 152
 
 gdt_flush:
     lgdt [rdi]
@@ -282,6 +290,19 @@ isr_common_stub:
     sub rsp, 8
     call isr_handler
     add rsp, 8
+    /* isr_handler may have moved the frame onto the kernel stack of a
+       different process; follow it. cs sits at offset 152 of the frame, and a
+       user cs is what says the move happened. */
+    test byte ptr [rsp + FRAME_CS], 3
+    jz 3f
+    mov rsp, qword ptr gs:[CPU_KERNEL_RSP]
+    sub rsp, FRAME_BYTES
+3:
+    /* Only now: isr_handler came back with the lock still held, because its
+       own return address was on the stack this may have just moved off. */
+    sub rsp, 8
+    call kernel_unlock
+    add rsp, 8
     pop rax
     mov ds, ax
     mov es, ax
@@ -340,10 +361,43 @@ irq_lapic_timer:
     push 0xF0
     jmp isr_common_stub
 
-/* One processor asking the others to drop their cached translations. */
+/*
+ * One processor asking the others to drop their cached translations.
+ *
+ * A stub of its own rather than a case in the common one, because it must not
+ * go near the kernel lock: the processor that sent it is holding the lock and
+ * waiting for this answer, so taking the lock here would be waiting for the
+ * waiter. Only the caller-saved registers are spilled -- the C it calls
+ * preserves the rest.
+ */
 .global irq_invalidate_tlb
 irq_invalidate_tlb:
     cli
-    push 0
-    push 0xF1
-    jmp isr_common_stub
+    test byte ptr [rsp + 8], 3
+    jz 1f
+    swapgs
+1:
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    call smp_flush_interrupt
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    test byte ptr [rsp + 8], 3
+    jz 2f
+    swapgs
+2:
+    iretq
