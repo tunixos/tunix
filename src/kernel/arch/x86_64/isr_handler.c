@@ -42,15 +42,20 @@ static void interrupt_acknowledge(unsigned vector) {
 }
 
 static void isr_dispatch(struct interrupt_frame *regs) {
+    /* Acknowledged before it is handled, not after: a tick that ends up
+       parking the processor -- the last process on it exited, say -- never
+       comes back here, and a controller still waiting to be told the last
+       interrupt finished will not send another. Interrupts are off throughout,
+       so nothing can arrive in the gap this opens. */
     if (regs->int_no == PIC_MASTER_VECTOR) {
-        timer_irq(regs);
         interrupt_acknowledge((unsigned)regs->int_no);
+        timer_irq(regs);
         return;
     }
     if (regs->int_no == PIC_MASTER_VECTOR + 1U ||
         regs->int_no == PIC_SLAVE_VECTOR + 4U) {
-        input_irq();
         interrupt_acknowledge((unsigned)regs->int_no);
+        input_irq();
         return;
     }
     if (regs->int_no < 32) {

@@ -6,6 +6,7 @@
 #include "include/gdt.h"
 #include "include/heap.h"
 #include "include/interrupt.h"
+#include "include/klock.h"
 #include "include/kstring.h"
 #include "include/percpu.h"
 #include "include/pmm.h"
@@ -35,6 +36,11 @@
 #define PROCESS_DEFAULT_QUANTUM_TICKS 5U
 
 extern void process_enter_user(uint64_t entry, uint64_t user_stack, uint64_t cr3) __attribute__((noreturn));
+/* Park on the idle stack. The first releases the kernel lock on the way, for
+   the paths that got here holding it; the second is for a processor that has
+   never held it. */
+extern void cpu_enter_idle(uint64_t idle_stack_top) __attribute__((noreturn));
+extern void cpu_idle_park(uint64_t idle_stack_top) __attribute__((noreturn));
 extern void kprintf(const char *fmt, ...);
 extern void panic(const char *msg) __attribute__((noreturn));
 
@@ -444,8 +450,16 @@ uint32_t process_set_umask(uint32_t mask) {
     return old;
 }
 
+/*
+ * READY and not RUNNING, which is the whole difference between one processor
+ * and several. RUNNING means "a processor has this loaded right now": picking
+ * it again on a second processor would run the same registers twice and let
+ * two return paths write the same saved frame. Every path that gives a process
+ * up marks it READY (or blocked, or dead) before it looks for the next one, so
+ * nothing is lost by refusing to consider it while it is still on a processor.
+ */
 static int runnable(const struct process *process) {
-    return process && (process->state == PROCESS_READY || process->state == PROCESS_RUNNING);
+    return process && process->state == PROCESS_READY;
 }
 
 static void signal_one_process(struct process *target, int signal_number);
@@ -604,12 +618,44 @@ static int switch_to_next(struct syscall_frame *frame, struct process *after) {
     return 0;
 }
 
+/*
+ * Nothing left to run here. The processor drops the process it was holding,
+ * goes back to the kernel address space so the process's own can be torn down,
+ * and parks on its idle stack with interrupts on. Its next timer tick -- or a
+ * reschedule from another processor -- is what wakes it up with work.
+ *
+ * The kernel stack it was using is abandoned rather than unwound: everything
+ * worth keeping is already in the process, which is the same reason a blocking
+ * syscall can switch away mid-call.
+ */
+static void go_idle(void) __attribute__((noreturn));
+static void go_idle(void) {
+    if (current) {
+        fpu_save(current);
+        current = NULL;
+    }
+    vmm_activate(vmm_kernel_cr3());
+    cpu_enter_idle(cpu_current()->idle_stack_top);
+}
+
 void process_start_first(void) {
+    kernel_lock();
     struct process *first = next_runnable(NULL);
-    if (!first) panic("process: no runnable userspace program");
+    /* Not a failure: on a machine with several processors another one may have
+       taken the first process already, and this one simply has nothing yet. */
+    if (!first) go_idle();
     activate_process(first);
-    process_enter_user(first->entry, first->user_stack_top, first->cr3);
+    uint64_t entry = first->entry;
+    uint64_t stack = first->user_stack_top;
+    uint64_t cr3 = first->cr3;
+    kernel_unlock();
+    process_enter_user(entry, stack, cr3);
     panic("process_enter_user returned");
+}
+
+/* Every processor but the first arrives here, with nothing to run yet. */
+void process_run_idle(void) {
+    cpu_idle_park(cpu_current()->idle_stack_top);
 }
 
 /*
@@ -894,9 +940,30 @@ int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_numbe
     return 1;
 }
 
+/*
+ * A tick that arrived in the idle loop. The interrupt came from kernel mode,
+ * but in long mode the processor pushes SS:RSP for those too, so the frame can
+ * be replaced wholesale with a process's and the iretq lands in user mode --
+ * which is how an idle processor picks up work without any context to unwind.
+ */
+static void resume_from_idle(struct interrupt_frame *frame) {
+    struct process *next = next_runnable(NULL);
+    if (!next) return;
+    activate_process(next);
+    struct syscall_frame resume = next->saved_frame;
+    process_prepare_user_return(&resume);
+    if (!current || current->state != PROCESS_RUNNING) go_idle();
+    current->saved_frame = resume;
+    load_interrupt_context(frame, &resume);
+}
+
 void process_timer_interrupt(struct interrupt_frame *frame) {
-    if (!frame || (frame->cs & 3U) != 3U || !current ||
-        current->state != PROCESS_RUNNING) return;
+    if (!frame) return;
+    if (!current) {
+        resume_from_idle(frame);
+        return;
+    }
+    if ((frame->cs & 3U) != 3U || current->state != PROCESS_RUNNING) return;
 
     process_account_runtime();
     save_interrupt_context(&current->saved_frame, frame);
@@ -1123,10 +1190,7 @@ void process_exit_from_syscall(struct syscall_frame *frame, int status) {
     else notify_parent_of_exit(exiting);
     KDEBUG("process: pid=%u exited status=%d\n", (unsigned)exiting->pid, status);
 
-    if (switch_to_next(frame, exiting) != 0) {
-        KDEBUG("userspace halted: no runnable processes\n");
-        for (;;) __asm__ volatile("cli; hlt");
-    }
+    if (switch_to_next(frame, exiting) != 0) go_idle();
 }
 
 int64_t process_fork_from_syscall(struct syscall_frame *frame) {
@@ -1910,7 +1974,9 @@ void process_account_runtime(void) {
 uint64_t process_runtime_ns(const struct process *process) {
     if (!process) return 0;
     uint64_t runtime = process->runtime_ns;
-    if (process == current && process->state == PROCESS_RUNNING && process->last_scheduled_ns) {
+    /* RUNNING now means "loaded on some processor", not necessarily this one,
+       and the slice in flight counts wherever it is being spent. */
+    if (process->state == PROCESS_RUNNING && process->last_scheduled_ns) {
         uint64_t now = time_uptime_ns();
         if (now >= process->last_scheduled_ns) runtime += now - process->last_scheduled_ns;
     }

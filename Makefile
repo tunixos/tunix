@@ -300,7 +300,7 @@ USER_LDFLAGS := -nostdlib -static -T src/userspace/linker.ld --build-id=none \
 KERNEL_OBJS := \
 	$(BUILD)/tunix_boot.o \
 	$(BUILD)/entry.o $(BUILD)/main.o $(BUILD)/serial.o \
-	$(BUILD)/kprintf.o $(BUILD)/kstring.o $(BUILD)/gdt.o $(BUILD)/percpu.o $(BUILD)/klock.o \
+	$(BUILD)/kprintf.o $(BUILD)/kstring.o $(BUILD)/gdt.o $(BUILD)/percpu.o $(BUILD)/klock.o $(BUILD)/idle.o \
 	$(BUILD)/idt.o $(BUILD)/isr.o $(BUILD)/isr_handler.o $(BUILD)/pic.o $(BUILD)/timer.o \
 	$(BUILD)/pmm.o $(BUILD)/vmm.o $(BUILD)/framebuffer.o $(BUILD)/terminal_font.o $(BUILD)/terminal.o $(BUILD)/input.o \
 	$(BUILD)/heap.o $(BUILD)/syscall.o $(BUILD)/syscall_entry.o \
@@ -1190,6 +1190,9 @@ $(BUILD)/tunix_boot.o: src/kernel/arch/x86_64/tunix_boot.c \
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(BUILD)/isr.o: src/kernel/arch/x86_64/isr.S | $(BUILD)
+	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
+
+$(BUILD)/idle.o: src/kernel/arch/x86_64/idle.S | $(BUILD)
 	$(CC) $(KERNEL_CFLAGS) -c $< -o $@
 
 $(BUILD)/syscall_entry.o: src/kernel/arch/x86_64/syscall_entry.S | $(BUILD)

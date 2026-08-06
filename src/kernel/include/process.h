@@ -193,6 +193,8 @@ uint64_t process_current_pid(void);
 uint64_t process_current_tid(void);
 uint64_t process_current_ppid(void);
 void process_start_first(void) __attribute__((noreturn));
+/* Every processor but the first: park until the scheduler has work for it. */
+void process_run_idle(void) __attribute__((noreturn));
 void process_yield_from_syscall(struct syscall_frame *frame);
 void process_timer_interrupt(struct interrupt_frame *frame);
 /* Map another user stack page for a fault inside the stack growth window.
