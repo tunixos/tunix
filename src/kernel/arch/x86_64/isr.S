@@ -339,3 +339,11 @@ irq_lapic_timer:
     push 0
     push 0xF0
     jmp isr_common_stub
+
+/* One processor asking the others to drop their cached translations. */
+.global irq_invalidate_tlb
+irq_invalidate_tlb:
+    cli
+    push 0
+    push 0xF1
+    jmp isr_common_stub

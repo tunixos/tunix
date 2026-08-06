@@ -26,6 +26,12 @@ struct cpu {
     uint32_t index;
     uint32_t apic_id;
     struct process *current;
+    /* The address space loaded here, so that a processor changing a mapping
+       can tell which of the others are looking at it. Zero while idle. */
+    uint64_t address_space;
+    /* Set by a processor asking this one to drop its cached translations, and
+       cleared by this one once it has. */
+    volatile uint32_t flush_pending;
     uint64_t idle_stack_top;
     /* Written by the processor itself once it has finished coming up, read by
        the one that started it, which is why it is volatile. */

@@ -68,6 +68,7 @@ extern void irq0(void);
 extern void irq1(void);
 extern void irq12(void);
 extern void irq_lapic_timer(void);
+extern void irq_invalidate_tlb(void);
 
 void idt_init(void) {
     idtp.limit = (sizeof(struct idt_entry) * 256) - 1;
@@ -113,6 +114,7 @@ void idt_init(void) {
     idt_set_gate(33, (uint64_t)irq1, 0x08, 0x8E, 0);
     idt_set_gate(44, (uint64_t)irq12, 0x08, 0x8E, 0);
     idt_set_gate(SMP_TIMER_VECTOR, (uint64_t)irq_lapic_timer, 0x08, 0x8E, 0);
+    idt_set_gate(SMP_INVALIDATE_VECTOR, (uint64_t)irq_invalidate_tlb, 0x08, 0x8E, 0);
 
     idt_load((uint64_t)&idtp);
 }

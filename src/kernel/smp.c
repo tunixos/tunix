@@ -57,6 +57,44 @@ static unsigned online_cpus = 1;
 
 unsigned smp_cpu_count(void) { return online_cpus; }
 
+static void reload_cr3(void) {
+    uint64_t value;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(value));
+    __asm__ volatile("mov %0, %%cr3" : : "r"(value) : "memory");
+}
+
+void smp_service_flush(void) {
+    struct cpu *self = cpu_current();
+    if (!__atomic_load_n(&self->flush_pending, __ATOMIC_ACQUIRE)) return;
+    reload_cr3();
+    __atomic_store_n(&self->flush_pending, 0, __ATOMIC_RELEASE);
+}
+
+void smp_flush_address_space(uint64_t cr3) {
+    if (online_cpus < 2 || !cr3) return;
+
+    unsigned self = cpu_current()->index;
+    int asked = 0;
+    /* Which processors are looking at this space cannot change underneath:
+       only a processor inside the kernel changes its own, and the caller is
+       the one holding the kernel lock. */
+    for (unsigned index = 0; index < SMP_MAX_CPUS; index++) {
+        struct cpu *cpu = percpu_slot(index);
+        if (index == self || !cpu->online || cpu->address_space != cr3) continue;
+        __atomic_store_n(&cpu->flush_pending, 1, __ATOMIC_RELEASE);
+        asked = 1;
+    }
+    if (!asked) return;
+
+    apic_send_ipi_to_others(SMP_INVALIDATE_VECTOR);
+    for (unsigned index = 0; index < SMP_MAX_CPUS; index++) {
+        struct cpu *cpu = percpu_slot(index);
+        if (index == self || !cpu->online) continue;
+        while (__atomic_load_n(&cpu->flush_pending, __ATOMIC_ACQUIRE))
+            __asm__ volatile("pause");
+    }
+}
+
 static void wait_ns(uint64_t nanoseconds) {
     uint64_t deadline = time_uptime_ns() + nanoseconds;
     while (time_uptime_ns() < deadline) __asm__ volatile("pause");

@@ -113,6 +113,13 @@ static void isr_dispatch(struct interrupt_frame *regs) {
 }
 
 void isr_handler(struct interrupt_frame *regs) {
+    /* Before the lock, and never taking it: the processor that sent this is
+       holding the lock and waiting for the answer. */
+    if (regs->int_no == SMP_INVALIDATE_VECTOR) {
+        apic_send_eoi();
+        smp_service_flush();
+        return;
+    }
     kernel_lock();
     isr_dispatch(regs);
     kernel_unlock();

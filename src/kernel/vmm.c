@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "include/kstring.h"
 #include "include/pmm.h"
+#include "include/smp.h"
 #include "include/vmm.h"
 
 #define ADDRESS_MASK 0x000FFFFFFFFFF000ULL
@@ -317,6 +318,7 @@ int vmm_unmap_page_in(uint64_t cr3_physical, uint64_t virtual_address) {
     if (!pt || !(pt[i1] & PAGE_PRESENT)) return -1;
     pt[i1] = 0;
     if (cr3 == read_cr3()) invalidate(virtual_address);
+    smp_flush_address_space(cr3);
     return 0;
 }
 
@@ -339,6 +341,7 @@ int vmm_protect_page_in(uint64_t cr3_physical, uint64_t virtual_address,
     uint64_t physical = pt[i1] & ADDRESS_MASK;
     pt[i1] = physical | (flags & ~ADDRESS_MASK) | PAGE_PRESENT;
     if (cr3 == read_cr3()) invalidate(virtual_address);
+    smp_flush_address_space(cr3);
     return 0;
 }
 
@@ -617,6 +620,9 @@ uint64_t vmm_clone_address_space(uint64_t source_cr3) {
      * and far less error-prone than an invlpg per page during the walk.
      */
     if (source_physical == read_cr3()) write_cr3(source_physical);
+    /* And every other processor running a thread of the same process, which
+       would otherwise keep writing straight through the sharing. */
+    smp_flush_address_space(source_physical);
     return destination_cr3;
 }
 
@@ -641,6 +647,14 @@ int vmm_handle_cow_fault(uint64_t cr3_physical, uint64_t virtual_address) {
 
     uint16_t index = (virtual_address >> 12) & 0x1FF;
     uint64_t entry = pt[index];
+    /* Already private and writable: another processor running a thread of the
+       same process broke this page first, and this fault was taken on a
+       translation that has since been replaced. Retrying is the whole fix. */
+    if ((entry & (PAGE_PRESENT | PAGE_USER | PAGE_WRITE | PAGE_COW)) ==
+        (PAGE_PRESENT | PAGE_USER | PAGE_WRITE)) {
+        if (cr3 == read_cr3()) invalidate(virtual_address);
+        return 0;
+    }
     if ((entry & (PAGE_PRESENT | PAGE_COW | PAGE_USER)) !=
         (PAGE_PRESENT | PAGE_COW | PAGE_USER)) return -1;
 
@@ -661,6 +675,10 @@ int vmm_handle_cow_fault(uint64_t cr3_physical, uint64_t virtual_address) {
         }
         memcpy((void *)(KERNEL_BASE + copy), (void *)(KERNEL_BASE + physical), 4096);
         pt[index] = copy | flags;
+        /* The other processors first, then the reference: one of them could
+           still be writing through the old translation, and this is the call
+           that may hand the frame back to the allocator. */
+        smp_flush_address_space(cr3);
         /* Drops this space's reference to the page it no longer maps. */
         pmm_free_page((void *)physical);
     }

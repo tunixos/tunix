@@ -559,6 +559,7 @@ static void activate_process(struct process *process) {
     set_kernel_stack(process->kernel_stack_top);
     syscall_set_kernel_stack(process->kernel_stack_top);
     vmm_activate(process->cr3);
+    cpu_current()->address_space = process->cr3;
     wrmsr(IA32_FS_BASE, process->fs_base);
     fpu_restore(process);
 }
@@ -635,6 +636,7 @@ static void go_idle(void) {
         current = NULL;
     }
     vmm_activate(vmm_kernel_cr3());
+    cpu_current()->address_space = 0;
     cpu_enter_idle(cpu_current()->idle_stack_top);
 }
 
@@ -842,8 +844,11 @@ int process_commit_area(uint64_t fault_address) {
     uint64_t page = fault_address & ~4095ULL;
     struct vm_area *area = process_find_area(page);
     if (!area || !(area->kind & VM_ANONYMOUS)) return 0;
-    /* Already mapped means this was a protection fault, not a missing page. */
-    if (vmm_translate(current->cr3, page, NULL, NULL) == 0) return 0;
+    /* Mapped already, and the caller only gets here for a not-present fault:
+       another thread of this process committed the page on another processor
+       between the fault and now. Retrying the instruction is all that is
+       left to do. */
+    if (vmm_translate(current->cr3, page, NULL, NULL) == 0) return 1;
 
     uint64_t physical = (uint64_t)pmm_alloc_page();
     if (!physical) return 0;
@@ -890,9 +895,10 @@ int process_grow_user_stack(uint64_t fault_address) {
     uint64_t page = fault_address & ~4095ULL;
     uint64_t existing_physical = 0;
     uint64_t existing_flags = 0;
-    /* Already mapped means this was a protection fault, not a missing page. */
+    /* Same race as process_commit_area: a sibling thread on another processor
+       grew the stack between this fault and its handler. */
     if (vmm_translate(current->cr3, page, &existing_physical, &existing_flags) == 0)
-        return 0;
+        return 1;
 
     uint64_t physical = (uint64_t)pmm_alloc_page();
     if (!physical) return 0;
