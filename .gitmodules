@@ -411,3 +411,7 @@
 	path = ports/src/linux-pam
 	url = https://github.com/linux-pam/linux-pam.git
 	shallow = true
+[submodule "ports/src/lightdm"]
+	path = ports/src/lightdm
+	url = https://github.com/canonical/lightdm.git
+	shallow = true
