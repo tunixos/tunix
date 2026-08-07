@@ -27,7 +27,7 @@ fi
 # runs as `lightdm`, which has to be able to write its home and cache.
 if id -u lightdm >/dev/null 2>&1; then
     mkdir -p /run/lightdm /var/log/lightdm /var/cache/lightdm /var/lib/lightdm \
-        /run/user/82
+        /var/lib/lightdm-data /run/user/82
     chown lightdm:lightdm /run/lightdm /var/cache/lightdm /var/lib/lightdm \
         /run/user/82
     chmod 0700 /run/lightdm /var/cache/lightdm /var/lib/lightdm /run/user/82

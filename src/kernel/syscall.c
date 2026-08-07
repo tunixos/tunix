@@ -1048,8 +1048,12 @@ static int64_t sys_pipe(uint64_t user_fds, int flags) {
     struct file *read_end;
     struct file *write_end;
     if (pipe_create(&read_end, &write_end) != 0) return -EMFILE;
-    read_end->flags = (uint32_t)(flags & O_NONBLOCK);
-    write_end->flags = (uint32_t)(flags & O_NONBLOCK);
+    /* The access mode is not decoration: fcntl(F_GETFL) is how a program asks
+       which way a descriptor goes, and with both ends reading back O_RDONLY
+       GLib decided a GIOChannel on the write end was not writable and refused
+       every write to it. That is what closed LightDM's greeter channel. */
+    read_end->flags = (uint32_t)(flags & O_NONBLOCK) | O_RDONLY;
+    write_end->flags = (uint32_t)(flags & O_NONBLOCK) | O_WRONLY;
     struct process *process = process_current();
     uint8_t fd_flags = (flags & O_CLOEXEC) ? PROCESS_FD_CLOEXEC : 0;
     int read_fd = process_install_file_flags(process, read_end, 0, fd_flags);
@@ -1159,8 +1163,9 @@ static int64_t sys_socketpair(int domain, int type, int protocol,
         if (second_file) file_unref(second_file); else unix_socket_unref(second);
         return -ENOMEM;
     }
-    first_file->flags = (uint32_t)(type_flags & SOCK_NONBLOCK);
-    second_file->flags = (uint32_t)(type_flags & SOCK_NONBLOCK);
+    /* Both ends go both ways; same reason the pipe ends record theirs. */
+    first_file->flags = (uint32_t)(type_flags & SOCK_NONBLOCK) | O_RDWR;
+    second_file->flags = (uint32_t)(type_flags & SOCK_NONBLOCK) | O_RDWR;
     uint8_t fd_flags = (type_flags & SOCK_CLOEXEC) ? PROCESS_FD_CLOEXEC : 0;
     int first_fd = process_install_file_flags(process, first_file, 0, fd_flags);
     int second_fd = process_install_file_flags(process, second_file, 0, fd_flags);
