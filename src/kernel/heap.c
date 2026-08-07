@@ -15,13 +15,23 @@
  * ~2x peak, exhausted the heap and surfaced as EPERM write errors. 768 MiB sits
  * comfortably inside the 1 GiB virtual window above HEAP_START and lets a clone
  * fit when QEMU is given enough RAM (see the run targets' -m). */
-#define HEAP_MAX_SIZE (768ULL * 1024 * 1024)
+#define HEAP_MAX_SIZE (2048ULL * 1024 * 1024)
 /* Where "nearly full" starts. Reclaiming cached file data is not free -- the
    bytes have to be read off the disk again -- so it should not begin the moment
    the heap is merely busy, and it must begin early enough that the allocation
-   which actually needs the room still finds it. Three quarters leaves 192 MiB,
-   comfortably more than the largest single thing anything here allocates. */
+   which actually needs the room still finds it. */
 #define HEAP_PRESSURE_SIZE (HEAP_MAX_SIZE / 4 * 3)
+/*
+ * The other half of "nearly full", and on most machines the half that fires.
+ *
+ * The fraction above is measured against a ceiling that has nothing to do with
+ * how much memory the machine has: on one with 2 GiB the heap would exhaust
+ * physical memory long before it reached three quarters of 2 GiB, and reclaim
+ * would never start. What actually matters is whether the machine is running
+ * out, so that is asked directly. 64 MiB is comfortably more than the largest
+ * single thing anything here allocates.
+ */
+#define HEAP_FREE_PAGES_FLOOR (16384ULL)
 #define HEAP_PAGE_SIZE 4096ULL
 /* How big a free block has to be before its pages go back to the PMM.
  * Unmapping and remapping costs a page-table walk per page, so doing it for
@@ -345,7 +355,7 @@ int heap_under_pressure(void) {
     spinlock_acquire(&heap_lock);
     int pressed = heap_allocated >= HEAP_PRESSURE_SIZE;
     spinlock_release(&heap_lock);
-    return pressed;
+    return pressed || pmm_free_page_count() < HEAP_FREE_PAGES_FLOOR;
 }
 
 void heap_stats(uint64_t *reserved, uint64_t *allocated, uint64_t *limit) {
