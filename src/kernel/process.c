@@ -18,7 +18,22 @@
 #include "include/vfs.h"
 #include "include/vmm.h"
 
-#define KERNEL_STACK_SIZE (16 * 1024)
+/*
+ * The kernel stack a process runs its syscalls and interrupts on.
+ *
+ * 32 KiB rather than 16, for headroom rather than for a bug: measuring the
+ * frames says the deepest ordinary path through syscall_dispatch is about
+ * 9700 bytes, but sys_read's 4 KiB copy buffer calling a /proc reader with
+ * another 4 KiB of its own is most of 16 before the VFS frames between them,
+ * and an interrupt lands on top of whatever is there.
+ *
+ * Running out is not a soft failure. The page below the stack is not mapped
+ * once the heap has handed its pages back, so the overflow faults, and the
+ * fault handler has no stack to be delivered on either: what the machine
+ * actually does is reset, with nothing printed. The double-fault handler is
+ * what turns that into a message.
+ */
+#define KERNEL_STACK_SIZE (32 * 1024)
 #define ECHILD 10
 #define EINTR 4
 #define EINVAL 22
