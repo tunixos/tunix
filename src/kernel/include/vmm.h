@@ -4,17 +4,36 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Where the kernel image is linked, and the only thing that has to live here:
+ * -mcmodel=kernel puts every symbol in the top 2 GiB, so the code and its
+ * static data have no choice. The first gigabyte of physical memory is mapped
+ * here as well, which is how the image is reachable at all -- and it is why a
+ * static buffer's address can still be turned into a physical one (see
+ * vmm_virt_to_phys_direct, which the DMA drivers hand exactly that).
+ */
 #define KERNEL_BASE 0xFFFFFFFF80000000ULL
+#define KERNEL_WINDOW_SIZE 0x40000000ULL
+/*
+ * The direct map: all of physical memory, in its own PML4 entry.
+ *
+ * It used to start at KERNEL_BASE and run up to the framebuffer window, which
+ * put a hard 1792 MiB ceiling on how much RAM the machine could use -- not a
+ * tuning choice but the distance between two fixed addresses in the top 2 GiB.
+ * A browser tab is most of a gigabyte, so that ceiling was reachable by
+ * ordinary use. Moving the map into a slot of its own, as the heap did before
+ * it, replaces 1792 MiB of room with 512 GiB.
+ */
+#define DIRECT_MAP_BASE 0xFFFFFE8000000000ULL
 /* The kernel heap, in a PML4 entry of its own. It used to sit directly above
    the direct map, which is what held the direct map -- and so the amount of
    RAM the machine could use -- to a single gigabyte. */
 #define HEAP_VIRTUAL_BASE 0xFFFFFF0000000000ULL
 /* Where device registers get mapped, at the very top of the address space.
-   It has to be up here: the direct map below runs from KERNEL_BASE to
-   KERNEL_BASE + PMM_DIRECT_MAP_LIMIT in 2 MiB pages, and a huge page is not
-   something a 4 KiB mapping can be placed inside. The framebuffer takes the
-   window that starts where the direct map ends; this sits above anything a
-   framebuffer could grow to. */
+   It shares the top 2 GiB with the kernel image and the framebuffer window,
+   which is now all that is up here: the direct map moved out from under them.
+   A huge page is not something a 4 KiB mapping can be placed inside, so these
+   windows stay clear of the first gigabyte the image is mapped through. */
 #define DEVICE_MMIO_VIRTUAL_BASE 0xFFFFFFFFFF000000ULL
 #define DEVICE_MMIO_VIRTUAL_BYTES 0x01000000ULL
 /*

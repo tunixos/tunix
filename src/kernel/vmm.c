@@ -10,7 +10,7 @@
 #define DIRECT_MAP_SIZE PMM_DIRECT_MAP_LIMIT
 #define MAX_ADDRESS_SPACES 256
 
-extern void panic(const char *msg);
+extern void panic(const char *msg) __attribute__((noreturn));
 extern void kprintf(const char *fmt, ...);
 /* Commits a reserved page the kernel is about to touch (see process.c). */
 extern int process_commit_area(uint64_t fault_address);
@@ -56,15 +56,29 @@ void *vmm_phys_to_virt(uint64_t physical) {
         report_bad_physical("phys_to_virt rejected", physical, __builtin_return_address(0));
         panic("VMM: invalid physical address");
     }
-    return (void *)(KERNEL_BASE + physical);
+    return (void *)(DIRECT_MAP_BASE + physical);
 }
 
+/*
+ * The other direction, and it has to accept two windows.
+ *
+ * Most callers hand back something vmm_phys_to_virt() gave them, which is in
+ * the direct map. But the DMA drivers hand it a *static* buffer -- rtl8139's
+ * receive ring and transmit slots are plain arrays in the kernel image -- and
+ * those live at KERNEL_BASE. Both windows map physical memory at a fixed
+ * offset, so both can be answered; refusing the second one would hand the
+ * network card a garbage address to write into.
+ */
 uint64_t vmm_virt_to_phys_direct(const void *virtual_address) {
     uint64_t value = (uint64_t)virtual_address;
-    if (value < KERNEL_BASE || value >= KERNEL_BASE + DIRECT_MAP_SIZE) {
+    uint64_t physical;
+    if (value >= DIRECT_MAP_BASE && value < DIRECT_MAP_BASE + DIRECT_MAP_SIZE) {
+        physical = value - DIRECT_MAP_BASE;
+    } else if (value >= KERNEL_BASE && value < KERNEL_BASE + KERNEL_WINDOW_SIZE) {
+        physical = value - KERNEL_BASE;
+    } else {
         panic("VMM: address is not in direct map");
     }
-    uint64_t physical = value - KERNEL_BASE;
     if (!pmm_physical_range_managed(physical, 1)) {
         report_bad_physical("virt_to_phys rejected", physical, __builtin_return_address(0));
         panic("VMM: direct-map pointer outside managed RAM");
@@ -112,7 +126,7 @@ static uint64_t *page_table_pointer(uint64_t physical) {
         KDEBUG("VMM: rejected invalid page-table page %p\n", (void *)physical);
         return NULL;
     }
-    return (uint64_t *)(KERNEL_BASE + physical);
+    return (uint64_t *)(DIRECT_MAP_BASE + physical);
 }
 
 static uint64_t *table_from_entry(uint64_t entry) {
@@ -186,43 +200,82 @@ void vmm_init(void) {
     configure_page_attributes();
 
     kernel_cr3_physical = read_cr3();
-    if (!pmm_page_is_allocated(kernel_cr3_physical) ||
-        registry_add(address_spaces, MAX_ADDRESS_SPACES, kernel_cr3_physical) != 0) {
-        panic("VMM: invalid boot CR3");
-    }
-    uint64_t *pml4 = page_table_pointer(kernel_cr3_physical);
-    if (!pml4) panic("VMM: boot PML4 unavailable");
+
+    /*
+     * Everything up to the point the direct map exists has to be reached
+     * through the loader's window instead, because page_table_pointer() now
+     * answers with an address that is not mapped yet. `early` is that window:
+     * the loader mapped the first gigabyte of RAM at KERNEL_BASE, which is
+     * also where the kernel image it just loaded lives.
+     */
+#define early(physical) ((uint64_t *)(KERNEL_BASE + ((physical) & ADDRESS_MASK)))
+    uint64_t *pml4 = early(kernel_cr3_physical);
 
     uint16_t high_pml4 = (uint16_t)((KERNEL_BASE >> 39) & 0x1FF);
     uint16_t high_pdp = (uint16_t)((KERNEL_BASE >> 30) & 0x1FF);
     uint64_t pdpt_physical = pml4[high_pml4] & ADDRESS_MASK;
-    uint64_t *pdpt = page_table_pointer(pdpt_physical);
-    if (!pdpt) panic("VMM: boot PDPT unavailable");
+    if (!pdpt_physical) panic("VMM: boot PDPT unavailable");
+    uint64_t *pdpt = early(pdpt_physical);
     uint64_t pd_physical = pdpt[high_pdp] & ADDRESS_MASK;
-    uint64_t *pd = page_table_pointer(pd_physical);
-    if (!pd) panic("VMM: boot PD unavailable");
+    if (!pd_physical) panic("VMM: boot PD unavailable");
+    uint64_t *pd = early(pd_physical);
 
+    /* The window the kernel image is reached through. One gigabyte of 2 MiB
+       pages, unchanged: the image is inside it, and so is every static buffer
+       a DMA driver hands to vmm_virt_to_phys_direct(). */
     for (uint64_t i = 0; i < 512; i++) {
         pd[i] = (i * 0x200000ULL) | PAGE_PRESENT | PAGE_WRITE | PAGE_HUGE;
     }
 
     /*
-     * The direct map continues into the next PDPT slot, as far as the
-     * framebuffer window. It used to stop at 1 GiB because the heap sat in
-     * that slot; the heap has moved to its own PML4 entry to free it, which is
-     * what lets the machine use more than a gigabyte of RAM.
+     * And nothing above it. The loader maps as much RAM here as fits above
+     * KERNEL_BASE -- on a 4 GiB machine that is 2047 MiB, which swallows the
+     * framebuffer and device windows that live in the second gigabyte. They
+     * are 4 KiB mappings and cannot be placed inside a huge page, so the
+     * entry covering them has to go. It used to be replaced by a directory
+     * that stopped exactly at the framebuffer; now that the direct map has
+     * moved out, the whole gigabyte is simply given back.
      */
-    if (DIRECT_MAP_SIZE > 0x40000000ULL) {
-        uint64_t extra_physical = (uint64_t)pmm_alloc_page();
-        uint64_t *extra = page_table_pointer(extra_physical);
-        if (!extra) panic("VMM: direct map extension unavailable");
-        memset(extra, 0, 4096);
-        for (uint64_t i = 0; i < (DIRECT_MAP_SIZE - 0x40000000ULL) / 0x200000ULL; i++) {
-            extra[i] = (0x40000000ULL + i * 0x200000ULL) |
-                       PAGE_PRESENT | PAGE_WRITE | PAGE_HUGE;
+    for (uint16_t i = (uint16_t)(high_pdp + 1); i < 512; i++) pdpt[i] = 0;
+
+    /*
+     * The direct map, in a PML4 entry of its own.
+     *
+     * Only as much of it as there is RAM to map: the ceiling is what the
+     * address space allows, not what has to be built. A gigabyte of physical
+     * memory costs one page of directory here, so a machine with four costs
+     * sixteen kilobytes.
+     */
+    uint16_t direct_pml4 = (uint16_t)((DIRECT_MAP_BASE >> 39) & 0x1FF);
+    uint64_t direct_pdpt_physical = (uint64_t)pmm_alloc_page();
+    if (!direct_pdpt_physical) panic("VMM: direct map PDPT unavailable");
+    uint64_t *direct_pdpt = early(direct_pdpt_physical);
+    memset(direct_pdpt, 0, 4096);
+
+    uint64_t mapped = pmm_managed_limit();
+    if (mapped > DIRECT_MAP_SIZE) mapped = DIRECT_MAP_SIZE;
+    for (uint64_t gigabyte = 0; gigabyte * 0x40000000ULL < mapped; gigabyte++) {
+        uint64_t table_physical = (uint64_t)pmm_alloc_page();
+        if (!table_physical) panic("VMM: direct map directory unavailable");
+        uint64_t *table = early(table_physical);
+        memset(table, 0, 4096);
+        for (uint64_t i = 0; i < 512; i++) {
+            uint64_t frame = gigabyte * 0x40000000ULL + i * 0x200000ULL;
+            table[i] = frame | PAGE_PRESENT | PAGE_WRITE | PAGE_HUGE;
         }
-        pdpt[high_pdp + 1] = extra_physical | PAGE_PRESENT | PAGE_WRITE;
+        direct_pdpt[gigabyte] = table_physical | PAGE_PRESENT | PAGE_WRITE;
     }
+    pml4[direct_pml4] = direct_pdpt_physical | PAGE_PRESENT | PAGE_WRITE;
+    write_cr3(kernel_cr3_physical);
+#undef early
+
+    /* The direct map answers now, so the ordinary helpers can be used. */
+    if (!pmm_page_is_allocated(kernel_cr3_physical) ||
+        registry_add(address_spaces, MAX_ADDRESS_SPACES, kernel_cr3_physical) != 0) {
+        panic("VMM: invalid boot CR3");
+    }
+    pml4 = page_table_pointer(kernel_cr3_physical);
+    if (!pml4) panic("VMM: boot PML4 unavailable");
 
     /*
      * The heap's own PML4 entry, created here so that every address space
@@ -240,7 +293,8 @@ void vmm_init(void) {
     }
 
     write_cr3(kernel_cr3_physical);
-    KDEBUG("VMM: %u MiB supervisor-only direct map ready\n",
+    KDEBUG("VMM: %u MiB direct map ready, %u MiB of room\n",
+           (unsigned)(mapped / (1024 * 1024)),
            (unsigned)(DIRECT_MAP_SIZE / (1024 * 1024)));
 }
 
@@ -454,7 +508,7 @@ int vmm_copy_from_space(uint64_t cr3_physical, void *destination,
         size_t chunk = 4096 - (size_t)(source_user & 0xFFF);
         if (chunk > length) chunk = length;
         if (!physical_direct_range_valid(physical, chunk)) return -1;
-        memcpy(out, (void *)(KERNEL_BASE + physical), chunk);
+        memcpy(out, (void *)(DIRECT_MAP_BASE + physical), chunk);
         out += chunk;
         source_user += chunk;
         length -= chunk;
@@ -485,7 +539,7 @@ int vmm_copy_to_space(uint64_t cr3_physical, uint64_t destination_user,
         size_t chunk = 4096 - (size_t)(destination_user & 0xFFF);
         if (chunk > length) chunk = length;
         if (!physical_direct_range_valid(physical, chunk)) return -1;
-        memcpy((void *)(KERNEL_BASE + physical), in, chunk);
+        memcpy((void *)(DIRECT_MAP_BASE + physical), in, chunk);
         in += chunk;
         destination_user += chunk;
         length -= chunk;
@@ -571,8 +625,8 @@ static uint64_t clone_user_table(uint64_t source_physical, int level) {
                         destroy_user_table(destination_physical, level);
                         return 0;
                     }
-                    memcpy((void *)(KERNEL_BASE + page_physical),
-                           (void *)(KERNEL_BASE + source_page), 4096);
+                    memcpy((void *)(DIRECT_MAP_BASE + page_physical),
+                           (void *)(DIRECT_MAP_BASE + source_page), 4096);
                     destination[index] = page_physical | preserved_flags;
                 }
             }
@@ -673,7 +727,7 @@ int vmm_handle_cow_fault(uint64_t cr3_physical, uint64_t virtual_address) {
             if (copy) pmm_free_page((void *)copy);
             return -1;
         }
-        memcpy((void *)(KERNEL_BASE + copy), (void *)(KERNEL_BASE + physical), 4096);
+        memcpy((void *)(DIRECT_MAP_BASE + copy), (void *)(DIRECT_MAP_BASE + physical), 4096);
         pt[index] = copy | flags;
         /* The other processors first, then the reference: one of them could
            still be writing through the old translation, and this is the call
