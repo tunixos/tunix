@@ -148,6 +148,8 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define SYS_GETTIMEOFDAY 96
 #define SYS_GETRLIMIT 97
 #define SYS_GETRUSAGE 98
+#define SYS_GETPRIORITY 140
+#define SYS_SETPRIORITY 141
 #define SYS_GETUID 102
 #define SYS_SETUID 105
 #define SYS_SETGID 106
@@ -4641,6 +4643,13 @@ static void syscall_dispatch_locked(struct syscall_frame *frame) {
         case SYS_UMASK: frame->rax = process_set_umask((uint32_t)frame->rdi); break;
         case SYS_GETTIMEOFDAY: frame->rax = (uint64_t)sys_gettimeofday(frame->rdi); break;
         case SYS_GETRLIMIT: frame->rax = (uint64_t)sys_prlimit(frame->rdi, frame->rsi); break;
+        /* The scheduler is round-robin with one priority level, so every
+           process runs at nice 0 and a request to change that is recorded
+           nowhere. Answering is still necessary: getpriority reports 20 - nice
+           so that a negative nice is not mistaken for an error, and pam_limits
+           treats a failure here as a reason to abort the whole session. */
+        case SYS_GETPRIORITY: frame->rax = 20; break;
+        case SYS_SETPRIORITY: frame->rax = 0; break;
         case SYS_GETRUSAGE: {
             uint8_t zero[144]; memset(zero, 0, sizeof(zero));
             frame->rax = copy_to_user(frame->rsi, zero, sizeof(zero)) == 0 ? 0 : (uint64_t)-(int64_t)EFAULT;
