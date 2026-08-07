@@ -1399,6 +1399,10 @@ int64_t process_futex_wait(struct syscall_frame *frame, uint64_t address,
     waiting->futex_wait_address = address;
     waiting->futex_wait_deadline_ns = timeout_ns < 0 ? UINT64_MAX :
         time_uptime_ns() + (uint64_t)timeout_ns;
+    /* Unlike wait4, EAGAIN here is a true answer and not a lie: it is what a
+       futex whose value no longer matches returns, and the caller re-reads and
+       tries again. It costs a spin rather than a park, which is why the two
+       are not the same. */
     if (switch_to_next(frame, waiting) != 0) {
         waiting->state = PROCESS_RUNNING;
         waiting->futex_wait_active = 0;
@@ -1416,8 +1420,10 @@ int process_sleep_on(struct syscall_frame *frame, const void *channel) {
     waiting->state = PROCESS_BLOCKED;
     waiting->wait_channel = channel;
     if (switch_to_next(frame, waiting) != 0) {
-        /* Nothing else can run. Blocking here would stop the machine, so leave
-           the caller running and let it retry rather than deadlock. */
+        /* The caller rewound its syscall before sleeping, so leaving it
+           running costs a retry that re-tests the condition -- correct, and
+           the reason this stays a spin rather than a park: a wakeup that never
+           came would turn into a hang instead of a slow loop. */
         waiting->state = PROCESS_RUNNING;
         waiting->wait_channel = NULL;
         return -EAGAIN;
@@ -1635,14 +1641,18 @@ int64_t process_waitpid_from_syscall(struct syscall_frame *frame, int64_t pid,
     parent->wait_pid = pid;
     parent->wait_status_user = status_user;
     parent->wait_options = options;
-    if (switch_to_next(frame, parent) != 0) {
-        parent->state = PROCESS_RUNNING;
-        parent->wait4_active = 0;
-        parent->wait_pid = 0;
-        parent->wait_status_user = 0;
-        parent->wait_options = 0;
-        return -ECHILD;
-    }
+    /*
+     * Nothing else to run *here* is not the same as nothing else to run. The
+     * child this caller is waiting for is very likely the reason: it is
+     * PROCESS_RUNNING on another processor, which makes it exactly the thing
+     * next_runnable() must not pick. Reporting ECHILD then is a lie -- the
+     * child exists and is executing -- and a shell believes it: bash reads it
+     * as "the job is gone" and runs the next command over the top of one that
+     * is still going.
+     *
+     * So the processor parks instead. The child's exit wakes the sleeper.
+     */
+    if (switch_to_next(frame, parent) != 0) go_idle();
     return 0;
 }
 
@@ -1902,9 +1912,10 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         current->state = PROCESS_STOPPED;
         current->stop_reported = notify_parent_of_job_change(
             current, WUNTRACED, ((signal_number & 0xFF) << 8) | 0x7F);
-        if (switch_to_next(frame, current) != 0) {
-            current->state = PROCESS_RUNNING;
-        }
+        /* Same as wait4: with nothing else ready here, the answer is to park
+           the processor, not to keep running a process that has been told to
+           stop. */
+        if (switch_to_next(frame, current) != 0) go_idle();
         return;
     }
     if (action->handler == SIG_DFL || signal_number == SIGKILL) {
