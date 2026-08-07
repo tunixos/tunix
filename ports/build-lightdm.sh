@@ -89,7 +89,7 @@ cross_port_configure "$BUILD_SRC" "$BUILD_OBJ" \
     --disable-gtk-doc \
     --disable-liblightdm-qt5 \
     --disable-libaudit \
-    --with-user-session=xfce \
+    --with-user-session=tunix \
     --with-greeter-session=lightdm-gtk-greeter \
     --with-greeter-user=lightdm
 
