@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "include/ext2.h"
+#include "include/heap.h"
 #include "include/file.h"
 #include "include/kstring.h"
 #include "include/pmm.h"
@@ -146,6 +147,20 @@ static int64_t proc_meminfo_read(struct vfs_node *node, uint64_t offset,
     text_string(&text, "Buffers:        0 kB\nCached:         0 kB\n");
     text_string(&text, "SwapTotal:      0 kB\nSwapFree:       0 kB\n");
     text_string(&text, "Shmem:          0 kB\nSReclaimable:   0 kB\n");
+
+    /*
+     * The kernel's allocator, which is a second ceiling and the one that runs
+     * out first: file contents live in it. Reported as Slab because that is
+     * the field tools already understand, with the limit alongside -- without
+     * the limit the number says nothing, since it is not bounded by MemTotal.
+     */
+    uint64_t heap_reserved = 0;
+    uint64_t heap_allocated = 0;
+    uint64_t heap_limit = 0;
+    heap_stats(&heap_reserved, &heap_allocated, &heap_limit);
+    text_string(&text, "Slab:           "); text_unsigned(&text, heap_allocated / 1024ULL); text_string(&text, " kB\n");
+    text_string(&text, "SUnreclaim:     "); text_unsigned(&text, heap_reserved / 1024ULL); text_string(&text, " kB\n");
+    text_string(&text, "KernelHeapMax:  "); text_unsigned(&text, heap_limit / 1024ULL); text_string(&text, " kB\n");
     return text_read(&text, offset, size, output);
 }
 

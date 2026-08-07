@@ -347,3 +347,11 @@ int heap_under_pressure(void) {
     spinlock_release(&heap_lock);
     return pressed;
 }
+
+void heap_stats(uint64_t *reserved, uint64_t *allocated, uint64_t *limit) {
+    spinlock_acquire(&heap_lock);
+    if (reserved) *reserved = heap_size;
+    if (allocated) *allocated = heap_allocated;
+    spinlock_release(&heap_lock);
+    if (limit) *limit = HEAP_MAX_SIZE;
+}
