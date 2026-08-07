@@ -1395,6 +1395,8 @@ $(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(LINUX_PAM_STAMP) $(
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/run/user/1000 \
 		$(ROOTFS)/var/tmp $(ROOTFS)/var/log $(ROOTFS)/var/lib/sudo \
+		$(ROOTFS)/var/lib/lightdm $(ROOTFS)/var/cache/lightdm \
+		$(ROOTFS)/var/log/lightdm $(ROOTFS)/run/lightdm \
 		$(ROOTFS)/root/.config $(ROOTFS)/root/.cache \
 		$(ROOTFS)/home/tunix/.config $(ROOTFS)/home/tunix/.cache \
 		$(ROOTFS)/home/tunix/.local/share $(ROOTFS)/etc/sudoers.d

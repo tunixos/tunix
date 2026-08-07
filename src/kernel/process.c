@@ -1823,6 +1823,14 @@ static int may_signal(const struct process *target) {
            sender->euid == target->cred.uid || sender->euid == target->cred.suid;
 }
 
+/* Remember who a kill(2) came from, so the handler's siginfo can say. */
+static void record_sender(struct process *target, int signal_number) {
+    if (signal_number <= 0 || signal_number >= TUNIX_NSIG) return;
+    target->signal_user_sent |= signal_bit(signal_number);
+    target->signal_sender_pid[signal_number] = (uint32_t)current->pid;
+    target->signal_sender_uid[signal_number] = current->cred.uid;
+}
+
 static int send_signal(int64_t pid, int signal_number, int checked) {
     if (signal_number < 0 || signal_number > TUNIX_NSIG || !current) return -EINVAL;
     if (pid > 0) {
@@ -1830,7 +1838,7 @@ static int send_signal(int64_t pid, int signal_number, int checked) {
         if (!target) return -ESRCH;
         if (checked && !may_signal(target)) return -EPERM;
         signal_one_process(target, signal_number);
-        if (checked) target->signal_user_sent |= signal_bit(signal_number);
+        if (checked) record_sender(target, signal_number);
         return 0;
     }
 
@@ -1845,7 +1853,7 @@ static int send_signal(int64_t pid, int signal_number, int checked) {
             if (checked && !may_signal(target)) refused = 1;
             else {
                 signal_one_process(target, signal_number);
-                if (checked) target->signal_user_sent |= signal_bit(signal_number);
+                if (checked) record_sender(target, signal_number);
                 delivered = 1;
             }
         }
@@ -1998,7 +2006,19 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         int32_t info[SIGNAL_SIGINFO_SIZE / 4];
         memset(info, 0, sizeof(info));
         info[0] = signal_number;
-        info[2] = (current->signal_user_sent & bit) ? SI_USER : SI_KERNEL;
+        int from_user = (current->signal_user_sent & bit) != 0;
+        info[2] = from_user ? SI_USER : SI_KERNEL;
+        /* si_pid and si_uid, at offsets 16 and 20 of the x86_64 siginfo_t.
+           A handler that only wants to know it was signalled ignores these;
+           one that has to tell its children apart cannot. LightDM is the
+           second kind: the X server reports itself ready by raising SIGUSR1,
+           and LightDM looks the sender up by pid to decide which server it
+           was -- so a zero here left it waiting forever for a signal it had
+           already been sent. */
+        if (from_user && signal_number > 0 && signal_number < TUNIX_NSIG) {
+            info[4] = (int32_t)current->signal_sender_pid[signal_number];
+            info[5] = (int32_t)current->signal_sender_uid[signal_number];
+        }
         area -= SIGNAL_SIGINFO_SIZE;
         siginfo_address = area;
         if (vmm_copy_to_space(current->cr3, siginfo_address, info, SIGNAL_SIGINFO_SIZE) != 0) {
@@ -2008,6 +2028,10 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         area &= ~15ULL;
     }
     current->signal_user_sent &= ~bit;
+    if (signal_number > 0 && signal_number < TUNIX_NSIG) {
+        current->signal_sender_pid[signal_number] = 0;
+        current->signal_sender_uid[signal_number] = 0;
+    }
 
     uint64_t new_rsp = area - 8;
     if (vmm_copy_to_space(current->cr3, new_rsp, &action->restorer, sizeof(action->restorer)) != 0) {

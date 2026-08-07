@@ -1,0 +1,13 @@
+# The graphical login. LightDM starts the X server, runs the greeter on it,
+# and after a successful authentication replaces the greeter with the user's
+# session -- so this one service covers everything the console `login` plus
+# /bin/tunix-session used to do between them.
+#
+# restart = true for the same reason `login` has it: when a session ends the
+# machine should offer another login, not go dark. dinit's built-in restart
+# rate limiting stops a crash loop.
+type = process
+command = /usr/sbin/lightdm
+depends-on = rcS
+restart = true
+logfile = /var/log/lightdm/dinit.log

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Xfce Session
+Comment=The Tunix desktop
+Exec=/bin/tunix-session
+TryExec=/bin/tunix-session
+DesktopNames=XFCE

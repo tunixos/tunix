@@ -4,6 +4,7 @@
 type = internal
 waits-for = rcS
 waits-for = keymap
-# The console login prompt. The desktop is not a service any more: it belongs to
-# whoever logs in, and is started by their session so that it runs as them.
-waits-for = login
+# The graphical login. LightDM owns the display from here on; the console
+# `login` service is still defined and can be started in its place, but the two
+# cannot both run -- there is one screen and one keyboard.
+waits-for = lightdm

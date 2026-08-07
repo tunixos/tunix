@@ -27,15 +27,19 @@ keyboard. The groups are not decoration: the device nodes carry them.
 
 ## Logging in
 
-dinit starts a `login` service on the console, which runs shadow's `login(1)`.
-After the password is checked against `/etc/shadow` it sets the account's groups,
-gid and uid, and execs the login shell. `/etc/profile` then starts the Xfce
-session, so the desktop runs as whoever logged in rather than as root. Logging
-out ends the session and dinit brings the prompt back.
+dinit starts LightDM, which asks for the password at a graphical greeter and
+checks it through PAM -- see [Display Manager](display-manager.md). The
+`login` service is still defined for a console login and does the same thing
+without a screen: shadow's `login(1)` checks `/etc/shadow` directly, sets the
+account's groups, gid and uid, and execs the login shell.
 
-The desktop session lives in `/bin/tunix-session`. Everything it once needed root
-for -- the runtime directory, the machine id, the compiled GSettings schemas --
-happens earlier in `/etc/rc.d/rcS`, which is still root.
+Either way the desktop runs as whoever logged in rather than as root. Everything
+it once needed root for -- the runtime directory, the machine id, the compiled
+GSettings schemas -- happens earlier in `/etc/rc.d/rcS`, which is still root.
+
+`login`, `su` and `sudo` do not go through PAM: they were built without it and
+each still reads `/etc/shadow` its own way. Only LightDM authenticates through
+`/etc/pam.d`.
 
 ## Becoming somebody else
 

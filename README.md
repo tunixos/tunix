@@ -29,6 +29,9 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
 - A full Xfce desktop on Xorg (xfwm4, xfce4-panel, xfdesktop, Thunar and
   xfce4-terminal), started by the session of whoever logs in, so it runs as
   that user; a Weston (Wayland) session is also available
+- A graphical login: LightDM with lightdm-gtk-greeter owns the display from
+  boot, authenticating through Linux-PAM — see
+  [Display Manager](docs/display-manager.md)
 
 ## Quick Start
 
@@ -71,3 +74,4 @@ make clean
 - [Memory Layout](docs/memory-layout.md)
 - [Persistent Filesystem](docs/persistent-filesystem.md)
 - [Users and Permissions](docs/users-and-permissions.md)
+- [Display Manager](docs/display-manager.md)

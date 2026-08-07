@@ -104,6 +104,15 @@ int64_t signalfd_read(struct signalfd_context *context, size_t size, void *buffe
         process->signal_pending &= ~bit;
         memset(&out[produced], 0, sizeof(out[produced]));
         out[produced].ssi_signo = (uint32_t)signal_number;
+        /* Same reason a handler's siginfo carries them: a reader that has to
+           tell senders apart cannot do it from the signal number alone. */
+        if ((process->signal_user_sent & bit) && signal_number < TUNIX_NSIG) {
+            out[produced].ssi_pid = process->signal_sender_pid[signal_number];
+            out[produced].ssi_uid = process->signal_sender_uid[signal_number];
+            process->signal_user_sent &= ~bit;
+            process->signal_sender_pid[signal_number] = 0;
+            process->signal_sender_uid[signal_number] = 0;
+        }
         produced++;
     }
 

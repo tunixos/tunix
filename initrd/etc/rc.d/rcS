@@ -23,6 +23,16 @@ if id -u tunix >/dev/null 2>&1; then
     chown -R tunix:tunix /home/tunix 2>/dev/null || true
 fi
 
+# LightDM's own directories. /run and /var/log are volatile, and the greeter
+# runs as `lightdm`, which has to be able to write its home and cache.
+if id -u lightdm >/dev/null 2>&1; then
+    mkdir -p /run/lightdm /var/log/lightdm /var/cache/lightdm /var/lib/lightdm \
+        /run/user/82
+    chown lightdm:lightdm /run/lightdm /var/cache/lightdm /var/lib/lightdm \
+        /run/user/82
+    chmod 0700 /run/lightdm /var/cache/lightdm /var/lib/lightdm /run/user/82
+fi
+
 # GTK apps need compiled GSettings schemas and D-Bus needs a machine id; both
 # are written where only root can write.
 glib-compile-schemas /usr/share/glib-2.0/schemas 2>/dev/null || true

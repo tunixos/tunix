@@ -238,6 +238,36 @@ that reports every file as 0777, so the modes come from
 `scripts/rootfs-permissions.conf` when the image is built -- that file, not the
 port script, is where `/bin/su` and `/usr/bin/sudo` become 4755.
 
+## Authentication and the Display Manager
+
+Linux-PAM, LightDM and lightdm-gtk-greeter are cross ports on the graphics
+sysroot. What they run into is described in
+[Display Manager](display-manager.md); what is worth knowing to *build* them:
+
+**PAM cannot be bootstrapped in place on a Windows working copy.** Its
+top-level `Makefile.am` pins `AUTOMAKE_OPTIONS = ... gnu ...`, which requires a
+`ChangeLog`, and upstream's `autogen.sh` satisfies that by touching one next to
+the tracked `CHANGELOG`. On a case-insensitive drive those are the same file,
+and automake reads the directory listing itself, so the requirement can never be
+met — and the command line cannot lower the strictness, because `Makefile.am`
+outranks it. `ports/build-linux-pam.sh` copies the tree to `/var/tmp` and builds
+there; `LINUX_PAM_WORK` overrides where.
+
+**LightDM's generated headers only exist in maintainer mode.**
+lightdm-gtk-greeter turns its glade file and two stylesheets into C headers with
+`xdt-csource`, inside `if MAINTAINER_MODE`. A release tarball ships the results;
+a git checkout does not, so the port configures with `--enable-maintainer-mode`.
+It also builds in-tree: the sources include `"src/lightdm-gtk-greeter-ui.h"` but
+the compile line carries `-I$(top_srcdir)` without `-I$(top_builddir)`, so a
+separate object directory never finds them.
+
+**Three patches, all musl or missing-dependency.** libxklavier is dropped from
+liblightdm-gobject (and from its `.pc`, or the greeter's configure fails on a
+dependency the library no longer uses); the glibc-only `LC_IDENTIFICATION` and
+`_NL_IDENTIFICATION_*` lookups fall back to upstream's own path; and
+`session-child.c`'s private `updwtmpx` is renamed, because musl provides one and
+the two declarations conflict.
+
 ## Common Fixes
 
 Initialize missing third-party sources:

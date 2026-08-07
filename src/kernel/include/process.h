@@ -180,6 +180,11 @@ struct process {
     /* Which pending signals came from a kill(2) rather than from the kernel;
        it is the difference between SI_USER and SI_KERNEL in siginfo. */
     uint64_t signal_user_sent;
+    /* Who sent each of those, for siginfo's si_pid and si_uid. One entry per
+       signal is the whole story here: pending signals are a bitmask, not a
+       queue, so a second kill(2) of the same signal replaces the first. */
+    uint32_t signal_sender_pid[TUNIX_NSIG];
+    uint32_t signal_sender_uid[TUNIX_NSIG];
     uint64_t signal_blocked;
     uint64_t signal_saved_mask;
     int in_signal;

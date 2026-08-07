@@ -1,0 +1,27 @@
+#!/bin/sh
+# The X server, as LightDM starts it.
+#
+# A wrapper rather than a plain xserver-command because two things are not
+# expressible in lightdm.conf:
+#
+#   XORG_NO_VT   Tunix has no virtual terminals. The Xorg port reads this and
+#                skips the /dev/tty0 probe and the VT ioctls entirely; input
+#                comes from evdev and the display from DRM master, neither of
+#                which needs a console. Same idea as SEATD_VTBOUND=0 in startx.
+#   -config      there is no autodetection worth the name on one known machine,
+#                so the modesetting DDX is named outright.
+#
+# Any vtN argument is dropped: LightDM does not pass one on this machine, but
+# the server would refuse it if it ever did.
+export XORG_NO_VT=1
+export XKB_BINDIR=/usr/bin
+
+args=""
+for argument in "$@"; do
+    case "$argument" in
+        vt[0-9]*) ;;
+        *) args="$args $argument" ;;
+    esac
+done
+
+exec /usr/bin/X -config /etc/X11/xorg.conf -nolisten tcp $args

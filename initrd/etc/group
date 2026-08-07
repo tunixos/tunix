@@ -12,6 +12,7 @@ audio:x:29:tunix
 video:x:44:tunix
 input:x:45:tunix
 messagebus:x:81:
+lightdm:x:82:
 users:x:100:tunix
 nogroup:x:65534:
 tunix:x:1000:

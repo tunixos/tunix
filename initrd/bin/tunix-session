@@ -1,41 +1,25 @@
 #!/bin/bash
-# The Xfce desktop session, started by the session of whoever logged in.
+# The Xfce desktop started from a console login: Xorg, then /bin/tunix-desktop.
 #
-# It used to be a dinit service and therefore ran as root. Now it runs as the
-# user: everything root-only (the schema cache, the machine id, the writable
-# directories under /run and /var) has moved to /etc/rc.d/rcS, and what is left
-# here needs nothing more than membership of the video, input and audio groups.
+# It runs as the user, not as root: everything root-only (the schema cache, the
+# machine id, the writable directories under /run and /var) has moved to
+# /etc/rc.d/rcS, and what is left here needs nothing more than membership of the
+# video, input and audio groups.
 #
-# The pieces, in order:
-#   Xorg          VT-less on /dev/dri/card0 (XORG_NO_VT is the SEATD_VTBOUND=0
-#                 analogue; the modesetting DDX drives the DRM display).
-#   dbus-daemon   the session message bus. xfconfd (the config store) and the
-#                 Xfce components activate over it.
-#   xfsettingsd   applies the GTK theme, fonts, cursor and keyboard from xfconf.
-#   xfwm4         the window manager, XRender compositor ON.
-#   xfce4-panel   the panel / taskbar.
-#   xfdesktop     the desktop background and menu.
+# XORG_NO_VT is the SEATD_VTBOUND=0 analogue -- the modesetting DDX drives the
+# DRM display and Tunix has no virtual terminal to bind to.
+#
+# When LightDM is running the display it starts the X server itself and calls
+# /bin/tunix-desktop directly; this path is what a `login` on the console uses.
 set -u
 
 export DISPLAY=:0
 export XORG_NO_VT=1
 export XKB_BINDIR=/usr/bin
-export GDK_BACKEND=x11
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-export XDG_CONFIG_DIRS=/etc/xdg
-export XDG_DATA_DIRS=/usr/share
-export XDG_CONFIG_HOME=$HOME/.config
-export XDG_CACHE_HOME=$HOME/.cache
-export XDG_DATA_HOME=$HOME/.local/share
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-export XDG_MENU_PREFIX=xfce-
-export XDG_CURRENT_DESKTOP=XFCE
-export DESKTOP_SESSION=xfce
-# Use the default panel layout instead of prompting on first run -- there is
-# nobody to answer the "one empty panel or the default?" dialog at login.
-export XFCE_PANEL_MIGRATE_DEFAULT=1
+export XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME/xorg"
+mkdir -p "$XDG_DATA_HOME/xorg"
 cd "$HOME" || cd /
 
 Xorg :0 -config /etc/X11/xorg.conf -logfile "$XDG_DATA_HOME/xorg/Xorg.0.log" -nolisten tcp &
@@ -49,38 +33,7 @@ for i in $(seq 1 40); do
 done
 sleep 1
 
-dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
-sleep 1
-xfsettingsd &
-sleep 1
-
-xfwm4 --compositor=on &
-sleep 1
-thunar --daemon &
-xfce4-panel &
-sleep 1
-xfdesktop &
-sleep 2
-
-# The wallpaper: the Xfce "blue" backdrop that xfdesktop ships. The RandR output
-# name is not known ahead of time, so set the backdrop on every monitor node
-# xfdesktop has registered, plus the usual single-head guesses, then reload.
-wp=/usr/share/backgrounds/xfce/xfce-blue.jpg
-for prop in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep '/last-image$'); do
-    base=${prop%/last-image}
-    xfconf-query -c xfce4-desktop -p "$base/image-style" -t int -s 5 2>/dev/null || \
-        xfconf-query -c xfce4-desktop -p "$base/image-style" -n -t int -s 5 2>/dev/null || true
-    xfconf-query -c xfce4-desktop -p "$base/last-image" -t string -s "$wp" 2>/dev/null || true
-done
-for base in /backdrop/screen0/monitorVirtual-1/workspace0 \
-            /backdrop/screen0/monitor0/workspace0; do
-    xfconf-query -c xfce4-desktop -p "$base/image-style" -n -t int -s 5 2>/dev/null || true
-    xfconf-query -c xfce4-desktop -p "$base/last-image" -n -t string -s "$wp" 2>/dev/null || true
-done
-xfdesktop --reload 2>/dev/null || true
-
-# The welcome screen, on a first boot only.
-tunix-welcome --if-first-run &
+/bin/tunix-desktop &
 
 # When X exits the session is over and the login prompt comes back.
 wait "$XORG_PID"
