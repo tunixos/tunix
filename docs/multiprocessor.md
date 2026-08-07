@@ -281,6 +281,80 @@ their callers rewound the syscall before sleeping, so retrying re-tests the
 condition and is a correct — if wasteful — answer, where parking would turn a
 wakeup that never came into a hang instead of a slow loop.
 
+## When the machine just resets
+
+Not everything four processors find is a concurrency bug. The Xfce session run
+as an unprivileged user reset the machine outright — no panic, no message, QEMU
+simply pausing on the guest's reset.
+
+That shape is a triple fault: the processor could not deliver a fault, could not
+deliver the double fault that followed, and gave up. Nothing is printed because
+nothing gets to run. The fix for *seeing* it is an IST stack: vector 8 is given
+a stack of its own in `gdt.c`, so a double fault is delivered on memory the
+original failure cannot have broken, and `isr_handler` reports it before taking
+the kernel lock — the processor may well have been holding it.
+
+The first one it caught said:
+
+```
+DOUBLE FAULT: rip 0xffffffff80101645 cs 8 rsp 0xffffff0000000000
+              cr2 0xfffffefffffffff8 rflags 10406
+```
+
+`rsp` is exactly `HEAP_VIRTUAL_BASE` and `cr2` is eight bytes below it: the
+stack pointer had ended up at the very bottom of the heap, and the next push
+left the mapped region. The instruction is the `call kernel_lock` at the top of
+`isr_handler` — not a deep frame, just the first push after an interrupt landed
+somewhere with nothing under it.
+
+Growing the report a line at a time — each line reading one thing further from
+the processor, so that where it stops is itself an answer — got to this:
+
+```
+  gs 0x0 kernelgs 0xffffffff8017e3e0
+  cpu 0 kernel_rsp 0xffffff00002ba7b0 current 0xffffff00002b1ad0
+  pid 2824936 stack 0xffffff00002b27b0..0xffffffff80100bb4
+```
+
+The process is corrupt. `kernel_stack_base` and `kernel_rsp` agree with each
+other exactly (0x8000 apart, as they should be) but the pid is nonsense and
+`kernel_stack_top` holds a *kernel text address*. Something had written over the
+middle of a `struct process`.
+
+The cause is in the flags. Every one of these reports had `rflags` with bit 10
+set — the direction flag:
+
+```
+rflags 10406   10446   10497   10482
+```
+
+The System V ABI requires DF to be clear on entry to a C function, and the
+compiler acts on that: a struct assignment or a `memset` becomes `rep movs` or
+`rep stos`, which walks *backwards* when DF is set and writes over whatever
+lies before the destination instead of after it. User code sets DF legitimately
+— musl's `memmove` does, for an overlapping copy — and an interrupt landing in
+that window handed the flag straight to the kernel.
+
+The syscall path never had the problem: `FMASK` clears DF on the way in, which
+is why this only ever arrived through interrupts. The interrupt stubs now do the
+same thing with a `cld`, which is the whole fix.
+
+Two other things changed in the same hunt and are worth keeping, though neither
+was the cause:
+
+- **Epoll nesting is bounded now.** `file_poll_events` asks an epoll set whether
+  it is ready, which asks the same of every descriptor in it — and a descriptor
+  can be another set. Nothing stopped them forming a ring, and a ring has no
+  answer. Linux caps the nesting at five; Tunix capped it at nothing.
+- **Kernel stacks are 32 KiB rather than 16.** The deepest ordinary path through
+  `syscall_dispatch` measures 9688 bytes, so 16 was survivable — but `sys_read`
+  (4120) calling a `/proc` reader (4112) is 8 KiB before the VFS frames between
+  them, and xfce4-panel reads `/proc` continuously. That is closer than a stack
+  whose overflow resets the machine should ever be.
+
+None of this was caused by more processors. It was reachable all along; four
+processors and a desktop are what got somebody looking.
+
 ## Proving it
 
 `bin/smp-test` (`src/userspace/smp_test.c`) times one child doing a fixed
