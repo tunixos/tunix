@@ -54,12 +54,19 @@ void pmm_init(uint32_t mmap_count, uint64_t mmap_addr,
               uint64_t reserve_start, uint64_t reserve_size) {
     struct e820_entry *entries = (struct e820_entry *)mmap_addr;
     uint64_t highest = 0;
+    /* Summed, not taken from the top of the range: firmware splits RAM around
+       the PCI hole, so on a 4 GiB machine the highest usable address is 5 GiB
+       and reporting that would claim a gigabyte the machine does not have. */
+    uint64_t installed = 0;
+    uint64_t usable = 0;
 
     for (uint32_t i = 0; i < mmap_count; i++) {
         if (entries[i].type != 1) continue;
         uint64_t end = entries[i].base + entries[i].length;
         if (end < entries[i].base) continue;
+        installed += entries[i].length;
         if (end > PMM_DIRECT_MAP_LIMIT) end = PMM_DIRECT_MAP_LIMIT;
+        if (end > entries[i].base) usable += end - entries[i].base;
         if (end > highest) highest = end;
     }
     if (highest < 2 * 1024 * 1024ULL) panic("PMM: insufficient usable memory");
@@ -109,10 +116,14 @@ void pmm_init(uint32_t mmap_count, uint64_t mmap_addr,
 
     next_hint = reserved_end / PMM_PAGE_SIZE;
 
-    KDEBUG("PMM: managed=%u MiB pages=%u free=%u\n",
-            (unsigned)(highest / (1024 * 1024ULL)),
-            (unsigned)total_pages,
-            (unsigned)free_pages);
+    /* Not behind the debug flag: how much of the machine's memory is actually
+       usable is the first thing anyone wants to know, and it was silently
+       capped for a long time. The ceiling is printed next to it so a machine
+       that has more than the kernel will take says so plainly. */
+    kprintf("PMM: %u MiB usable of %u MiB installed, ceiling %u MiB\n",
+            (unsigned)(usable / (1024 * 1024ULL)),
+            (unsigned)(installed / (1024 * 1024ULL)),
+            (unsigned)(PMM_DIRECT_MAP_LIMIT / (1024 * 1024ULL)));
 }
 
 
