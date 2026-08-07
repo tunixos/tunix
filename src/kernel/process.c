@@ -1825,10 +1825,10 @@ static int may_signal(const struct process *target) {
 
 /* Remember who a kill(2) came from, so the handler's siginfo can say. */
 static void record_sender(struct process *target, int signal_number) {
-    if (signal_number <= 0 || signal_number >= TUNIX_NSIG) return;
+    if (signal_number < 1 || signal_number > TUNIX_NSIG) return;
     target->signal_user_sent |= signal_bit(signal_number);
-    target->signal_sender_pid[signal_number] = (uint32_t)current->pid;
-    target->signal_sender_uid[signal_number] = current->cred.uid;
+    target->signal_sender_pid[signal_number - 1] = (uint32_t)current->pid;
+    target->signal_sender_uid[signal_number - 1] = current->cred.uid;
 }
 
 static int send_signal(int64_t pid, int signal_number, int checked) {
@@ -2015,9 +2015,9 @@ void process_prepare_user_return(struct syscall_frame *frame) {
            and LightDM looks the sender up by pid to decide which server it
            was -- so a zero here left it waiting forever for a signal it had
            already been sent. */
-        if (from_user && signal_number > 0 && signal_number < TUNIX_NSIG) {
-            info[4] = (int32_t)current->signal_sender_pid[signal_number];
-            info[5] = (int32_t)current->signal_sender_uid[signal_number];
+        if (from_user) {
+            info[4] = (int32_t)current->signal_sender_pid[signal_number - 1];
+            info[5] = (int32_t)current->signal_sender_uid[signal_number - 1];
         }
         area -= SIGNAL_SIGINFO_SIZE;
         siginfo_address = area;
@@ -2028,10 +2028,8 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         area &= ~15ULL;
     }
     current->signal_user_sent &= ~bit;
-    if (signal_number > 0 && signal_number < TUNIX_NSIG) {
-        current->signal_sender_pid[signal_number] = 0;
-        current->signal_sender_uid[signal_number] = 0;
-    }
+    current->signal_sender_pid[signal_number - 1] = 0;
+    current->signal_sender_uid[signal_number - 1] = 0;
 
     uint64_t new_rsp = area - 8;
     if (vmm_copy_to_space(current->cr3, new_rsp, &action->restorer, sizeof(action->restorer)) != 0) {

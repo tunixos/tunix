@@ -3,7 +3,14 @@
 
 #include <stdint.h>
 
-#define TUNIX_NSIG 32
+/* Linux's _NSIG. The signals above 32 are the real-time ones, and the reason
+   they are not optional is musl: it reserves 32, 33 and 34 for its own
+   internals, and setuid/setgid in a threaded process is implemented by sending
+   signal 34 to every other thread. With the range stopped at 32 that tkill was
+   refused, __synccall nopped out the callback, and setresgid() returned EAGAIN
+   without having changed anything -- which is how LightDM's greeter died on an
+   assertion in a function that only calls setresgid and setresuid. */
+#define TUNIX_NSIG 64
 #define SIG_DFL 0ULL
 #define SIG_IGN 1ULL
 
