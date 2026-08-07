@@ -262,6 +262,17 @@ isr31:
  * is what makes that work without a special case.
  */
 isr_common_stub:
+    /*
+     * The direction flag belongs to whoever was interrupted, and the C below
+     * assumes it is clear -- the ABI says so, and the compiler acts on it: a
+     * struct assignment or a memset is a `rep movs`/`rep stos`, which walks
+     * backwards when DF is set and writes over whatever lies *before* the
+     * destination. User code sets it legitimately (musl's memmove does, for an
+     * overlapping copy) and an interrupt landing in that window used to hand
+     * the flag straight to the kernel. The syscall path never had the problem:
+     * FMASK clears DF on the way in. This is the interrupt path's FMASK.
+     */
+    cld
     test byte ptr [rsp + 24], 3
     jz 1f
     swapgs
@@ -373,6 +384,7 @@ irq_lapic_timer:
 .global irq_invalidate_tlb
 irq_invalidate_tlb:
     cli
+    cld
     test byte ptr [rsp + 8], 3
     jz 1f
     swapgs
