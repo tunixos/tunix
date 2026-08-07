@@ -415,3 +415,7 @@
 	path = ports/src/lightdm
 	url = https://github.com/canonical/lightdm.git
 	shallow = true
+[submodule "ports/src/lightdm-gtk-greeter"]
+	path = ports/src/lightdm-gtk-greeter
+	url = https://github.com/Xubuntu/lightdm-gtk-greeter.git
+	shallow = true
