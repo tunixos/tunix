@@ -4,9 +4,21 @@
 #include <stdint.h>
 
 #define PMM_PAGE_SIZE 4096ULL
-/* The kernel direct map runs from KERNEL_BASE to the framebuffer window at
-   KERNEL_BASE + 1.75 GiB, so that much physical RAM can be managed. */
-#define PMM_DIRECT_MAP_LIMIT (1792ULL * 1024ULL * 1024ULL)
+/*
+ * How much physical memory the machine may use.
+ *
+ * This used to be 1792 MiB, and not by choice: the direct map started at
+ * KERNEL_BASE and the framebuffer window sat exactly that far above it. The
+ * map has its own PML4 entry now, so what remains is a limit on the bookkeeping
+ * rather than on the address space -- the allocator's bitmap and per-page
+ * reference counts are reserved after the kernel image by the linker script,
+ * and they cost about 544 KiB for every gigabyte. 8 GiB needs 4.25 MiB of the
+ * 8 MiB reserved there; raising this means raising that too.
+ *
+ * The structures are sized from the memory map at boot, not from this, so a
+ * machine with 2 GiB pays for 2 GiB.
+ */
+#define PMM_DIRECT_MAP_LIMIT (8ULL * 1024ULL * 1024ULL * 1024ULL)
 
 struct e820_entry {
     uint64_t base;

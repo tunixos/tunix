@@ -24,7 +24,7 @@ SECTIONS
         *(COMMON)
         *(.bss*)
         kernel_end = .;
-        . += 0x200000;
+        . += 0x800000;
         kernel_reserve_end = .;
     }
 
@@ -33,10 +33,12 @@ SECTIONS
        image. It used to work only because the old bootloader mapped a generous
        slab; a loader that maps exactly the program headers — as any of them is
        entitled to — faulted on the first write.
-       The bound is exact rather than generous: PMM_DIRECT_MAP_LIMIT is 1792 MiB,
-       so at most 458752 pages, costing one bit each for the bitmap and two
-       bytes each for the counts. That is 952 KiB; two megabytes leaves room for
-       the alignment and for the limit to grow. */
+       The bound follows PMM_DIRECT_MAP_LIMIT, now 8 GiB: at most 2097152
+       pages, costing one bit each for the bitmap and two bytes each for the
+       counts. That is 4.25 MiB; eight megabytes leaves room for the alignment
+       and for the limit to grow again. Raising the limit without raising this
+       overruns the reserve silently, which is why the two are commented
+       against each other. */
     ASSERT((kernel_reserve_end - 0xFFFFFFFF80000000) < 0x02000000,
            "kernel image overlaps the 32 MiB initramfs staging area")
 }

@@ -1663,13 +1663,12 @@ $(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts
 	$(PYTHON) scripts/build-image.py $@ $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS)
 	$(PYTHON) scripts/check-boot-image.py $@ $(INITRAMFS)
 
-# 2 GiB (was 256M): Tunix keeps file data in RAM, so `git clone` of a real repo
-# needs headroom for the pack plus git's own working set. The PMM only manages
-# the first PMM_DIRECT_MAP_LIMIT (1 GiB) of physical RAM -- the kernel's direct
-# map is exactly 1 GiB -- so at most ~1 GiB is usable and the surplus here is
-# ignored; 2 GiB is given only so QEMU surely presents a full contiguous 1 GiB
-# below the cap despite low-memory holes. The kernel heap grows from the PMM on
-# demand up to HEAP_MAX_SIZE. The CI boot smoke test stays at 256M (clones nothing).
+# 4 GiB: Tunix keeps file data in RAM, so `git clone` of a real repo
+# needs headroom for the pack plus git's own working set, and a browser tab is
+# most of a gigabyte on its own. The direct map has its own PML4 entry now, so
+# PMM_DIRECT_MAP_LIMIT is 8 GiB and all of what QEMU is given is usable, where
+# 2 GiB used to become 1792 MiB. The kernel heap grows from the PMM on demand up
+# to HEAP_MAX_SIZE.
 # -enable-kvm -cpu host: the whole X11 Xfce desktop is software-rendered
 # (llvmpipe + X core), which is unusably slow under plain TCG emulation. KVM runs
 # the guest at near-native speed. Falls back to TCG automatically if /dev/kvm is
@@ -1680,12 +1679,12 @@ $(IMAGE): $(BUILD)/stage1.bin $(BUILD)/stage2.bin $(KERNEL) $(INITRAMFS) scripts
 QEMU_SMP ?= 4
 run: $(IMAGE)
 	rm -f $(BUILD)/serial.log
-	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -smp $(QEMU_SMP) -m 2048M -drive format=raw,file=$(IMAGE) \
+	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -smp $(QEMU_SMP) -m 4096M -drive format=raw,file=$(IMAGE) \
 		-serial file:$(BUILD)/serial.log -monitor none -no-reboot -no-shutdown \
 		-netdev user,id=net0 -device rtl8139,netdev=net0 $(QEMU_AUDIO)
 
 headless: $(IMAGE)
-	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -smp $(QEMU_SMP) -m 2048M -drive format=raw,file=$(IMAGE) \
+	$(QEMU) -machine pc,accel=kvm:tcg -cpu host -smp $(QEMU_SMP) -m 4096M -drive format=raw,file=$(IMAGE) \
 		-nographic -monitor none -serial stdio -no-reboot -no-shutdown \
 		-netdev user,id=net0 -device rtl8139,netdev=net0 $(QEMU_AUDIO)
 
