@@ -12,6 +12,9 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
 - tmpfs-like volatile `/tmp`, `/run`, `/dev`, `/proc`
 - Framebuffer terminal with keyboard input
 - Basic VFS, devfs, procfs, process, and syscall support
+- Symmetric multiprocessing: every processor the firmware describes is started
+  and the scheduler runs processes on all of them — see
+  [Multiprocessor](docs/multiprocessor.md)
 - GNU userland (coreutils, grep, sed, gawk, findutils, diffutils, tar, gzip, make), Bash, TinyCC, binutils, nano, Lua, and selected libraries
 - Git, with an `https://` transport via a static libcurl built against mbedTLS
   (so `git clone https://…` works); `ssh://` remotes are not supported
@@ -64,5 +67,6 @@ make clean
 - [Build and Run](docs/build-and-run.md)
 - [Ports](docs/ports.md)
 - [Syscalls and Scheduler](docs/syscalls-and-scheduler.md)
+- [Multiprocessor](docs/multiprocessor.md)
 - [Persistent Filesystem](docs/persistent-filesystem.md)
 - [Users and Permissions](docs/users-and-permissions.md)

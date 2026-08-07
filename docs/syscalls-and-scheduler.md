@@ -37,17 +37,19 @@ boot:
 assembly, not a C function, because it runs before there is a valid kernel
 stack:
 
-1. It stashes the incoming user `rsp` and switches to the current process's
-   kernel stack (a single global, `syscall_kernel_rsp`, set by
-   `syscall_set_kernel_stack` — see below).
+1. It `swapgs`es to bring this processor's own block into reach, stashes the
+   incoming user `rsp` there, and switches to the kernel stack the block
+   names (set by `syscall_set_kernel_stack` — see below). A global would not
+   do: which stack to switch to is a different answer on every processor, and
+   the question has to be answered before there is a stack to answer it with.
 2. It spills all argument/callee-relevant registers plus `rcx`/`r11`
    (the `SYSCALL`-clobbered return `rip`/`rflags`) and the saved user `rsp`
    into a `struct syscall_frame` (`src/kernel/include/syscall.h:6`) on that
    stack.
 3. It calls `syscall_dispatch(frame)`.
 4. On return, it rebuilds an `iretq` frame from the (possibly modified)
-   `syscall_frame` and returns to user space via `iretq` rather than
-   `sysretq`.
+   `syscall_frame`, `swapgs`es back, and returns to user space via `iretq`
+   rather than `sysretq`.
 
 Using `iretq` for every return — even the ordinary `SYSCALL` fast path — is
 deliberate: it lets the scheduler resume a process with one common frame
@@ -60,19 +62,24 @@ Two separate "kernel stack" pointers exist and both are updated together
 whenever the scheduler switches processes (`activate_process`,
 `src/kernel/process.c:397`):
 
-- `tss.rsp0`, set via `set_kernel_stack` (`src/kernel/arch/x86_64/gdt.c:37`) —
+- `tss.rsp0`, set via `set_kernel_stack` (`src/kernel/arch/x86_64/gdt.c`) —
   used by the CPU for privilege-level changes on interrupts/exceptions
   (e.g. the timer IRQ).
-- `syscall_kernel_rsp`, set via `syscall_set_kernel_stack` — used explicitly
-  by `syscall_entry` because `SYSCALL` does not consult the TSS.
+- `kernel_rsp` in the per-CPU block, set via `syscall_set_kernel_stack` —
+  used explicitly by `syscall_entry` because `SYSCALL` does not consult the
+  TSS.
+
+Both are per-processor, and for the same reason: they name the kernel stack of
+whichever process *this* processor is running.
 
 ## Dispatch table
 
-`syscall_dispatch` (`src/kernel/syscall.c:2687`) is a single `switch` on
-`frame->rax`. On every call it first accounts CPU time for the caller
-(`process_account_runtime`) and frees any processes left in `PROCESS_DEAD`
-state by a previous switch (`process_reap_deferred`), then dispatches.
-Implemented syscalls fall into rough groups:
+`syscall_dispatch` takes the kernel lock, and `syscall_dispatch_locked`
+(`src/kernel/syscall.c`) is a single `switch` on `frame->rax`. On every call it
+first accounts CPU time for the caller (`process_account_runtime`) and frees
+any processes left in `PROCESS_DEAD` state by a previous switch
+(`process_reap_deferred`), then dispatches. Implemented syscalls fall into
+rough groups:
 
 - **File I/O**: `read`, `write`, `open(at)`, `close`, `lseek`, `pread64`/
   `pwrite64`, `readv`/`writev`, `stat`/`fstat`/`lstat`/`newfstatat`,
@@ -138,12 +145,14 @@ of the same `tgid`), `kernel_stack_top`, `saved_frame` (a full
 
 ## Scheduler
 
-The scheduler is single-core round robin over the circular `queue`:
+The scheduler is round robin over the circular `queue`, shared by every
+processor — see [Multiprocessor](multiprocessor.md) for how they are started
+and what keeps them out of each other's way:
 
 - `next_runnable(after)` (`src/kernel/process.c:385`) walks forward from
   `after` (or from the head if `after` is `NULL`) and returns the first
-  process in `PROCESS_READY` or `PROCESS_RUNNING` state, wrapping around the
-  list once.
+  process in `PROCESS_READY` state, wrapping around the list once. A `RUNNING`
+  process is not a candidate: it is loaded on some processor already.
 - The quantum is `PROCESS_DEFAULT_QUANTUM_TICKS` = 5 timer ticks
   (`src/kernel/process.c:33`). The timer runs at `TIMER_FREQUENCY_HZ` = 250 Hz
   (`src/kernel/include/timer.h:8`), a PIT rate generator programmed by
@@ -151,9 +160,10 @@ The scheduler is single-core round robin over the circular `queue`:
 - `activate_process` (`src/kernel/process.c:397`) is the only place that makes
   a process "the" running one: it sets `current`, resets the quantum if it
   had run out, stamps `last_scheduled_ns`, sets state to `RUNNING`, points
-  both kernel-stack registers (TSS `rsp0` and `syscall_kernel_rsp`) at the
-  process's kernel stack, switches page tables (`vmm_activate(cr3)`), and
-  reloads `IA32_FS_BASE` for TLS.
+  both kernel-stack registers (this processor's TSS `rsp0` and the
+  `kernel_rsp` in its per-CPU block) at the process's kernel stack, switches
+  page tables (`vmm_activate(cr3)`), and reloads `IA32_FS_BASE` for TLS.
+  `current` is per-processor: it lives in the block `GS` points at.
 
 There is no separate "context switch" assembly routine that swaps callee-
 saved registers on a kernel stack the way a traditional preemptive kernel
@@ -178,6 +188,13 @@ and the *timer interrupt's own frame* is overwritten in place
 (`load_interrupt_context`) so `iret` from the interrupt handler resumes the
 new process instead of the old one. If no other process is runnable, the
 current process just gets its quantum refilled and keeps running.
+
+A tick that arrives on a processor with no process at all takes the same route
+in reverse (`resume_from_idle`): it came from kernel mode, but long mode pushes
+`SS:RSP` for those interrupts too, so the frame can be replaced with a
+process's and the `iret` lands in user space. That is how an idle processor
+picks up work. Processors other than the first are ticked by their own local
+APIC timer rather than the PIT, which is wired to one of them.
 
 ### Voluntary and blocking transitions
 

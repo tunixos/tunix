@@ -1,0 +1,328 @@
+# Multiprocessor
+
+Tunix runs on every processor the firmware describes. This document covers how
+they are started, what each of them owns privately, how the scheduler hands
+work out, and what keeps them from corrupting each other's view of memory. It
+reflects the code as it exists today.
+
+## Finding the processors
+
+`acpi_describe_machine` (`src/kernel/acpi.c`) walks the MADT. A type 0 entry is
+a processor: it carries an ACPI id, a local APIC id, and flags saying whether
+the socket is filled. The APIC id is what a startup message is addressed to and
+it is **not** the index — firmware numbers processors however it likes, and a
+machine with hyperthreading disabled in its BIOS leaves gaps.
+
+`SMP_MAX_CPUS` (8, `src/kernel/include/percpu.h`) is the ceiling. A table that
+lists more says so on the console rather than silently rounding down.
+
+## Bringing one up
+
+`smp_init` (`src/kernel/smp.c`) runs at the end of `kmain`, after the APIC, the
+timer and the syscall MSRs, and before the first process starts. For each
+processor other than the one running:
+
+1. The parameter block in the trampoline is filled in — page tables, stack,
+   entry point, index.
+2. An INIT message resets it; ten milliseconds later a startup message names
+   the page it begins executing at. The startup is sent twice, as the manual
+   asks.
+3. The starter waits up to 200 ms for the new processor to say it is up.
+
+The processors are started one at a time: there is one parameter block, and a
+failure is easier to attribute that way.
+
+### The trampoline
+
+`src/kernel/arch/x86_64/trampoline.S` is copied to physical `0x8000` and runs
+from there, so nothing in it may use a link-time address; every reference is
+written as an offset into the blob plus the address it was copied to.
+
+A processor woken this way starts in 16-bit real mode with nothing set up. The
+blob reaches 32-bit protected mode, turns on PAE, loads the kernel's own page
+tables, sets `EFER.LME` and jumps to 64-bit code, which loads the stack it was
+given and calls `smp_ap_entry`.
+
+Two details are load-bearing:
+
+- **NXE before paging.** The kernel's page tables already have bit 63 set on
+  every non-executable page. To a processor with `EFER.NXE` clear that bit is
+  reserved, so the first instruction fetch after paging comes on would fault
+  rather than run.
+- **The trampoline's page must be mapped to itself.** The instruction after the
+  one that enables paging has to be fetched through the tables it just
+  installed, and the kernel maps nothing that low. The loader's identity map
+  normally survives in the tables the kernel inherited, so usually there is
+  nothing to do — and because it is a huge page, mapping over it would fail
+  rather than be redundant. `map_trampoline_page` checks first and only adds a
+  mapping when one is missing.
+
+Until `smp_ap_entry` loads an IDT there is no handler for anything, so a
+mistake in here is a triple fault and a silent reboot, not a message.
+
+## What each processor owns
+
+`struct cpu` (`src/kernel/include/percpu.h`) is reached through `GS`. That is
+the only way a piece of kernel code can find out which processor is running it:
+every other name in the kernel is shared.
+
+`GS` holds the block only in kernel mode. The entry and exit stubs `swapgs`,
+and the user side of the pair is whatever the process had. Two rules follow
+from the fact that loading a segment register clears its base:
+
+- `gdt_init_cpu` sets the base **after** `gdt_flush`, not before.
+- `process_enter_user` swaps **before** it loads the user data segments.
+
+In `isr_common_stub` the swap is decided by the privilege each end of the
+interrupt came from and is going to, which are not always the same frame: a
+tick taken in the idle loop arrives at CPL 0 with the block already in `GS` and
+leaves through a process's frame at CPL 3, so it swaps on the way out and not
+on the way in.
+
+Private per processor: the GDT and TSS (`rsp0` is the kernel stack of whichever
+process *this* processor is running, and `ltr` marks its own descriptor busy),
+the running process, the address space loaded, the idle stack, and the local
+APIC timer. Shared: the IDT (same handlers everywhere, one IDTR each), the page
+tables, and every kernel data structure.
+
+## The scheduler
+
+The process queue is global and any processor may take anything off it. Most of
+what that took is one line:
+
+```c
+static int runnable(const struct process *process) {
+    return process && process->state == PROCESS_READY;
+}
+```
+
+`RUNNING` used to be pickable, and on one processor that was harmless. On
+several it means "a processor has this loaded right now": picking it again
+elsewhere would run the same registers twice and let two return paths write the
+same saved frame. Every path that gives a process up already marks it `READY`
+(or blocked, or dead) before it looks for the next one, so nothing is lost.
+
+### Idling
+
+A processor with nothing to run parks. `go_idle` drops the process it was
+holding, returns to the kernel address space — so the process's own can be torn
+down — and jumps to the idle stack, where it sits in `sti; hlt`. The kernel
+stack it was on is abandoned rather than unwound, for the same reason a
+blocking syscall can switch away mid-call: everything worth keeping is already
+written down in the process.
+
+It comes back through its timer. In long mode the processor pushes `SS:RSP` for
+interrupts taken at CPL 0 as well, so the frame can be replaced wholesale with
+a process's and the `iretq` lands in user mode — which is how an idle processor
+picks up work with no context to unwind (`resume_from_idle`).
+
+The first processor is driven by the PIT, as it always was. Every other one is
+preempted by its own local APIC timer, whose rate nothing reports and so is
+measured against the TSC at bring-up.
+
+The latency for an idle processor to notice new work is therefore up to one
+tick, 4 ms. There is no reschedule message, because the case it would cover —
+more runnable processes than busy processors — is the case where throughput is
+not the constraint. A processor that blocks picks the next runnable process
+itself, immediately, exactly as before.
+
+## The kernel lock
+
+Nothing in this kernel was written to be entered twice at once: the process
+queue is a bare linked list, the VFS tree has no locks, the page tables are
+edited in place. So kernel entry is serialised behind a single ticket lock
+(`src/kernel/klock.c`), taken in `syscall_dispatch` and `isr_handler` and
+dropped by the assembly that called them.
+
+This does not cost the parallelism that was wanted: user code is where the time
+goes and user code does not hold it. Kernel mode runs with interrupts off, so a
+processor holding the lock cannot be interrupted into wanting it again, and the
+wait is always finite. A ticket lock rather than a test-and-set so that a
+processor entering the kernel in a tight syscall loop cannot starve one that has
+been waiting.
+
+One consequence shows up in `isr_dispatch`: interrupts are acknowledged before
+they are handled, not after. A tick that ends up parking the processor — the
+last process on it exited — never returns to the handler, and a controller
+still waiting to be told the last interrupt finished will not send another.
+
+### The frame the return path is standing on
+
+There is a second consequence, and it is the subtlest thing here.
+
+A frame arrives on the kernel stack of the process that made the call. If that
+call blocked, the process gave its processor away and the frame the return path
+now holds belongs to somebody else — while the stack under it belongs to a
+process that another processor is free to schedule the instant the lock is
+dropped. The first thing that process does on entering the kernel is write over
+exactly those bytes. The same is true after an exit, where the stack can be
+freed and handed back to the heap.
+
+Reasoning that the window is only twenty instructions wide does not save it: a
+guest processor can be descheduled by its host between any two of them, for
+milliseconds.
+
+So `syscall_dispatch` and `isr_handler` move the frame onto the kernel stack of
+whichever process is running here *now* — a stack no other processor can enter
+while this one holds the process — and the assembly reloads `rsp` from the same
+per-CPU field. When nothing was switched, source and destination are the same
+address and no copy happens. Only frames returning to user mode need it; one
+going back to the idle loop is on a stack of this processor's own already.
+
+Moving the frame is not enough on its own, and the first version of this got it
+wrong. A C function's *own* return address is also on the stack it is trying to
+get off, so neither of those two may drop the lock: the `ret` that follows
+would read a stack that another processor is free to reap and hand back to the
+allocator by then — and since the heap gives pages back to the physical
+allocator, that read can fault outright. Both return with the lock still held,
+and the assembly drops it after `rsp` has moved. That is also why the
+translation-flush interrupt has a stub of its own rather than a case in the
+common one: it must not go near the lock at all.
+
+## Cached translations
+
+Changing a mapping on one processor does not change what another has cached.
+The kernel reaches user memory by walking the page tables in software
+(`vmm_copy_from_space`), so only *user* accesses are exposed — but that is
+enough: a processor still holding a translation to a page that has just been
+freed would keep writing into memory handed to somebody else.
+
+`smp_flush_address_space` (`src/kernel/smp.c`) is called wherever a mapping is
+removed or narrowed: `vmm_unmap_page_in`, `vmm_protect_page_in`, the copy path
+of `vmm_handle_cow_fault` (before the frame goes back to the allocator), and
+`vmm_clone_address_space`, which clears write permission on the *parent*'s
+pages. It marks each processor that has this address space loaded, sends one
+message, and waits for all of them to answer.
+
+The waiting is what makes it safe, and it is also where a naive implementation
+deadlocks: a processor waiting for the kernel lock has interrupts off and can
+never take the message. So there are two places a request is answered — the
+interrupt stub, which never touches the lock, and `kernel_lock`'s wait loop,
+which checks the flag on every spin. Between them, every state a processor can
+be in is covered:
+
+| Where it is | How it answers |
+| --- | --- |
+| User mode | Takes the interrupt straight away |
+| Idle loop | Takes the interrupt straight away |
+| Waiting for the kernel lock | Answers in the wait loop |
+| About to `iretq` back to user | Interrupt fires as `IF` comes back on |
+
+It cannot be holding the lock, because the processor asking is.
+
+Which processors are looking at a space cannot change underneath the asker:
+only a processor inside the kernel changes its own, and the asker holds the
+lock. A process whose address space is on one processor only — every
+single-threaded program — costs nothing but a loop over eight slots.
+
+### Faults that are no longer errors
+
+Two page-fault paths used to treat "already mapped" as proof that the fault was
+something else. With threads on several processors it is the ordinary race, so
+`process_commit_area` and `process_grow_user_stack` now report it as handled
+and let the instruction be retried, and `vmm_handle_cow_fault` returns success
+for a page that is already private and writable.
+
+## A thread you are not allowed to kill
+
+`exit_group` takes the whole thread group down, and it used to do that by
+walking the queue and marking every sibling dead on the spot — closing its
+files and letting it be reaped. On one processor that was safe, because a
+sibling was always ready or blocked and never actually executing.
+
+On several it is not. A sibling can be `PROCESS_RUNNING` on another processor,
+in the middle of its own user code, and taking its files and address space away
+underneath it turns that processor's next page fault into a kernel panic
+instead of a signal — the fault handler finds a `current` that is not running
+and has nothing sensible left to do.
+
+So `terminate_sibling_threads` marks a running sibling `group_exit_pending` and
+leaves it alone. `process_prepare_user_return` reads that flag on the way back
+to user mode and runs the ordinary exit path there, on the processor that owns
+the thread. The delay is at most one tick.
+
+This is the shape of the whole problem, and it is worth stating plainly: on one
+processor, "not currently scheduled" and "not currently executing" are the same
+sentence. On several they are not, and every place the old kernel relied on
+that is a place to look.
+
+## "Nothing else to run" is now a different sentence too
+
+Several blocking paths ended with the same shape:
+
+```c
+if (switch_to_next(frame, waiting) != 0) {
+    waiting->state = PROCESS_RUNNING;   /* carry on instead */
+    return -SOMETHING;
+}
+```
+
+On one processor that was a reasonable last resort: if the scheduler could find
+nothing else, blocking would have stopped the machine, so the caller was left
+running and told to try again.
+
+On several processors the premise is gone. `next_runnable` deliberately refuses
+a process that is `RUNNING`, because a `RUNNING` process is loaded on another
+processor — so "nothing else to run" now routinely means "everything else is
+already running somewhere", which is the opposite of an idle machine.
+
+For `wait4` that turned into a wrong answer rather than a slow one. It returned
+`ECHILD` — *you have no such child* — about a child that was executing on
+another processor at that exact moment. Bash believes it: it reads `ECHILD` as
+"the job is finished" and runs the next command on top of one that is still
+going. The symptom was a test binary that printed nothing and an `rcS` that
+sailed past it, with no fault, no signal and no message anywhere. The trace that
+found it showed the shell's next command interleaved with output from the
+program it was supposed to be waiting for.
+
+`wait4` and the job-control stop now park the processor instead. The other two
+(`futex(FUTEX_WAIT)` and `process_sleep_on`) keep the retry, and deliberately:
+their callers rewound the syscall before sleeping, so retrying re-tests the
+condition and is a correct — if wasteful — answer, where parking would turn a
+wakeup that never came into a hang instead of a slow loop.
+
+## Proving it
+
+`bin/smp-test` (`src/userspace/smp_test.c`) times one child doing a fixed
+amount of arithmetic, then four children doing that much each at once. The
+ratio between "what four would have cost one after another" and what they
+actually cost is a number a fast context switch cannot fake.
+
+On `-smp 4` (four consecutive runs gave 338, 297, 362 and 327 percent):
+
+```
+SMPTEST: one worker 262 ms
+SMPTEST: 4 workers 310 ms
+SMPTEST: speedup 338 percent
+SMPTEST: PASS work ran on more than one cpu
+```
+
+The same binary on the same image with `-smp 1`, which is what makes the number
+above mean anything:
+
+```
+SMPTEST: one worker 280 ms
+SMPTEST: 4 workers 1060 ms
+SMPTEST: speedup 105 percent
+SMPTEST: FAIL work was serialised
+```
+
+Two and three processors land where they should: `-smp 2` gives 212 percent,
+and `-smp 3` gives 208 — four workers over three processors is two rounds, not
+one and a third. The spread between runs is the host showing through; the
+measurement is wall clock and the guest does not own the machine.
+
+`/proc/cpuinfo` carries one stanza per running processor. `sched_getaffinity`
+answers with all of them set, which matters more than it looks: `nproc` and
+every thread pool that sizes itself ask that first and only fall back to
+`/proc/cpuinfo`, so a kernel that returns `ENOSYS` there reports one processor
+however many it is running. `sched_setaffinity` accepts and does nothing —
+every processor here is equal and nothing is pinned.
+
+The other proof is the desktop: the full Xfce session — Xorg, xfwm4,
+xfce4-panel, xfdesktop, Thunar, all of it heavily threaded — comes up and stays
+up on four processors, which is what turned each of the bugs above from a
+theory into a log.
+
+`make run` and `make headless` pass `-smp 4`. `QEMU_SMP=1` runs the machine as
+it was before there was more than one.
