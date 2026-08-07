@@ -68,5 +68,6 @@ make clean
 - [Ports](docs/ports.md)
 - [Syscalls and Scheduler](docs/syscalls-and-scheduler.md)
 - [Multiprocessor](docs/multiprocessor.md)
+- [Memory Layout](docs/memory-layout.md)
 - [Persistent Filesystem](docs/persistent-filesystem.md)
 - [Users and Permissions](docs/users-and-permissions.md)
