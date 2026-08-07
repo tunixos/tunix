@@ -252,6 +252,9 @@ int64_t process_waitid_from_syscall(int64_t pid_spec, uint64_t info_user,
 int process_send_signal(int64_t pid, int signal_number);
 /* kill(2): refuses targets the caller's identity has no business signalling. */
 int process_send_signal_checked(int64_t pid, int signal_number);
+/* Installs a handler for the whole thread group: CLONE_SIGHAND is mandatory
+   for threads, so they share the table even though each holds its own copy. */
+void process_set_sigaction(int signal_number, const struct tunix_sigaction *action);
 int process_setpgid(int64_t pid, int64_t pgid);
 int64_t process_setsid(void);
 void process_prepare_user_return(struct syscall_frame *frame);

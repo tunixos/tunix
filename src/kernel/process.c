@@ -1515,6 +1515,31 @@ int process_futex_wake(uint64_t address, int maximum) {
  * on its own next return to user mode -- its own timer tick at the latest --
  * and runs the same exit path it would have run for itself.
  */
+/*
+ * CLONE_SIGHAND is mandatory for a thread here, which means the handler table
+ * belongs to the thread group and not to one thread. Threads are given a copy
+ * of it when they are created, so a later sigaction has to be written through
+ * to the siblings as well.
+ *
+ * musl is what makes this load-bearing: setuid and friends in a threaded
+ * process install a SIGSYNCCALL handler and then signal every other thread
+ * with it, and a sibling still holding SIG_DFL for a real-time signal takes
+ * the whole process down instead of answering.
+ */
+void process_set_sigaction(int signal_number,
+                           const struct tunix_sigaction *action) {
+    if (!current || signal_number < 1 || signal_number > TUNIX_NSIG) return;
+    current->signal_actions[signal_number - 1] = *action;
+    if (!queue) return;
+    uint64_t group = current->tgid;
+    struct process *item = queue;
+    do {
+        if (item != current && item->tgid == group && item->state != PROCESS_DEAD)
+            item->signal_actions[signal_number - 1] = *action;
+        item = item->next;
+    } while (item != queue);
+}
+
 static void terminate_sibling_threads(int status) {
     if (!current || !queue) return;
     uint64_t group = current->tgid;

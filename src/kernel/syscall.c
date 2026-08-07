@@ -3445,7 +3445,7 @@ static int64_t sys_sigaction(int signal_number, uint64_t user_action, uint64_t u
     if (user_action) {
         struct tunix_sigaction action;
         if (copy_from_user(&action, user_action, sizeof(action)) != 0) return -EFAULT;
-        *slot = action;
+        process_set_sigaction(signal_number, &action);
     }
     return 0;
 }
