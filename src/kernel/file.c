@@ -344,6 +344,11 @@ int64_t file_write(struct file *file, size_t size, const void *buffer) {
 }
 
 uint32_t file_poll_events(struct file *file, uint32_t requested) {
+    return file_poll_events_nested(file, requested, 0);
+}
+
+uint32_t file_poll_events_nested(struct file *file, uint32_t requested,
+                                 unsigned depth) {
     const uint32_t pollin = 0x001U;
     const uint32_t pollout = 0x004U;
     const uint32_t pollerr = 0x008U;
@@ -384,7 +389,7 @@ uint32_t file_poll_events(struct file *file, uint32_t requested) {
     } else if (file->kind == FILE_KIND_TIMERFD) {
         if (timerfd_read_ready(file->timerfd)) events |= pollin;
     } else if (file->kind == FILE_KIND_EPOLL) {
-        if (epoll_read_ready(file->epoll)) events |= pollin;
+        if (epoll_read_ready(file->epoll, depth)) events |= pollin;
     } else if (file->kind == FILE_KIND_INOTIFY) {
         if (inotify_read_ready(file->inotify)) events |= pollin;
     } else if (file->kind == FILE_KIND_VFS && file->node) {

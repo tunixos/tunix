@@ -103,15 +103,18 @@ int epoll_ctl_del(struct epoll_context *context, int fd, struct file *file) {
 }
 
 int epoll_collect(struct epoll_context *context,
-                  struct tunix_epoll_event *events, int maximum) {
+                  struct tunix_epoll_event *events, int maximum, unsigned depth) {
     if (!context || !events || maximum <= 0) return -EINVAL;
+    if (depth >= EPOLL_MAX_NESTING) return 0;
     int ready = 0;
     for (int index = 0; index < EPOLL_MAX_ENTRIES && ready < maximum; index++) {
         struct epoll_entry *entry = &context->entries[index];
         if (!entry->active || !entry->file || entry->disarmed) continue;
         uint32_t requested = entry->events & ~(EPOLLET | EPOLLONESHOT);
-        uint32_t occurred = file_poll_events(entry->file, requested | EPOLLERR |
-                                                           EPOLLHUP | EPOLLRDHUP);
+        uint32_t occurred = file_poll_events_nested(entry->file,
+                                                    requested | EPOLLERR |
+                                                    EPOLLHUP | EPOLLRDHUP,
+                                                    depth + 1);
         occurred &= requested | EPOLLERR | EPOLLHUP | EPOLLRDHUP;
         if (!occurred) continue;
         events[ready].events = occurred;
@@ -122,14 +125,17 @@ int epoll_collect(struct epoll_context *context,
     return ready;
 }
 
-int epoll_read_ready(struct epoll_context *context) {
+int epoll_read_ready(struct epoll_context *context, unsigned depth) {
     if (!context) return 0;
+    if (depth >= EPOLL_MAX_NESTING) return 0;
     for (int index = 0; index < EPOLL_MAX_ENTRIES; index++) {
         struct epoll_entry *entry = &context->entries[index];
         if (!entry->active || !entry->file || entry->disarmed) continue;
         uint32_t requested = entry->events & ~(EPOLLET | EPOLLONESHOT);
-        uint32_t occurred = file_poll_events(entry->file, requested | EPOLLERR |
-                                                           EPOLLHUP | EPOLLRDHUP);
+        uint32_t occurred = file_poll_events_nested(entry->file,
+                                                    requested | EPOLLERR |
+                                                    EPOLLHUP | EPOLLRDHUP,
+                                                    depth + 1);
         if (occurred & (requested | EPOLLERR | EPOLLHUP | EPOLLRDHUP)) return 1;
     }
     return 0;

@@ -3996,7 +3996,7 @@ static int64_t sys_epoll_wait_once(int epoll_fd, uint64_t user_events,
     struct file *file = file_from_fd(epoll_fd);
     if (!file || file->kind != FILE_KIND_EPOLL) return -EBADF;
     struct tunix_epoll_event events[128];
-    int ready = epoll_collect(file->epoll, events, maximum);
+    int ready = epoll_collect(file->epoll, events, maximum, 0);
     if (ready < 0) return ready;
     if ((ready || commit_empty) && ready > 0 &&
         copy_to_user(user_events, events, (size_t)ready * sizeof(events[0])) != 0)

@@ -98,5 +98,9 @@ int64_t file_write(struct file *file, size_t size, const void *buffer);
 const void *file_read_wait_channel(struct file *file);
 const void *file_write_wait_channel(struct file *file);
 uint32_t file_poll_events(struct file *file, uint32_t requested);
+/* The same question asked from inside an epoll set, which has to carry how
+   many sets deep it already is. See EPOLL_MAX_NESTING. */
+uint32_t file_poll_events_nested(struct file *file, uint32_t requested,
+                                 unsigned depth);
 
 #endif
