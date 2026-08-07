@@ -652,6 +652,14 @@ static void go_idle(void) {
     }
     vmm_activate(vmm_kernel_cr3());
     cpu_current()->address_space = 0;
+    /* Both kernel-stack pointers name the process that has just been let go
+       of, whose stack can be reaped and its pages handed back at any moment.
+       Nothing should reach them while the processor is idle -- an entry from
+       user mode is the only thing that uses them, and there is no user to
+       enter from -- but leaving a freed address in a register the processor
+       reads is not worth the argument. */
+    set_kernel_stack(cpu_current()->idle_stack_top);
+    syscall_set_kernel_stack(cpu_current()->idle_stack_top);
     cpu_enter_idle(cpu_current()->idle_stack_top);
 }
 
@@ -1608,6 +1616,10 @@ int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
     frame->user_rsp = current->user_stack_top;
     frame->user_rflags = 0x202;
     vmm_activate(new_cr3);
+    /* The processor is looking at a different space now, and the record of
+       which space that is decides who gets told when a mapping in it changes.
+       Left stale, this processor is invisible to the next flush. */
+    cpu_current()->address_space = new_cr3;
     wrmsr(IA32_FS_BASE, 0);
     if (old_memory) memory_unref(old_memory);
     else vmm_destroy_address_space(old_cr3);
