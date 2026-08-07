@@ -117,9 +117,68 @@ static void isr_dispatch(struct interrupt_frame *regs) {
     kprintf("Received interrupt: %d\n", regs->int_no);
 }
 
+#define VECTOR_DOUBLE_FAULT 8U
+#define IA32_GS_BASE 0xC0000101U
+#define IA32_KERNEL_GS_BASE 0xC0000102U
+
+static uint64_t read_msr(uint32_t msr) {
+    uint32_t low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
+
 /* Returns with the lock still held; isr.S drops it once rsp is somewhere the
    next process cannot be standing on. See syscall_dispatch. */
 void isr_handler(struct interrupt_frame *regs) {
+    /*
+     * Before the lock and without taking it. A double fault means the
+     * processor could not deliver some earlier fault, and it may well have
+     * been holding the lock when that happened -- waiting for it here would
+     * turn a reportable failure into a hang. It runs on the IST stack, which
+     * is the one thing the fault cannot have broken.
+     */
+    if (regs->int_no == VECTOR_DOUBLE_FAULT) {
+        uint64_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        kprintf("DOUBLE FAULT: rip %p cs %x rsp %p ss %x cr2 %p rflags %x\n",
+                (void *)regs->rip, (unsigned)regs->cs, (void *)regs->rsp,
+                (unsigned)regs->ss, (void *)cr2, (unsigned)regs->rflags);
+        /*
+         * Which stack it was supposed to be on, and whose -- printed a step at
+         * a time, each line reading one thing further from the processor. If
+         * the report stops, where it stopped is the answer: everything here is
+         * a dereference of something the failure may have taken away.
+         */
+        uint64_t gs = read_msr(IA32_GS_BASE);
+        uint64_t kernel_gs = read_msr(IA32_KERNEL_GS_BASE);
+        kprintf("  gs %p kernelgs %p\n", (void *)gs, (void *)kernel_gs);
+        /* Whichever half holds the block. In kernel mode it should be GS, and
+           a failure that arrives with them the other way round is itself the
+           finding -- but the rest of the report still has to be printable. */
+        struct cpu *self = (struct cpu *)(gs ? gs : kernel_gs);
+        if (self) {
+            kprintf("  cpu %u kernel_rsp %p current %p\n", self->index,
+                    (void *)self->kernel_rsp, (void *)self->current);
+            struct process *running = self->current;
+            if (running)
+                kprintf("  pid %u stack %p..%p\n", (unsigned)running->pid,
+                        (void *)running->kernel_stack_base,
+                        (void *)running->kernel_stack_top);
+        }
+        /* The words above the dead stack pointer, kernel text addresses only.
+           A stack that ran away rather than merely ran deep says so here: the
+           same few return addresses, over and over. */
+        const uint64_t *word = (const uint64_t *)regs->rsp;
+        unsigned shown = 0;
+        for (unsigned index = 0; index < 512 && shown < 24; index++) {
+            uint64_t value = word[index];
+            if (value < 0xFFFFFFFF80100000ULL || value >= 0xFFFFFFFF80400000ULL)
+                continue;
+            kprintf("  [%u] %p\n", index, (void *)value);
+            shown++;
+        }
+        panic("double fault");
+    }
     kernel_lock();
     isr_dispatch(regs);
     /* Same move as the syscall return makes, and for the same reason: the

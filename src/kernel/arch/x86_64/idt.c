@@ -86,7 +86,9 @@ void idt_init(void) {
     idt_set_gate(5, (uint64_t)isr5, 0x08, 0x8E, 0);
     idt_set_gate(6, (uint64_t)isr6, 0x08, 0x8E, 0);
     idt_set_gate(7, (uint64_t)isr7, 0x08, 0x8E, 0);
-    idt_set_gate(8, (uint64_t)isr8, 0x08, 0x8E, 0);
+    /* IST 1: a double fault is usually the stack failing, so it needs one the
+       fault cannot have broken. See gdt.c. */
+    idt_set_gate(8, (uint64_t)isr8, 0x08, 0x8E, 1);
     idt_set_gate(9, (uint64_t)isr9, 0x08, 0x8E, 0);
     idt_set_gate(10, (uint64_t)isr10, 0x08, 0x8E, 0);
     idt_set_gate(11, (uint64_t)isr11, 0x08, 0x8E, 0);

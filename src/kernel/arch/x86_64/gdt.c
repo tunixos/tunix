@@ -38,11 +38,24 @@ struct gdt_ptr {
  * kernel stack the moment they both took an interrupt. The task register also
  * marks its TSS descriptor busy, and a second `ltr` on the same descriptor
  * faults, so the descriptor has to be private as well.
+ *
+ * The double-fault stack is here for the same reason and travels with them.
+ *
+ * A double fault is what the processor raises when it cannot deliver a fault,
+ * and the usual reason for that is the stack it would have to push onto. If it
+ * cannot deliver the double fault either, it gives up and resets -- which
+ * looks like nothing at all: no message, no register dump, a machine that
+ * silently reboots. Handing vector 8 a stack of its own through the IST is
+ * what turns that into a diagnosis.
  */
+#define FAULT_STACK_BYTES 8192
+#define FAULT_STACK_IST 1
+
 struct cpu_tables {
     struct gdt_entry gdt[7];
     struct tss_entry tss;
     struct gdt_ptr pointer;
+    uint8_t fault_stack[FAULT_STACK_BYTES] __attribute__((aligned(16)));
 };
 
 static struct cpu_tables tables[SMP_MAX_CPUS];
@@ -92,6 +105,10 @@ void gdt_init_cpu(unsigned index) {
 
     __builtin_memset(&self->tss, 0, sizeof(self->tss));
     self->tss.iopb_offset = sizeof(self->tss);
+    self->tss.ist[FAULT_STACK_IST - 1] =
+        (uint64_t)(self->fault_stack + FAULT_STACK_BYTES);
+    /* The limit covers the TSS only: the fault stack sits after it in this
+       struct and must not be inside the segment the processor is told about. */
     gdt_set_tss(gdt, 5, (uint64_t)&self->tss, sizeof(self->tss) - 1);
 
     gdt_flush((uint64_t)&self->pointer);
