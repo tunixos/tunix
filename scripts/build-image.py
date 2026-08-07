@@ -39,14 +39,16 @@ MANIFEST_MAGIC = 0x4D414E49
 MANIFEST_VERSION = 3
 
 # Must stay in sync with TUNIX_INITRAMFS_MAX_BYTES in
-# src/kernel/include/boot_manifest.h.  The ceiling is the kernel's own low
-# identity map minus INITRAMFS_PHYSICAL, since it loads the archive before
-# installing its own page tables.
-MAX_INITRAMFS_BYTES = 480 * 1024 * 1024
+# src/kernel/include/boot_manifest.h.  The archive is loaded through the
+# loader's identity map, which reaches 4 GiB, so the ceiling is about having
+# the memory rather than about addressing it.
+MAX_INITRAMFS_BYTES = 768 * 1024 * 1024
 DATA_REGION_ALIGN_SECTORS = 2048
 # The ext2 driver formats one block group per 128 MiB and handles up to
-# EXT2_MAX_GROUPS of them. This only decides how much the image reserves.
-DATA_REGION_BYTES = 512 * 1024 * 1024
+# EXT2_MAX_GROUPS (128) of them, so 16 GiB. This only decides how much the
+# image reserves -- and it has to hold the whole initramfs, because first boot
+# seeds the root filesystem from it and then everything the user writes.
+DATA_REGION_BYTES = 1024 * 1024 * 1024
 
 CONFIG_NAME = b"TUNIX   CFG"
 KERNEL_NAME = b"KERNEL  ELF"

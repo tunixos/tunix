@@ -5,11 +5,14 @@
 
 #define TUNIX_MANIFEST_MAGIC 0x4D414E49U
 #define TUNIX_MANIFEST_VERSION 3U
-/* Must stay in sync with MAX_INITRAMFS_BYTES in scripts/build-image.py.  Bounded
- * by stage2's low identity map (512 MiB) minus INITRAMFS_PHYSICAL (32 MiB):
- * load_initramfs() runs before vmm_init(), so its PIO fallback stores through
- * stage2's mappings.  Raising this requires widening .map_low_512m first. */
-#define TUNIX_INITRAMFS_MAX_BYTES (480ULL * 1024ULL * 1024ULL)
+/* Must stay in sync with MAX_INITRAMFS_BYTES in scripts/build-image.py.
+ * load_initramfs() runs before vmm_init(), so it stores through the loader's
+ * identity map -- which is 4 GiB (LOADER_ADDRESS_LIMIT in tunix-boot), not the
+ * 512 MiB an older comment here claimed.  The archive lands at
+ * INITRAMFS_PHYSICAL (32 MiB) and pmm_init() reserves exactly its length, so
+ * the real constraint is having the memory: a machine must hold 32 MiB plus
+ * this before it can boot from an initramfs at all. */
+#define TUNIX_INITRAMFS_MAX_BYTES (768ULL * 1024ULL * 1024ULL)
 #define TUNIX_INITRAMFS_MAX_SECTORS (TUNIX_INITRAMFS_MAX_BYTES / 512ULL)
 #define TUNIX_DATA_REGION_ALIGN_SECTORS 2048ULL
 

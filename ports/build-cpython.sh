@@ -103,6 +103,10 @@ rm -rf "$LIBDIR"/config-* \
        "$ROOT_DIR"/usr/bin/idle3 "$ROOT_DIR"/usr/bin/idle3.* \
        "$ROOT_DIR"/usr/bin/python3-config "$ROOT_DIR"/usr/bin/python3.*-config
 find "$LIBDIR" -depth -name '__pycache__' -path '*/test*' -exec rm -rf {} + 2>/dev/null || true
+# `make install` compiles the whole library three times, once per optimization
+# level, and the two optimized copies are 22 MiB of bytecode that only
+# `python -O` would ever load. Nothing on the image runs Python that way.
+find "$LIBDIR" -name '*.opt-[12].pyc' -delete
 
 cross_port_finalize_root "$ROOT_DIR"
 # Python itself only needs libffi, libsqlite3, libz and libexpat. The list is
