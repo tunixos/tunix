@@ -362,6 +362,10 @@ void devfs_init(void) {
         }
     }
     (void)vfs_create_symlink("/dev/tty", "/dev/console", 0);
+    /* Where the VT ioctls are asked: on Linux /dev/tty0 is the active virtual
+       terminal, and here there is only ever the one. */
+    (void)vfs_create_symlink("/dev/tty0", "/dev/console", 0);
+    (void)vfs_create_symlink("/dev/tty1", "/dev/console", 0);
     (void)vfs_create_symlink("/dev/rtc0", "/dev/rtc", 0);
     if (sectors) (void)vfs_create_symlink("/dev/root", "/dev/sda", 0);
 }

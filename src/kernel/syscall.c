@@ -2048,6 +2048,37 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
         if (copy_from_user(&map, user_argument, sizeof(map)) != 0) return -EFAULT;
         return tty_ioctl(request, &map) == 0 ? 0 : -EINVAL;
     }
+    /* VT_ACTIVATE, VT_WAITACTIVE, VT_RELDISP and the KD mode setters take the
+       terminal or mode as the argument itself rather than through a pointer. */
+    if (request == VT_ACTIVATE || request == VT_WAITACTIVE ||
+        request == VT_RELDISP || request == KDSETMODE || request == KDSKBMODE) {
+        int value = (int)user_argument;
+        return tty_ioctl(request, &value) == 0 ? 0 : -EINVAL;
+    }
+    if (request == VT_OPENQRY || request == KDGETMODE || request == KDGKBMODE) {
+        int value;
+        if (tty_ioctl(request, &value) != 0) return -ENOTTY;
+        return copy_to_user(user_argument, &value, sizeof(value)) == 0 ? 0 : -EFAULT;
+    }
+    if (request == KDGKBTYPE) {
+        uint8_t type;
+        if (tty_ioctl(request, &type) != 0) return -ENOTTY;
+        return copy_to_user(user_argument, &type, sizeof(type)) == 0 ? 0 : -EFAULT;
+    }
+    if (request == VT_GETSTATE) {
+        struct tunix_vt_stat state;
+        if (tty_ioctl(request, &state) != 0) return -ENOTTY;
+        return copy_to_user(user_argument, &state, sizeof(state)) == 0 ? 0 : -EFAULT;
+    }
+    if (request == VT_GETMODE || request == VT_SETMODE) {
+        struct tunix_vt_mode mode;
+        if (request == VT_SETMODE &&
+            copy_from_user(&mode, user_argument, sizeof(mode)) != 0) return -EFAULT;
+        if (tty_ioctl(request, &mode) != 0) return -EINVAL;
+        if (request == VT_GETMODE &&
+            copy_to_user(user_argument, &mode, sizeof(mode)) != 0) return -EFAULT;
+        return 0;
+    }
     if (request == TIOCGWINSZ) {
         uint16_t rows;
         uint16_t columns;

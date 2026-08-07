@@ -17,6 +17,50 @@
 #define TIOCGETD    0x5424UL
 #define TIOCSETD    0x5423UL
 
+/* The console/keyboard and virtual-terminal ioctls. Tunix has exactly one
+   console and no way to switch away from it, so every question about which
+   terminal is active has the same answer -- but X servers and display managers
+   ask before they will touch the display, and refusing is what forced the
+   XORG_NO_VT and SEATD_VTBOUND=0 workarounds. */
+#define KDGKBTYPE     0x4B33UL
+#define KDSETMODE     0x4B3AUL
+#define KDGETMODE     0x4B3BUL
+#define KDGKBMODE     0x4B44UL
+#define KDSKBMODE     0x4B45UL
+#define VT_OPENQRY    0x5600UL
+#define VT_GETMODE    0x5601UL
+#define VT_SETMODE    0x5602UL
+#define VT_GETSTATE   0x5603UL
+#define VT_RELDISP    0x5605UL
+#define VT_ACTIVATE   0x5606UL
+#define VT_WAITACTIVE 0x5607UL
+
+#define TUNIX_VT_CONSOLE 1
+#define TUNIX_KB_101     0x02
+#define TUNIX_KD_TEXT     0
+#define TUNIX_KD_GRAPHICS 1
+#define TUNIX_K_RAW       0
+#define TUNIX_K_XLATE     1
+#define TUNIX_K_MEDIUMRAW 2
+#define TUNIX_K_UNICODE   3
+#define TUNIX_K_OFF       4
+#define TUNIX_VT_AUTO     0
+#define TUNIX_VT_PROCESS  1
+
+struct tunix_vt_stat {
+    uint16_t v_active;
+    uint16_t v_signal;
+    uint16_t v_state;
+};
+
+struct tunix_vt_mode {
+    uint8_t mode;
+    uint8_t waitv;
+    int16_t relsig;
+    int16_t acqsig;
+    int16_t frsig;
+};
+
 #define TTY_ISIG    0x00000001U
 #define TTY_ICANON  0x00000002U
 #define TTY_ECHO    0x00000008U

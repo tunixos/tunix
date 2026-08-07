@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "include/framebuffer.h"
 #include "include/io.h"
 #include "include/input.h"
 #include "include/kstring.h"
@@ -21,6 +22,13 @@ static int console_foreground_pgid;
    from anywhere else -- login before it has claimed the terminal, a service
    reading the console -- is simply allowed to read. */
 static uint64_t console_session;
+/* VT_AUTO with no signals: nothing ever switches away, so the release and
+   acquire signals a VT_PROCESS caller registers can never be raised. */
+static struct tunix_vt_mode console_vt_mode;
+static int console_kd_mode = TUNIX_KD_TEXT;
+static int console_kb_mode = TUNIX_K_XLATE;
+/* An address, used only as an identity for the framebuffer arbitration. */
+static const char console_graphics_owner;
 static char canonical_buffer[1024];
 static size_t canonical_length;
 static size_t canonical_offset;
@@ -682,6 +690,9 @@ void tty_init(void) {
     console_termios.ispeed = 38400;
     console_termios.ospeed = 38400;
     console_foreground_pgid = 0;
+    memset(&console_vt_mode, 0, sizeof(console_vt_mode));
+    console_kd_mode = TUNIX_KD_TEXT;
+    console_kb_mode = TUNIX_K_XLATE;
     canonical_length = canonical_offset = 0;
     input_head = input_tail = input_count = 0;
     input_interrupted = 0;
@@ -691,6 +702,21 @@ void tty_init(void) {
     ansi_param_count = ansi_current = 0;
     ansi_have_current = 0;
     saved_row = saved_col = 0;
+}
+
+/* KD_GRAPHICS is a program announcing it will paint the screen itself, so the
+   console stands down -- the same handover DRM performs when a client presents
+   its first frame. KD_TEXT gives the display back and the console redraws. */
+static int set_kd_mode(int mode) {
+    if (mode == TUNIX_KD_GRAPHICS) {
+        if (framebuffer_claim_graphics(&console_graphics_owner) != 0) return -1;
+    } else if (mode == TUNIX_KD_TEXT) {
+        framebuffer_release_graphics(&console_graphics_owner, 0);
+    } else {
+        return -1;
+    }
+    console_kd_mode = mode;
+    return 0;
 }
 
 int tty_ioctl(unsigned long request, void *argument) {
@@ -727,6 +753,49 @@ int tty_ioctl(unsigned long request, void *argument) {
             if (keymap_validate((const struct tunix_keymap *)argument) != 0) return -1;
             memcpy(&active_keymap, argument, sizeof(active_keymap));
             tty_reset_keyboard_state();
+            return 0;
+        case KDGKBTYPE:
+            *(uint8_t *)argument = TUNIX_KB_101;
+            return 0;
+        case KDGETMODE:
+            *(int *)argument = console_kd_mode;
+            return 0;
+        case KDSETMODE:
+            return set_kd_mode(*(const int *)argument);
+        case KDGKBMODE:
+            *(int *)argument = console_kb_mode;
+            return 0;
+        case KDSKBMODE: {
+            int mode = *(const int *)argument;
+            if (mode < TUNIX_K_RAW || mode > TUNIX_K_OFF) return -1;
+            console_kb_mode = mode;
+            return 0;
+        }
+        case VT_OPENQRY:
+            *(int *)argument = TUNIX_VT_CONSOLE;
+            return 0;
+        case VT_GETSTATE: {
+            struct tunix_vt_stat *state = argument;
+            state->v_active = TUNIX_VT_CONSOLE;
+            state->v_signal = 0;
+            state->v_state = 1U << TUNIX_VT_CONSOLE;
+            return 0;
+        }
+        case VT_GETMODE:
+            memcpy(argument, &console_vt_mode, sizeof(console_vt_mode));
+            return 0;
+        case VT_SETMODE: {
+            const struct tunix_vt_mode *mode = argument;
+            if (mode->mode != TUNIX_VT_AUTO && mode->mode != TUNIX_VT_PROCESS) return -1;
+            memcpy(&console_vt_mode, mode, sizeof(console_vt_mode));
+            return 0;
+        }
+        /* A switch to the console has already happened; a switch to anything
+           else is a terminal that does not exist. */
+        case VT_ACTIVATE:
+        case VT_WAITACTIVE:
+            return *(const int *)argument == TUNIX_VT_CONSOLE ? 0 : -1;
+        case VT_RELDISP:
             return 0;
         default:
             return -1;
