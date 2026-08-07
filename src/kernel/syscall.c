@@ -1265,6 +1265,34 @@ static int64_t sys_accept(int fd, uint64_t user_address, uint64_t user_length, i
     return new_fd;
 }
 
+/*
+ * accept(2) on a blocking socket waits for a connection; only a non-blocking
+ * one answers EAGAIN. Everything on the image that accepts -- X11, Wayland,
+ * D-Bus -- polls first and calls accept only once a connection is already
+ * pending, so a plain blocking accept had never been tried until Python did
+ * one and got EAGAIN out of a socket it had not asked to be non-blocking.
+ *
+ * The retry is the same rewind recvfrom uses: step the frame back onto the
+ * syscall instruction, put the number back in rax and yield, so the process
+ * re-runs it after other work has had a chance to connect.
+ */
+static void accept_or_block(struct syscall_frame *frame, uint64_t syscall_number,
+                            int fd, uint64_t user_address, uint64_t user_length,
+                            int flags) {
+    int64_t result = sys_accept(fd, user_address, user_length, flags);
+    struct process *process = process_current();
+    struct file *file = process && fd >= 0 && fd < PROCESS_MAX_FDS
+                            ? process->files->fds[fd] : NULL;
+    if (result == -EAGAIN && file && !(file->flags & O_NONBLOCK)) {
+        frame->user_rip -= 2U;
+        frame->rax = syscall_number;
+        process->syscall_rewound = 1;
+        process_yield_from_syscall(frame);
+        return;
+    }
+    frame->rax = (uint64_t)result;
+}
+
 static int64_t sys_sendto(int fd, uint64_t user_data, size_t length, int flags,
                           uint64_t user_address, uint64_t address_length) {
     /* send()/sendto() on a unix socket: GLib's GDBus writes to the D-Bus session
@@ -4441,7 +4469,9 @@ static void syscall_dispatch_locked(struct syscall_frame *frame) {
             }
             break;
         }
-        case SYS_ACCEPT: frame->rax = (uint64_t)sys_accept((int)frame->rdi, frame->rsi, frame->rdx, 0); break;
+        case SYS_ACCEPT:
+            accept_or_block(frame, SYS_ACCEPT, (int)frame->rdi, frame->rsi, frame->rdx, 0);
+            break;
         case SYS_SENDTO: frame->rax = (uint64_t)sys_sendto((int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10, frame->r8, frame->r9); break;
         case SYS_RECVFROM: {
             int fd = (int)frame->rdi;
@@ -4831,7 +4861,9 @@ static void syscall_dispatch_locked(struct syscall_frame *frame) {
             break;
         case SYS_SET_ROBUST_LIST: frame->rax = (uint64_t)sys_set_robust_list(frame->rdi, (size_t)frame->rsi); break;
         case SYS_GET_ROBUST_LIST: frame->rax = (uint64_t)sys_get_robust_list((int)frame->rdi, frame->rsi, frame->rdx); break;
-        case SYS_ACCEPT4: frame->rax = (uint64_t)sys_accept((int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10); break;
+        case SYS_ACCEPT4:
+            accept_or_block(frame, SYS_ACCEPT4, (int)frame->rdi, frame->rsi, frame->rdx, (int)frame->r10);
+            break;
         case SYS_PIPE2: frame->rax = (uint64_t)sys_pipe(frame->rdi, (int)frame->rsi); break;
         case SYS_PRLIMIT64: frame->rax = (uint64_t)sys_prlimit(frame->rsi, frame->r10); break;
         case SYS_RENAMEAT2: frame->rax = (uint64_t)sys_rename_at((int)frame->rdi, frame->rsi, (int)frame->rdx, frame->r10, (unsigned)frame->r8); break;
