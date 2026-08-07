@@ -407,3 +407,7 @@
 [submodule "ports/src/sudo"]
 	path = ports/src/sudo
 	url = https://github.com/sudo-project/sudo
+[submodule "ports/src/linux-pam"]
+	path = ports/src/linux-pam
+	url = https://github.com/linux-pam/linux-pam.git
+	shallow = true
