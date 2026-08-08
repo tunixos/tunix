@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include "include/file.h"
 #include "include/heap.h"
+/* Only the owning process id is needed here, not the whole process interface. */
+extern uint64_t process_current_pid(void);
 #include "include/kstring.h"
 #include "include/drm.h"
 #include "include/framebuffer.h"
@@ -251,6 +253,14 @@ void file_unref(struct file *file) {
     /* The last descriptor referring to this open file description is going
        away, which is exactly when flock releases its lock. */
     file_flock_release(file);
+    /* POSIX locks go the other way round: they belong to the process, and
+       closing *any* descriptor on the file drops them. Doing it here is what
+       keeps a process that exited from holding a database shut. */
+    if (file->kind == FILE_KIND_VFS && file->node &&
+        file->node->posix_lock_pid == process_current_pid()) {
+        file->node->posix_lock_pid = 0;
+        file->node->posix_lock_write = 0;
+    }
     if ((file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_WRITE) && file->pipe)
         pipe_release(file->pipe, file->kind == FILE_KIND_PIPE_WRITE);
     if (file->kind == FILE_KIND_VFS && file->node && file->node->close)

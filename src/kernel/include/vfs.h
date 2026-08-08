@@ -84,6 +84,12 @@ struct vfs_node {
        aggregate state lives here. */
     struct file *flock_exclusive;
     uint32_t flock_shared;
+    /* POSIX advisory locks (fcntl F_SETLK), which are a separate lock space
+       from flock and are owned by the process rather than by the open file.
+       Held at whole-file granularity rather than per byte range -- see
+       vfs_posix_lock() for what that costs. */
+    uint64_t posix_lock_pid;
+    int posix_lock_write;
 };
 
 struct dirent {

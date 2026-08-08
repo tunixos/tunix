@@ -314,6 +314,21 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
+#define F_GETLK 5
+#define F_SETLK 6
+#define F_SETLKW 7
+#define F_RDLCK 0
+#define F_WRLCK 1
+#define F_UNLCK 2
+
+/* struct flock on x86_64. */
+struct linux_flock {
+    int16_t type;
+    int16_t whence;
+    int64_t start;
+    int64_t length;
+    int32_t pid;
+};
 #define F_DUPFD_CLOEXEC 1030
 
 #define POLLIN   0x0001
@@ -1952,6 +1967,62 @@ static int64_t sys_flock(int fd, int operation) {
     struct process *process = process_current();
     if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->files->fds[fd]) return -EBADF;
     return file_flock(process->files->fds[fd], operation);
+}
+
+/*
+ * POSIX advisory locks, as fcntl(F_SETLK) asks for them.
+ *
+ * SQLite is what needs these: it locks single bytes and small ranges to
+ * arbitrate between connections, and with fcntl answering EINVAL every
+ * database file it opened failed with "disk I/O error". flock(2) is a
+ * different lock space and does not serve.
+ *
+ * The range is deliberately ignored and the whole file is locked instead.
+ * That is coarser than POSIX promises, and the direction of the error matters:
+ * locking more than asked can only ever refuse a lock that should have been
+ * granted, never grant one that should have been refused. What it costs is
+ * concurrency between processes sharing a database -- one may see EAGAIN where
+ * real byte ranges would not have collided. Within a single process nothing is
+ * lost, because POSIX locks belong to the process and a process never
+ * conflicts with itself: SQLite holding SHARED and then taking RESERVED is one
+ * owner replacing its own lock, which is exactly what happens here.
+ */
+static int64_t vfs_posix_lock(struct vfs_node *node, int type, uint64_t pid) {
+    if (type == F_UNLCK) {
+        if (node->posix_lock_pid == pid) {
+            node->posix_lock_pid = 0;
+            node->posix_lock_write = 0;
+        }
+        return 0;
+    }
+    if (type != F_RDLCK && type != F_WRLCK) return -EINVAL;
+    if (node->posix_lock_pid && node->posix_lock_pid != pid) return -EAGAIN;
+    node->posix_lock_pid = pid;
+    node->posix_lock_write = type == F_WRLCK;
+    return 0;
+}
+
+static int64_t sys_fcntl_lock(int fd, int command, uint64_t user_lock) {
+    struct process *process = process_current();
+    if (!process || fd < 0 || fd >= PROCESS_MAX_FDS || !process->files->fds[fd]) return -EBADF;
+    struct file *file = process->files->fds[fd];
+    if (file->kind != FILE_KIND_VFS || !file->node) return -EINVAL;
+
+    struct linux_flock lock;
+    if (copy_from_user(&lock, user_lock, sizeof(lock)) != 0) return -EFAULT;
+
+    if (command == F_GETLK) {
+        /* Only a holder that is somebody else is a conflict worth reporting. */
+        if (file->node->posix_lock_pid && file->node->posix_lock_pid != process->tgid) {
+            lock.type = file->node->posix_lock_write ? F_WRLCK : F_RDLCK;
+            lock.pid = (int32_t)file->node->posix_lock_pid;
+        } else {
+            lock.type = F_UNLCK;
+        }
+        return copy_to_user(user_lock, &lock, sizeof(lock)) == 0 ? 0 : -EFAULT;
+    }
+    /* The thread group, not the thread: POSIX locks belong to the process. */
+    return vfs_posix_lock(file->node, lock.type, process->tgid);
 }
 
 static int64_t sys_fsync(int fd) {
@@ -4595,6 +4666,11 @@ static void syscall_dispatch_locked(struct syscall_frame *frame) {
                     process->files->fd_flags[fd] = (frame->rdx & FD_CLOEXEC) ? PROCESS_FD_CLOEXEC : 0;
                     frame->rax = 0;
                 }
+            } else if (command == F_GETLK || command == F_SETLK || command == F_SETLKW) {
+                /* F_SETLKW would wait; with whole-file granularity and a
+                   single contending process there is nothing to wait for, so
+                   it is answered like F_SETLK. */
+                frame->rax = (uint64_t)sys_fcntl_lock(fd, command, frame->rdx);
             } else if (command == F_GETFL) {
                 frame->rax = process->files->fds[fd]->flags;
             } else if (command == F_SETFL) {
