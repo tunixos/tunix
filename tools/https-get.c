@@ -5,10 +5,11 @@
  * TCP connection, run an mbedTLS handshake (SNI + certificate verification
  * against /etc/ssl/cert.pem), send an HTTP/1.1 GET and stream the response.
  *
- * DNS uses res_query() rather than getaddrinfo(): on Tunix the low-level
- * resolver works but the getaddrinfo() wrapper does not, so we parse the A
- * record ourselves. TLS I/O is wired to our own socket via a custom BIO so we
- * never touch mbedtls_net_connect() (which would call getaddrinfo()).
+ * DNS uses res_query() and parses the A record itself. That dates from a time
+ * when getaddrinfo() did not work here; it does now -- ssl-helper and curl(1)
+ * both go through it -- so this is the low-level path kept deliberately, not a
+ * workaround. TLS I/O is wired to our own socket via a custom BIO, which also
+ * keeps us out of mbedtls_net_connect().
  */
 #include <stdio.h>
 #include <stdlib.h>

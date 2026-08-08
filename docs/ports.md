@@ -152,6 +152,23 @@ Certificates come from `/etc/ssl/cert.pem`, the bundle the image already ships
 for mbedTLS, compiled into gnutls as its default trust store. `https-get`,
 `curl` and the browser therefore agree on which roots are trusted.
 
+`curl` is a second TLS client alongside all of that, and it does not use
+gnutls: `ports/build-curl.sh` builds one static musl tree against mbedTLS and
+the image takes both halves of it — the archive git's `git-remote-https` links
+against, and `/usr/bin/curl` for the shell. Only the binary is copied in; the
+headers and the archive would be dead weight next to a git that is already
+linked. The build is deliberately narrow — http, https and file, IPv4 only, no
+zlib, no threaded resolver — because a client-side IPv4 stack is all the kernel
+offers and anything else would only fail at runtime. The script refuses to
+finish if `curl_config.h` does not define `USE_MBEDTLS`, since an SSL-less
+libcurl builds cleanly and its only symptom is `Protocol https not supported`
+much later.
+
+Name resolution goes through `getaddrinfo()` and works: `curl http://example.com`
+resolves, connects and returns a body. An older comment in `tools/https-get.c`
+claimed otherwise and was stale — that tool parses A records by hand because it
+was written before the resolver worked, not because it has to.
+
 Two checks guard the seam, because "installed" and "loaded" are different
 claims. `ports/build-glib-networking.sh` runs `tools/gio-tls-test.c` against
 the module it just staged, under the cross loader, and fails if GIO does not

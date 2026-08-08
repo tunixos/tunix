@@ -18,8 +18,10 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
 - GNU userland (coreutils, grep, sed, gawk, findutils, diffutils, tar, gzip, make), Bash, TinyCC, binutils, nano, Lua, and selected libraries
 - CPython 3.14, built shared so `ctypes` and C extensions load; `python-test`
   exercises threads, subprocess, signals, sockets, epoll, mmap and sqlite3
-- Git, with an `https://` transport via a static libcurl built against mbedTLS
-  (so `git clone https://…` works); `ssh://` remotes are not supported
+- `curl`, and Git's `https://` transport, both out of one static curl port
+  built against mbedTLS — so `curl https://…` and `git clone https://…` work.
+  The tool speaks http, https and file over IPv4; `ssh://` remotes are not
+  supported
 - Intel HD Audio playback behind ALSA's `/dev/snd` interface, with alsa-lib
   ported on top of it: `snd-test` drives the kernel ioctls directly and
   `alsa-test` goes through the library, mixer included
