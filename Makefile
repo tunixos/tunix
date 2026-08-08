@@ -1127,12 +1127,14 @@ $(IPROUTE2_STAMP): $(BASH) ports/build-iproute2.sh ports/lib/gnu-port.sh | $(BUI
 	@test -x $(IPROUTE2_ROOT)/usr/sbin/ss || { echo "iproute2 ss was not produced" >&2; exit 1; }
 	@touch $@
 
-# libcurl (static, mbedTLS backend) gives git its https transport. Depends on
-# the mbedtls stamp for the TLS libraries it links against.
+# curl (static, mbedTLS backend): the library gives git its https transport,
+# the tool gives the shell one. Depends on the mbedtls stamp for the TLS
+# libraries both link against.
 $(CURL_STAMP): $(MBEDTLS_STAMP) ports/build-curl.sh ports/lib/gnu-port.sh | $(BUILD)/.tools
 	@mkdir -p $(PORT_OUT)
 	OUT="$(abspath $(PORT_OUT))" bash ports/build-curl.sh
 	@test -f $(CURL_ROOT)/usr/lib/libcurl.a || { echo "libcurl was not produced" >&2; exit 1; }
+	@test -x $(CURL_ROOT)/usr/bin/curl || { echo "the curl tool was not produced" >&2; exit 1; }
 	@touch $@
 
 # git drives its own Makefile (its ./configure only feeds the same one), builds
@@ -1400,7 +1402,7 @@ $(SND_TEST): $(BUILD)/user/snd_test.o $(USER_RUNTIME) src/userspace/linker.ld
 	$(LD) $(USER_LDFLAGS) -o $@ $(USER_RUNTIME) $(BUILD)/user/snd_test.o
 	$(STRIP) --strip-all $@
 
-$(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(LINUX_PAM_STAMP) $(LIGHTDM_STAMP) $(LIGHTDM_GREETER_STAMP) $(CPYTHON_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(ALSA_LIB_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(SDL2_STAMP) $(SDL2_NET_STAMP) $(SDL2_MIXER_STAMP) $(CHOCOLATE_DOOM_STAMP) $(INITRD_FILES)
+$(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(LINUX_PAM_STAMP) $(LIGHTDM_STAMP) $(LIGHTDM_GREETER_STAMP) $(CPYTHON_STAMP) $(SYSTEM_TOOLS) $(BASH) $(GNU_PORT_STAMPS) $(IPROUTE2_STAMP) $(CURL_STAMP) $(GIT_STAMP) $(TCC_STAMP) $(BINUTILS_STAMP) $(NANO) $(TTY_CLOCK) $(TTY_TETRIS) $(HTOP) $(FASTFETCH_STAMP) $(LUA_STAMP) $(IMAGE_CODECS_STAMP) $(MUSL_SHARED_STAMP) $(IMAGE_CODECS_SHARED_STAMP) $(MBEDTLS_STAMP) $(LIBFFI_STAMP) $(WAYLAND_STAMP) $(PIXMAN_STAMP) $(LIBXKBCOMMON_STAMP) $(XKEYBOARD_CONFIG_STAMP) $(LIBEVDEV_STAMP) $(ALSA_LIB_STAMP) $(LIBUDEV_ZERO_STAMP) $(LIBINPUT_STAMP) $(CAIRO_STAMP) $(LIBDISPLAY_INFO_STAMP) $(SEATD_STAMP) $(WESTON_STAMP) $(LIBDRM_STAMP) $(MESA_STAMP) $(LLVM_STAMP) $(GLIB_STAMP) $(PANGO_STAMP) $(GDK_PIXBUF_STAMP) $(GTK3_STAMP) $(LIBXFCE4UTIL_STAMP) $(XFCONF_STAMP) $(LIBXFCE4UI_STAMP) $(THUNAR_STAMP) $(XCB_STAMP) $(LIBX11_STAMP) $(XEXT_STAMP) $(FONTSTACK_STAMP) $(XSERVER_STAMP) $(XCB_UTIL_STAMP) $(STARTUP_NOTIFICATION_STAMP) $(LIBSM_STAMP) $(LIBWNCK_STAMP) $(XFWM4_STAMP) $(DBUS_STAMP) $(GARCON_STAMP) $(LIBXFCE4WINDOWING_STAMP) $(XFCE4_PANEL_STAMP) $(XFCE4_SESSION_STAMP) $(XFDESKTOP_STAMP) $(LIBXML2_STAMP) $(XFCE4_SETTINGS_STAMP) $(VTE_STAMP) $(XFCE4_TERMINAL_STAMP) $(WELCOME_STAMP) $(ICU_STAMP) $(SQLITE_STAMP) $(LIBWEBP_STAMP) $(WOFF2_STAMP) $(LIBGCRYPT_STAMP) $(LIBTASN1_STAMP) $(GMP_STAMP) $(NETTLE_STAMP) $(GNUTLS_STAMP) $(GLIB_NETWORKING_STAMP) $(LIBSOUP_STAMP) $(WEBKITGTK_STAMP) $(SDL2_STAMP) $(SDL2_NET_STAMP) $(SDL2_MIXER_STAMP) $(CHOCOLATE_DOOM_STAMP) $(INITRD_FILES)
 	rm -rf $(ROOTFS)
 	mkdir -p $(ROOTFS)/bin $(ROOTFS)/sbin $(ROOTFS)/dev $(ROOTFS)/tmp \
 		$(ROOTFS)/run/dbus $(ROOTFS)/run/user/0 $(ROOTFS)/run/user/1000 \
@@ -1441,6 +1443,9 @@ $(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(LINUX_PAM_STAMP) $(
 	cp -R $(IPROUTE2_ROOT)/. $(ROOTFS)/
 	cp -R $(GIT_ROOT)/. $(ROOTFS)/
 	mkdir -p $(ROOTFS)/usr/bin $(ROOTFS)/usr/include/tunix $(ROOTFS)/usr/lib $(ROOTFS)/usr/share
+	# Only the tool: git is already linked against the archive, so shipping
+	# curl-root wholesale would add headers and a static library nothing reads.
+	cp $(CURL_ROOT)/usr/bin/curl $(ROOTFS)/usr/bin/curl
 	cp src/include/tunix/input_event.h $(ROOTFS)/usr/include/tunix/input_event.h
 	cp src/include/tunix/framebuffer.h $(ROOTFS)/usr/include/tunix/framebuffer.h
 	cp src/include/tunix/glib_compat.h $(ROOTFS)/usr/include/tunix/glib_compat.h
