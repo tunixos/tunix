@@ -268,6 +268,81 @@ dependency the library no longer uses); the glibc-only `LC_IDENTIFICATION` and
 `session-child.c`'s private `updwtmpx` is renamed, because musl provides one and
 the two declarations conflict.
 
+## Python
+
+CPython is a cross port on the graphics sysroot, built **shared**. That is the
+whole design decision: a static build is far easier to produce, but it can never
+`dlopen` anything, which costs `ctypes` and every third-party C extension — most
+of the reason to have Python at all.
+
+Two things make cross-building CPython different from the other ports.
+
+**It needs a working Python of the same series to build.** The freeze and
+bytecode steps run on the build machine, and the marshalled bytecode format is
+version-specific, so `--with-build-python` will not accept a different
+major.minor. The port pins 3.14.6 and checks the host's `python3` before it
+starts, because the alternative is a failure a long way into the build.
+
+**`--host` puts autoconf in cross mode**, where it cannot run its probe programs
+and falls back to guesses. Three of those guesses are wrong for Tunix and are
+overridden through a `config.site`: it does have `/dev/ptmx`, it does not have
+`/dev/ptc`, and its `getaddrinfo` is fine (the "buggy" default assumes the worst
+and disables IPv6 name lookups).
+
+What is deliberately missing, and why:
+
+| Module | Reason |
+| --- | --- |
+| `_ssl`, `_hashlib` | no OpenSSL; Tunix's TLS stack is GnuTLS. `hashlib` uses CPython's own md5/sha1/sha2/sha3/blake2 |
+| `readline`, `_curses` | ncurses is a static port and not in the graphics sysroot. 3.13 onwards has PyREPL, which needs neither |
+| `tkinter`, `idlelib` | no Tcl/Tk |
+| `ensurepip` | pip cannot fetch anything without `_ssl` |
+
+`Lib/test` and the `config-*` build makefiles are pruned: the test suite is a
+third of the tree and nothing on the image runs it, and there is no compiler on
+the image that could build an extension against those makefiles.
+
+`/bin/python-test` is the on-image check. It is not a language test — it
+exercises the places Python leans on the kernel (threads, `fork`/`exec`/pipes,
+signal delivery to a Python handler, unix sockets, `epoll`, `mmap`, `dlopen`
+through ctypes, SQLite on disk), so a pass says the syscall surface holds.
+
+### What it found
+
+The port went in cleanly; running it did not. Five things had to be fixed
+before `python-test` passed 14/14, and none of them were Python's fault:
+
+| Symptom | Cause |
+| --- | --- |
+| `FileNotFoundError: '/bin/echo'` | the userland installs into `/usr/bin` and `/bin` held almost nothing. LightDM had already hit this shelling out to `/bin/rm` |
+| `accept()` raised `BlockingIOError` | `accept` answered `EAGAIN` whether or not the socket was non-blocking. X11, Wayland and D-Bus poll before accepting, so a plain blocking accept had never been tried |
+| SQLite: "disk I/O error" on every file database | `fcntl` did not implement `F_SETLK`. SQLite locks byte ranges to arbitrate between connections and treats the failure as an I/O error |
+| writes through a shared `mmap` vanished | `MAP_SHARED` on a file fell through to private pages, and `msync` was a no-op. Writes were discarded silently |
+| `settimeout()` raised `EADDRNOTAVAIL` | `FIONBIO` was not handled, so every socket ioctl fell through to the *interface* ioctls, which read the argument as an interface name |
+
+The `mmap` fix had a second half worth knowing about. Mapping the cached pages
+only works when they start on a page boundary, and the heap page-aligns
+allocations of 64 KiB and up — so the first fix made shared mappings work for
+large files and silently not for small ones, which is worse than failing
+uniformly. `vfs_align_data()` moves a file's cache onto a page boundary when
+something maps it.
+
+### Known deviations
+
+`bind()` on an AF_UNIX socket does not create a socket file. The name lives in
+the kernel's own table, which is why `/tmp/.X11-unix/X0` has always worked, but
+`stat()` and `unlink()` on a bound path answer `ENOENT`. Programs that clear a
+stale socket before binding get an error they normally ignore.
+
+POSIX advisory locks are held at whole-file granularity rather than per byte
+range. Locking more than was asked can only refuse a lock that should have been
+granted, never grant one that should have been refused, so the direction is
+safe; what it costs is concurrency between processes sharing one database.
+Within a single process nothing is lost.
+
+A shared file mapping is coherent with `read()` immediately, but reaching the
+disk still takes an `fsync` on the descriptor.
+
 ## Common Fixes
 
 Initialize missing third-party sources:

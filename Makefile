@@ -1702,6 +1702,17 @@ $(INITRAMFS): $(DINIT_STAMP) $(SHADOW_STAMP) $(SUDO_STAMP) $(LINUX_PAM_STAMP) $(
 	@test -f $(ROOTFS)/usr/share/alsa/alsa.conf || { echo "the alsa configuration tree was not installed" >&2; exit 1; }
 	@test -L $(ROOTFS)/sbin/init || { echo "/sbin/init is not the dinit symlink" >&2; exit 1; }
 	ln -s bash $(ROOTFS)/bin/sh
+	# /bin compatibility links. The userland installs into /usr/bin, but a great
+	# deal of software spells these paths out: LightDM shells out to /bin/rm and
+	# Python's subprocess tests reach for /bin/echo. Only the names that get
+	# hardcoded are linked -- this is not a usr-merge.
+	@for tool in echo cat ls cp mv rm mkdir rmdir ln chmod chown true false pwd \
+	             sleep kill sed grep date uname; do \
+		 if [ -x $(ROOTFS)/usr/bin/$$tool ] && [ ! -e $(ROOTFS)/bin/$$tool ]; then \
+		         ln -s ../usr/bin/$$tool $(ROOTFS)/bin/$$tool; \
+		 fi; \
+	 done
+	@test -x $(ROOTFS)/bin/echo || { echo "/bin/echo was not linked" >&2; exit 1; }
 	tar --format=ustar --blocking-factor=1 --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(ROOTFS) .
 	# The staging tree lives on a Windows drive, which reports every file as
 	# 0777 root:root, so the real modes and owners are stamped onto the archive

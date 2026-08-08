@@ -16,6 +16,8 @@ Tunix is a small Unix-like operating system experiment for x86_64. It includes a
   and the scheduler runs processes on all of them — see
   [Multiprocessor](docs/multiprocessor.md)
 - GNU userland (coreutils, grep, sed, gawk, findutils, diffutils, tar, gzip, make), Bash, TinyCC, binutils, nano, Lua, and selected libraries
+- CPython 3.14, built shared so `ctypes` and C extensions load; `python-test`
+  exercises threads, subprocess, signals, sockets, epoll, mmap and sqlite3
 - Git, with an `https://` transport via a static libcurl built against mbedTLS
   (so `git clone https://…` works); `ssh://` remotes are not supported
 - Intel HD Audio playback behind ALSA's `/dev/snd` interface, with alsa-lib
