@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build libcurl as a static musl library against the already-ported mbedTLS,
-# so git's git-remote-https helper has an https:// transport. Mirrors
+# Build curl as a static musl port against the already-ported mbedTLS: the
+# library so git's git-remote-https helper has an https:// transport, and the
+# curl(1) command-line tool so the shell has one too. Mirrors
 # build-mbedtls.sh / build-image-codecs.sh: CMake + the shared musl toolchain,
-# staged under ports/out. Only libcurl (the library) is built; the curl(1)
-# command-line tool is intentionally left out -- git links the library.
+# staged under ports/out.
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # Reuse the shared musl toolchain setup; curl is not autotools here (we drive
@@ -27,7 +27,9 @@ MBEDTLS_ROOT="$OUT/mbedtls-root"
 [[ -f "$MBEDTLS_ROOT/usr/include/mbedtls/ssl.h" ]] || \
     gnu_port_fail "mbedTLS headers not found; build mbedtls first"
 
-for tool in cmake make; do
+HOST_STRIP=${STRIP:-strip}
+
+for tool in cmake make "$HOST_STRIP"; do
     command -v "$tool" >/dev/null 2>&1 || gnu_port_fail "$tool was not found"
 done
 
@@ -41,8 +43,10 @@ rm -rf "$BUILD" "$ROOT_DIR"
 mkdir -p "$BUILD" "$ROOT_DIR"
 
 # A note on what is deliberately turned off, and why:
-#   * BUILD_SHARED_LIBS/BUILD_CURL_EXE OFF, BUILD_STATIC_LIBS ON: the image is
-#     fully static and we ship the library, not the tool.
+#   * BUILD_SHARED_LIBS OFF, BUILD_STATIC_LIBS ON: git links the archive, and a
+#     static curl(1) has no runtime closure to get wrong.
+#   * ENABLE_CURL_MANUAL OFF: `curl --manual` would embed the whole manpage in
+#     the binary. `curl --help` is unaffected.
 #   * TLS: mbedTLS only. OpenSSL/GnuTLS/wolfSSL/Rustls off -- none are ported,
 #     and letting CMake probe the host could link the host's OpenSSL.
 #   * Every optional codec/resolver library (zlib, brotli, zstd, nghttp2,
@@ -54,9 +58,9 @@ mkdir -p "$BUILD" "$ROOT_DIR"
 #     synchronous getaddrinfo path, which is all the kernel resolver needs.
 #   * IPv6 OFF: the Tunix net stack is IPv4-only, and an AF_INET6 socket() would
 #     just fail; disabling it avoids curl trying and logging errors.
-#   * Protocols reduced to HTTP(S): git only ever drives http/https through the
-#     remote-http helper. HTTP_ONLY would also kill the tool's other protocols,
-#     but we keep FILE too since it is free and harmless.
+#   * Protocols reduced to HTTP(S) plus FILE: that is everything git drives
+#     through the remote-http helper, and everything the tool can reach given
+#     an IPv4 client-only TCP stack. The rest would only fail at runtime.
 #   * CA bundle baked to the guest path /etc/ssl/cert.pem, which the mbedtls
 #     port already installs into the rootfs. mbedTLS has no default CA store, so
 #     without this git could not verify any certificate.
@@ -74,7 +78,7 @@ cmake -S "$SRC" -B "$BUILD" -G "Unix Makefiles" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_STATIC_LIBS=ON \
-    -DBUILD_CURL_EXE=OFF \
+    -DBUILD_CURL_EXE=ON \
     -DCURL_USE_PKGCONFIG=OFF \
     -DCURL_USE_CMAKECONFIG=OFF \
     -DCURL_ENABLE_SSL=ON \
@@ -124,6 +128,8 @@ DESTDIR="$ROOT_DIR" cmake --install "$BUILD"
 
 [[ -f "$ROOT_DIR/usr/lib/libcurl.a" ]] || gnu_port_fail "libcurl static library was not installed"
 [[ -f "$ROOT_DIR/usr/include/curl/curl.h" ]] || gnu_port_fail "libcurl headers were not installed"
+[[ -x "$ROOT_DIR/usr/bin/curl" ]] || gnu_port_fail "the curl command-line tool was not installed"
+"$HOST_STRIP" --strip-all "$ROOT_DIR/usr/bin/curl"
 
 # git's Makefile probes CURL_CONFIG for a version number. curl-config is a
 # shell script CMake generates; make sure it is present and executable so the
