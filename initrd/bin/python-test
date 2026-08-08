@@ -91,13 +91,23 @@ def signals():
 
 
 def sockets():
+    """Unix domain sockets, which is what a desktop actually talks over.
+
+    Deliberately not a TCP listen/accept: Tunix's inet layer is client-side
+    only -- sys_accept resolves the descriptor as a unix socket and answers
+    EBADF for anything else -- so asserting a server socket here would be
+    asserting a feature the kernel does not claim to have. X11, Wayland and
+    D-Bus all run over the path below.
+    """
     import socket, threading
 
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
+    path = "/tmp/python-test.sock"
+    if os.path.exists(path):
+        os.unlink(path)
+
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(path)
     listener.listen(1)
-    port = listener.getsockname()[1]
 
     received = []
 
@@ -110,16 +120,39 @@ def sockets():
     server = threading.Thread(target=serve)
     server.start()
 
-    client = socket.create_connection(("127.0.0.1", port), timeout=10)
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(path)
     client.sendall(b"ping")
     answer = client.recv(64)
     client.close()
     server.join(10)
     listener.close()
+    # bind() keeps the name in the kernel's own table and does not create a
+    # socket file, so there may be nothing on the filesystem to remove. That is
+    # a deviation from POSIX rather than part of what this checks.
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
 
     assert received == [b"ping"], "server got %r" % received
     assert answer == b"pong", "client got %r" % answer
-    return "loopback tcp on port %d, ping/pong" % port
+    return "unix stream socket, ping/pong across two threads"
+
+
+def inet_sockets():
+    """The client side of the TCP stack, as far as it goes without a peer."""
+    import socket
+
+    handle = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    handle.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    handle.settimeout(5)
+    family = handle.family
+    handle.close()
+
+    datagram = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    datagram.close()
+    return "AF_INET stream and datagram sockets open and close (%s)" % family.name
 
 
 def polling():
@@ -135,6 +168,18 @@ def polling():
     os.close(write_fd)
     assert events, "epoll reported nothing on a readable pipe"
     return "epoll woke on a readable pipe"
+
+
+def database_memory():
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+    connection.execute("INSERT INTO t (name) VALUES ('one')")
+    rows = connection.execute("SELECT name FROM t").fetchall()
+    connection.close()
+    assert rows == [("one",)], rows
+    return "sqlite3 %s in memory" % sqlite3.sqlite_version
 
 
 def database():
@@ -215,9 +260,11 @@ check("directories", directories)
 check("threads", threads)
 check("subprocess", subprocesses)
 check("signals", signals)
-check("sockets", sockets)
+check("unix sockets", sockets)
+check("inet sockets", inet_sockets)
 check("epoll", polling)
-check("sqlite3", database)
+check("sqlite3 memory", database_memory)
+check("sqlite3 file", database)
 check("ctypes", foreign_calls)
 check("mmap", memory_mapping)
 check("hashlib", hashing)

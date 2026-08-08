@@ -314,6 +314,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136, "syscall frame r
 #define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
+#define FIONBIO 0x5421UL
 #define F_GETLK 5
 #define F_SETLK 6
 #define F_SETLKW 7
@@ -2052,6 +2053,22 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
      */
     request &= 0xFFFFFFFFUL;
     struct file *file = process->files->fds[fd];
+    /*
+     * FIONBIO is the other way to say O_NONBLOCK, and it belongs to the
+     * descriptor rather than to whatever is behind it -- so it is answered
+     * here, before anything gets to interpret the argument. CPython's
+     * socket.settimeout() uses it in preference to fcntl, and on an inet
+     * socket it used to fall through to the interface ioctls, which read the
+     * argument as an interface name and answered EADDRNOTAVAIL.
+     */
+    if (request == FIONBIO) {
+        int32_t enabled;
+        if (!user_argument ||
+            copy_from_user(&enabled, user_argument, sizeof(enabled)) != 0) return -EFAULT;
+        if (enabled) file->flags |= (uint32_t)O_NONBLOCK;
+        else file->flags &= ~(uint32_t)O_NONBLOCK;
+        return 0;
+    }
     if (file->kind == FILE_KIND_INET_SOCKET && request == SIOCGIFCONF) {
         if (!user_argument) return -EFAULT;
         struct linux_ifconf ifconf;
