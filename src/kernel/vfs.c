@@ -306,6 +306,41 @@ static int64_t memory_read(struct vfs_node *node, uint64_t offset, size_t size, 
     return (int64_t)size;
 }
 
+/*
+ * Put a file's cached contents on a page boundary.
+ *
+ * mmap can only hand the cached pages themselves to a process when they start
+ * on one, and the heap only aligns allocations of 64 KiB and up. Without this,
+ * a shared mapping of a large file worked and a shared mapping of a small one
+ * quietly fell back to private copies -- so whether writes reached the file
+ * depended on its size, which is the worst of both answers. Reallocating at
+ * the heap's alignment threshold costs padding on a small file, and only for
+ * files somebody actually maps.
+ */
+#define VFS_PAGE_ALIGN_MIN (64ULL * 1024ULL)
+
+int vfs_align_data(struct vfs_node *node) {
+    if (!node || !node->data) return -1;
+    if ((((uint64_t)node->data) & 0xFFFULL) == 0) return 0;
+    if (!(node->flags & VFS_OWNED_DATA)) return -1;
+
+    uint64_t capacity = node->capacity > VFS_PAGE_ALIGN_MIN ? node->capacity
+                                                            : VFS_PAGE_ALIGN_MIN;
+    uint8_t *aligned = (uint8_t *)kmalloc((size_t)capacity);
+    if (!aligned) return -1;
+    if ((((uint64_t)aligned) & 0xFFFULL) != 0) {
+        kfree(aligned);
+        return -1;
+    }
+    memset(aligned, 0, (size_t)capacity);
+    if (node->length) memcpy(aligned, node->data, (size_t)node->length);
+    free_node_data(node);
+    node->data = aligned;
+    node->capacity = capacity;
+    node->flags |= VFS_OWNED_DATA;
+    return 0;
+}
+
 static int ensure_capacity(struct vfs_node *node, uint64_t required) {
     if (required <= node->capacity) return 0;
     if (node->flags & VFS_READONLY) return -1;

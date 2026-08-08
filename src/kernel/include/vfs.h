@@ -120,6 +120,8 @@ void vfs_notify_meta_changed(struct vfs_node *node);
 
 /* Make node->data usable. Every path that dereferences it must call this. */
 int vfs_fault_in(struct vfs_node *node);
+/* Move a file's cached contents onto a page boundary so mmap can map them. */
+int vfs_align_data(struct vfs_node *node);
 /* Drop cached contents that can be fetched again, once a caller has taken its
    own copy. Nothing may hold a pointer into node->data across this. */
 void vfs_release_data(struct vfs_node *node);

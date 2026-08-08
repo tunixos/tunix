@@ -3018,14 +3018,36 @@ static int64_t sys_mmap(uint64_t address, uint64_t length, int prot, int flags, 
      * it for the bss that overlaps the last page -- so it and everything after
      * it get private pages, filled from the file and zero beyond.
      */
+    /*
+     * MAP_SHARED is the same mapping without the copy-on-write: the pages are
+     * the kernel's cached copy of the file, so a write through them is a write
+     * every reader sees, which is what MAP_SHARED means. Before this it fell
+     * through to the generic path, got private copies, and discarded every
+     * write silently -- the kind of failure that loses data instead of
+     * reporting anything. A writable shared mapping needs a descriptor that
+     * was opened for writing, exactly as Linux requires.
+     *
+     * Durability is a separate question: the write lands in the cache, and
+     * reaching the disk still takes an fsync on the descriptor.
+     */
+    int share_private = (flags & MAP_PRIVATE) && !(prot & PROT_WRITE);
+    int share_shared = (flags & MAP_SHARED) &&
+                       (!(prot & PROT_WRITE) ||
+                        (file && (file->flags & O_ACCMODE) != O_RDONLY));
     if (file && file->kind == FILE_KIND_VFS && file->node &&
-        (file->node->flags & 0xFFU) == VFS_FILE && (flags & MAP_PRIVATE) &&
-        !(prot & PROT_WRITE) && file->node->length <= SHARED_MAP_MAX_BYTES &&
+        (file->node->flags & 0xFFU) == VFS_FILE && (share_private || share_shared) &&
+        file->node->length <= SHARED_MAP_MAX_BYTES &&
         offset < file->node->length && vfs_fault_in(file->node) == 0 &&
-        file->node->data && (((uint64_t)file->node->data & 0xFFFULL) == 0)) {
+        file->node->data && vfs_align_data(file->node) == 0) {
         uint64_t shareable = (file->node->length - offset) & ~0xFFFULL;
         if (shareable > length) shareable = length;
-        uint64_t shared_flags = PAGE_USER | PAGE_PRESENT | PAGE_COW | PAGE_FILEBACKED;
+        uint64_t shared_flags = PAGE_USER | PAGE_PRESENT | PAGE_FILEBACKED;
+        if (flags & MAP_SHARED) {
+            shared_flags |= PAGE_SHARED;
+            if (prot & PROT_WRITE) shared_flags |= PAGE_WRITE;
+        } else {
+            shared_flags |= PAGE_COW;
+        }
         if (nx_enabled && !(prot & PROT_EXEC)) shared_flags |= PAGE_NX;
 
         uint64_t mapped = 0;
